@@ -83,7 +83,7 @@ inline std::vector<LootTable> loot_tables;
 namespace loot_detail {
 inline void warn(const std::string& what) {
     static std::map<std::string, bool> seen;
-    if (!seen[what]) { seen[what] = true; fprintf(stderr, "loot: unsupported %s (ignored)\n", what.c_str()); }
+    if (!seen[what]) { seen[what] = true; log_warn("loot: unsupported %s (ignored)", what.c_str()); }
 }
 inline std::string strip(const std::string& s) { return s.rfind("minecraft:", 0) == 0 ? s.substr(10) : s; }
 
