@@ -212,6 +212,7 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     }
     out.sections = p->chunk->sections;
     out.block_entities = p->chunk->block_entities;
+    if (on_take) on_take(*p, out);
     p->taken = true;
   }
   {
