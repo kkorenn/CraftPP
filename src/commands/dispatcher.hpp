@@ -174,7 +174,7 @@ struct Cmd {
     Vec3 vec(const char* name) const { return get<Coords>(name).pos(src); }
     void block_pos(const char* name, int& x, int& y, int& z) const {
         get<Coords>(name).block(src, x, y, z);
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT) throw err("argument.pos.outofworld");
+        if (y < world.min_y() || y >= world.max_y()) throw err("argument.pos.outofworld");
     }
     // ScoreHolderArgument.getNames
     std::vector<std::string> holders(const char* name) const {
@@ -271,6 +271,7 @@ inline int run_chain(const Parse& p, const Source& origin, const std::string& li
     auto it = command_handlers().find(last.cmd);
     for (auto& [s, stores] : sources) {
         Source src = s;
+        InLevel in_level(level_by_id(src.dimension));  // commands act in the source's level
         Cmd c{src, last, line};
         int result = 0;
         bool ok = true;
@@ -292,6 +293,7 @@ inline int run_chain(const Parse& p, const Source& origin, const std::string& li
 // Commands.performCommand. `line` has no leading slash.
 inline int perform(const Source& src, const std::string& line) {
     std::lock_guard lock(cmd_mtx);
+    InLevel in_level(level_by_id(src.dimension));
     Parse p = parse_command(line, 0, src);
     if (auto e = parse_error(p, line)) {
         send_error(src, *e, line);

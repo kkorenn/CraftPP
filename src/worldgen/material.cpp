@@ -263,8 +263,9 @@ MaterialSystem::~MaterialSystem() = default;
 PosRandom MaterialSystem::positional(const std::string& id) const {
   auto r = randomState->random().fromHashOf(fullId(id));  // fromHashOf(id).forkPositional() = two nextLong()
   PosRandom p;
+  p.legacy = randomState->legacy();  // Legacy forkPositional = one nextLong()
   p.lo = r->nextLong();
-  p.hi = r->nextLong();
+  if (!p.legacy) p.hi = r->nextLong();
   return p;
 }
 
@@ -310,14 +311,19 @@ MaterialSystem::MaterialSystem(RandomState& rs, const std::string& settingsId, c
   seaLevel_ = settings["sea_level"].asInt();
   minY = settings["noise"]["min_y"].asInt();
   height = settings["noise"]["height"].asInt();
-  if (minY != MIN_Y || height != HEIGHT) throw std::runtime_error("material: noise height != Chunk layout");
-  preliminarySurfaceFunction = fullId(settings["noise_router"]["chunk_surface_level"].asString());
+  // ponytail: biome y clamp + maxY use the noise range, not the chunk's (same result: every vanilla dimension's
+  // biomes are y-independent above the noise top); pass the chunk layout if a datapack needs it.
+  const Json& csl = settings["noise_router"]["chunk_surface_level"];
+  if (csl.isString()) preliminarySurfaceFunction = fullId(csl.asString());  // constant (nether, end): never sampled
 
-  // ponytail: Xoroshiro only (every vanilla dimension); legacy_random_source needs a Legacy PosRandom variant.
-  if (settings.find("legacy_random_source") && settings["legacy_random_source"].asBool())
-    throw std::runtime_error("material: legacy_random_source unsupported");
-  {
-    XoroshiroRandomSource r(rs.seed());  // RandomState.random = newInstance(seed).forkPositional()
+  if (rs.legacy() != (settings.find("legacy_random_source") && settings["legacy_random_source"].asBool()))
+    throw std::runtime_error("material: RandomState legacy flag != noise_settings legacy_random_source");
+  noiseRandom.legacy = rs.legacy();  // RandomState.random = newInstance(seed).forkPositional()
+  if (rs.legacy()) {
+    LegacyRandomSource r(rs.seed());
+    noiseRandom.lo = r.nextLong();
+  } else {
+    XoroshiroRandomSource r(rs.seed());
     noiseRandom.lo = r.nextLong();
     noiseRandom.hi = r.nextLong();
   }

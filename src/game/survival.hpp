@@ -114,22 +114,11 @@ inline void respawn(Player& p) {
         g.loaded = true;
         return g;
     }();
-    place_new_player(p);
-    p.send(Writer().varint(play_cb::respawn).varint(dimension_types::overworld).str("minecraft:overworld").i64(0)
-               .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63)
-               .u8(0));
-    p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
-    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(0)
-               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
-    p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
-    send_health(p);
-    send_experience(p);
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // client dropped its entities
-    broadcast(remove_entities_packet({p.eid}), &p);
-    broadcast(spawn_entity(p), &p);
-    for (auto& q : players)
-        if (q.get() != &p) p.send(spawn_entity(*q));
+    World* died_in = p.level;
+    place_new_player(p);  // overworld spawn
+    World* spawn = p.level;
+    p.level = died_in;
+    move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 0);
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -329,7 +318,7 @@ inline void vitals_tick(Player& p) {
     auto& g = p.g;
     if (g.invulnerable > 0) g.invulnerable--;
     if (g.dead) return;
-    if (p.y < MIN_Y - 64) hurt(p, 4, "out_of_world");
+    if (p.y < p.level->min_y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
     if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
@@ -343,7 +332,7 @@ inline void vitals_tick(Player& p) {
 // ---------- placement ----------
 inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for players
     for (auto& q : players) {
-        if (q->gamemode == 3 || q->g.dead) continue;
+        if (q->gamemode == 3 || q->g.dead || q->level != cur_level) continue;
         if (q->x + 0.3 > x && q->x - 0.3 < x + 1 && q->y + 1.8 > y && q->y < y + 1 && q->z + 0.3 > z && q->z - 0.3 < z + 1)
             return true;
     }

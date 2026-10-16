@@ -6,6 +6,7 @@
 #include "world.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
+#include "worldgen/material.hpp"
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
 
@@ -20,6 +21,7 @@
 #include <charconv>
 #include <climits>
 #include <random>
+#include <sstream>
 #include <thread>
 
 #include <unistd.h>
@@ -40,7 +42,6 @@ inline std::map<std::string, std::string> props = {
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
-inline World world;
 inline volatile std::sig_atomic_t shutdown_requested = 0;
 inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
 inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
@@ -51,6 +52,7 @@ inline bool flat_world = false;
 inline std::shared_ptr<structure::StructureWorld> structure_world;  // null: structures off (flat, generate-structures=false)
 struct SpawnPos { int x, y, z; };
 inline SpawnPos world_spawn{0, -60, 0};  // LevelData respawn position (flat: the old fixed spawn)
+inline int64_t hashed_seed = 0;  // BiomeManager.obfuscateSeed(seed), set by setup_world
 
 // WorldOptions.parseSeed: trimmed; empty -> random, Long.parseLong, else String.hashCode.
 inline int64_t parse_seed(std::string s) {
@@ -76,6 +78,11 @@ struct Player {
     float yaw = 0, pitch = 0;
     bool on_ground = true;
     int cx = 0, cz = 0;  // chunk the client's view is centered on
+    World* level = &worlds[DIM_OVERWORLD];  // dimension the player is in (game/dimensions.hpp changes it)
+    // Entity.portalCooldown + PortalProcessor (game/portal.hpp): portal kind (0 none), entry block, ticks inside.
+    int portal_cooldown = 0, portal_kind = 0, portal_x = 0, portal_y = 0, portal_z = 0, portal_time = 0;
+    bool portal_this_tick = false;
+    bool seen_credits = false, won_game = false;
     using Slot = ItemStack;    // {item, count, damage}
     std::array<Slot, 41> inv;  // vanilla Inventory indices: 0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand
     int selected = 0;          // hotbar slot 0-8
@@ -111,7 +118,7 @@ inline bool is_solid(uint16_t b) { return b != blocks::air && b != blocks::cave_
 
 // PlayerSpawnFinder.getLevelRespawnPos: y to stand on at column (x, z), or INT_MIN.
 inline int level_respawn_y(int x, int z) {
-    ChunkPtr cp = world.get_ptr(x >> 4, z >> 4);
+    ChunkPtr cp = worlds[DIM_OVERWORLD].get_ptr(x >> 4, z >> 4);
     Chunk& c = *cp;
     std::lock_guard lock(c.m);
     auto at = [&](int y) { return y >= MIN_Y + HEIGHT ? uint16_t(blocks::air) : c.get(x & 15, y, z & 15); };
@@ -152,12 +159,13 @@ inline SpawnPos find_world_spawn(worldgen::TerrainGenerator& gen) {
 
 // PlayerSpawnFinder.findSpawn with respawn_radius 10: a random column near the world spawn with room to stand.
 inline void place_new_player(Player& p) {
+    p.level = &worlds[DIM_OVERWORLD];
     p.x = world_spawn.x + 0.5, p.y = world_spawn.y, p.z = world_spawn.z + 0.5;
     if (flat_world) return;  // fixed spawn: tests rely on it
     auto free_at = [](int x, int y, int z) {  // noCollisionNoLiquid for a player box at the block's bottom center
         for (int yy = y; yy <= y + 1; yy++) {
             if (yy < MIN_Y || yy >= MIN_Y + HEIGHT) continue;
-            ChunkPtr c = world.get_ptr(x >> 4, z >> 4);
+            ChunkPtr c = worlds[DIM_OVERWORLD].get_ptr(x >> 4, z >> 4);
             std::lock_guard lock(c->m);
             uint16_t b = c->get(x & 15, yy, z & 15);
             if (is_solid(b) || is_fluid(b)) return false;
@@ -184,11 +192,36 @@ inline void place_new_player(Player& p) {
 
 // The world folder remembers its generator: level.dat wins over server.properties once the world exists.
 // A world folder with saved chunks but no level.dat predates noise generation: treat it as flat.
+// The three vanilla levels (dimension_type/*.json layouts). The overworld keeps CraftPP's <world>/chunks layout; the
+// others live where 26.x puts them (DimensionType.getStorageFolder: <world>/dimensions/<namespace>/<path>). Their
+// generators compile on first use, so a dimension nobody visits costs no memory or startup time.
+inline void setup_dimensions(int64_t seed) {
+    worlds[DIM_OVERWORLD].open("minecraft:overworld", dimension_types::overworld, -64, 384, world_dir);
+    struct Def { Dim dim; const char* name; int type; const char* settings; double scale; bool sky, ceiling; int sea, logical; };
+    for (const Def& d : {Def{DIM_NETHER, "the_nether", dimension_types::the_nether, "nether", 8.0, false, true, 32, 128},
+                         Def{DIM_END, "the_end", dimension_types::the_end, "end", 1.0, true, false, 0, 256}}) {
+        World& w = worlds[d.dim];
+        w.open(std::string("minecraft:") + d.name, d.type, 0, 256, world_dir + "/dimensions/minecraft/" + d.name);
+        w.coordinate_scale = d.scale, w.skylight = d.sky, w.ceiling = d.ceiling, w.sea_level = d.sea;
+        w.logical_height = d.logical;
+        w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
+        auto gen = std::make_shared<std::unique_ptr<worldgen::TerrainGenerator>>();
+        auto once = std::make_shared<std::once_flag>();
+        bool surface = props["worldgen-stages"] != "noise";
+        std::string settings = d.settings;
+        w.generator = [=](Chunk& c) {
+            std::call_once(*once, [&] {
+                *gen = std::make_unique<worldgen::TerrainGenerator>(seed, "vanilla/src/data", surface, settings, 0, 256);
+            });
+            (*gen)->generate(c);
+        };
+    }
+}
 inline void on_player_sync(void (*f)(Player&));  // game/tick.hpp
 inline void deliver_chunks(Player& p);
 
 inline void setup_world() {
-    world.start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
+    worlds[DIM_OVERWORLD].start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
     compression_threshold = std::stoi(props["network-compression-threshold"]);
     on_player_sync(deliver_chunks);
     auto level = read_level_data();
@@ -207,18 +240,20 @@ inline void setup_world() {
         write_level_data({{"level-type", type}, {"level-seed", seed_str}});
     }
     flat_world = type == "flat";
-    if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
+    hashed_seed = material::MaterialSystem::obfuscateSeed(seed);
+    setup_dimensions(seed);
+    if (flat_world) return;
     auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "vanilla/src/data", props["worldgen-datapack"]);
     const std::string& stages = props["worldgen-stages"];
     if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
     {
         structure_world = std::make_shared<structure::StructureWorld>(*ow, true);
-        world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
+        worlds[DIM_OVERWORLD].on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
     }
     auto gen = ow->terrain;
-    world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
-    light::attach(world, ow->pipeline);
+    worlds[DIM_OVERWORLD].generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    light::attach(worlds[DIM_OVERWORLD], ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -251,6 +286,13 @@ inline void broadcast(const Writer& body, const Player* except = nullptr) {
     std::lock_guard lock(players_mtx);  // no copy: push_framed only appends to the player's outbox
     for (auto& p : players)
         if (p.get() != except) p->out.push_framed(f);
+}
+
+// Sends to every player in `level` (block changes, entities: what vanilla sends per ServerLevel).
+inline void broadcast_level(const Writer& body, const World* level, const Player* except = nullptr) {
+    std::lock_guard lock(players_mtx);
+    for (auto& p : players)
+        if (p.get() != except && p->level == level) p->send(body);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
@@ -286,7 +328,7 @@ inline Writer spawn_entity(const Player& p) {
 }
 
 inline void broadcast_position(const Player& p) {
-    broadcast(Writer()
+    broadcast_level(Writer()
                   .varint(play_cb::teleport_entity)
                   .varint(p.eid)
                   .f64(p.x).f64(p.y).f64(p.z)
@@ -294,8 +336,8 @@ inline void broadcast_position(const Player& p) {
                   .f32(p.yaw).f32(p.pitch)
                   .i32(0)
                   .boolean(p.on_ground),
-              &p);
-    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
+              p.level, &p);
+    broadcast_level(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), p.level, &p);
 }
 
 // ---------- player data ----------
@@ -306,10 +348,16 @@ inline std::string uuid_hex(const Player& p) {
     return buf;
 }
 
-// playerdata/<uuid>.txt: "x y z yaw pitch gamemode selected" then "slot item count" lines.
+// playerdata/<uuid>.txt: "x y z yaw pitch gamemode selected [dimension [seen_credits]]" then "slot item count" lines.
 inline bool load_player(Player& p) {
     std::ifstream f(world_dir + "/playerdata/" + uuid_hex(p) + ".txt");
     if (!(f >> p.x >> p.y >> p.z >> p.yaw >> p.pitch >> p.gamemode >> p.selected)) return false;
+    std::string rest, dim;
+    std::getline(f, rest);
+    std::istringstream line(rest);
+    if (line >> dim)
+        if (World* w = level_by_id(dim)) p.level = w;  // unknown dimension: vanilla falls back to the overworld
+    line >> p.seen_credits;
     for (int slot, item, count; f >> slot >> item >> count;)
         if (slot >= 0 && slot < int(p.inv.size()) && item >= 0 && item < ITEM_COUNT) p.inv[slot] = {item, count};
     load_player_extra(p, f);  // game/survival.hpp: vitals, xp, tool damage
@@ -323,7 +371,7 @@ inline void save_player(const Player& p) {
         std::ofstream f(path + ".tmp");
         f.precision(17);
         f << p.x << ' ' << p.y << ' ' << p.z << ' ' << p.yaw << ' ' << p.pitch << ' ' << p.gamemode << ' '
-          << p.selected << '\n';
+          << p.selected << ' ' << p.level->id << ' ' << p.seen_credits << '\n';
         for (size_t i = 0; i < p.inv.size(); i++)
             if (p.inv[i].item >= 0) f << i << ' ' << p.inv[i].item << ' ' << p.inv[i].count << '\n';
         save_player_extra(p, f);
@@ -333,7 +381,7 @@ inline void save_player(const Player& p) {
 
 inline void save_all() {
     for (auto& p : snapshot()) save_player(*p);
-    world.save_dirty();
+    for (auto& w : worlds) w.save_dirty();
 }
 
 // Creative-menu slot number -> Inventory index (-1 = not a player inventory slot).
@@ -350,10 +398,10 @@ inline int menu_to_inv(int slot) {
 inline int view_distance() { return std::stoi(props["view-distance"]); }
 
 inline void push_chunk(Player& p, Chunk& c) {
-    light::ensure_lit(world, c);  // 3x3 lit: the light in the frame is final
+    if (!c.fullbright) light::ensure_lit(*p.level, c);  // 3x3 lit: the light in the frame is final
     p.out.push_framed(*chunk_frame(c));
 }
-inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *world.get_ptr(cx, cz)); }
+inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *p.level->get_ptr(cx, cz)); }
 
 // Tick thread (on_player_sync): send queued chunks whose generation finished, nearest first, a bounded batch per tick.
 inline constexpr int CHUNKS_PER_TICK = 32;
@@ -369,7 +417,7 @@ inline void deliver_chunks(Player& p) {
                 push_chunk(p, *c);
                 sent++;
             } catch (const ChunkCancelled&) {  // raced with leaving + re-entering the view: ask again
-                e.second = world.request(e.first.first, e.first.second);
+                e.second = p.level->request(e.first.first, e.first.second);
                 q[keep++] = std::move(e);
             } catch (const std::exception& ex) {
                 fprintf(stderr, "chunk %d,%d failed: %s\n", e.first.first, e.first.second, ex.what());
@@ -392,6 +440,7 @@ inline void broadcast_light() {
     for (auto& ch : changes) {
         Writer w;
         for (auto& p : ps) {
+            if (p->level != &worlds[DIM_OVERWORLD]) continue;  // the light engine lights the overworld only
             int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
             if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
             if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
@@ -410,7 +459,7 @@ inline void update_view(Player& p, int ncx, int ncz, bool initial) {
     p.cz = ncz;
     auto in_old = [&](int x, int z) { return !initial && std::abs(x - ocx) <= v && std::abs(z - ocz) <= v; };
     auto in_new = [&](int x, int z) { return std::abs(x - ncx) <= v && std::abs(z - ncz) <= v; };
-    p.view.move(world, ncx, ncz, v);
+    p.view.move(*p.level, ncx, ncz, v);
 
     p.send(Writer().varint(play_cb::set_chunk_cache_center).varint(ncx).varint(ncz));
     if (!initial)
@@ -431,7 +480,7 @@ inline void update_view(Player& p, int ncx, int ncz, bool initial) {
         for (int z = ncz - v; z <= ncz + v; z++)
             if (!in_old(x, z)) add.push_back({x, z});
     std::stable_sort(add.begin(), add.end(), [&](auto& a, auto& b) { return dist(a) < dist(b); });
-    for (auto& k : add) q.push_back({k, world.request(k.first, k.second)});
+    for (auto& k : add) q.push_back({k, p.level->request(k.first, k.second)});
     std::stable_sort(q.begin(), q.end(), [&](auto& a, auto& b) { return dist(a.first) < dist(b.first); });
 
     if (p.out.fd < 0) {  // joining
@@ -455,6 +504,26 @@ inline void set_gamemode(Player& p, int gm) {
     p.send(Writer().varint(play_cb::game_event).u8(3).f32(float(gm)));
     broadcast(Writer().varint(play_cb::player_info_update).u8(0x04).varint(1)
                   .i64(p.uuid_hi).i64(p.uuid_lo).varint(gm));
+}
+
+// CommonPlayerSpawnInfo for the player's level (login and respawn packets).
+inline Writer& write_spawn_info(Writer& w, const Player& p) {
+    const World& l = *p.level;
+    return w.varint(l.type).str(l.id).i64(hashed_seed)
+        .varint(p.gamemode)
+        .varint(0)       // previous gamemode: none
+        .boolean(false)  // debug world
+        .boolean(flat_world && &l == &worlds[DIM_OVERWORLD])
+        .boolean(false)  // no last death location
+        .varint(p.portal_cooldown)
+        .varint(l.sea_level);
+}
+
+// Moves a player into `to` with a respawn packet (game/dimensions.hpp): ServerPlayer.teleport across levels
+// (keep = 3, all data) and PlayerList.respawn (keep = 0 after death, 1 after the end credits).
+inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep);
+inline void change_dimension(Player& p, World* to, double x, double y, double z, float yaw, float pitch) {
+    move_to_level(p, to, x, y, z, yaw, pitch, 3);
 }
 
 inline void teleport(Player& p, double x, double y, double z) {

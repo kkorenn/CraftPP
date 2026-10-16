@@ -904,7 +904,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   std::sort(names.begin(), names.end());
   std::vector<int> sources;
   possibleBiome.assign(names.size(), 0);
-  for (auto& [pt, b] : ow.terrain->biomeSource.values())
+  for (auto& [pt, b] : ow.terrain->biomeSource->values())
     if (!possibleBiome[size_t(b)]) possibleBiome[size_t(b)] = 1, sources.push_back(b);
 
   // Feature lists of every biome (placed features parsed on first reference).

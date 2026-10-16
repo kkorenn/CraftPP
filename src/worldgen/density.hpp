@@ -66,7 +66,7 @@ class SamplerContext {
 enum class K {
   Constant, Ref, Noise, ShiftA, ShiftB, Shift, Gradient, Unary, Binary, Clamp, Lerp, RangeChoice, IntervalSelect,
   Cache, Interpolated, Slice, FindTopSurface, Spline, BlendAlpha, BlendOffset, Beardifier, BlendDensity,
-  OldBlendedNoise, Prepared
+  OldBlendedNoise, Prepared, DistanceToPoint, EndIslands
 };
 enum Unary { ABS, SQUARE, CUBE, SQRT, HALF_NEGATIVE, QUARTER_NEGATIVE, RECIPROCAL, NEGATE, SQUEEZE, LOG, SIGN };
 enum Binary { ADD, SUB, MUL, DIV, MIN, MAX };
@@ -107,7 +107,8 @@ struct Bound {  // DensitySampler.Bound
 
 class DensityFunctions {
  public:
-  explicit DensityFunctions(int64_t seed, std::string dataRoot = "vanilla/src/data");
+  // legacyRandom: noise_settings legacy_random_source (nether, end).
+  explicit DensityFunctions(int64_t seed, std::string dataRoot = "vanilla/src/data", bool legacyRandom = false);
   NodeP function(const std::string& id);  // HolderHolder of a registry entry
   NodeP parse(const Json& j);
   SamplerP sampler(const NodeP& f);  // RandomState.getSampler

@@ -50,6 +50,7 @@ struct ParameterPoint { Parameter space[7]; };
 class BiomeSource {
 public:
     BiomeSource();  // overworld preset (OverworldBiomeBuilder order), children per node 19
+    static BiomeSource nether();  // MultiNoiseBiomeSourceParameterList.Preset.NETHER
     explicit BiomeSource(std::vector<std::pair<ParameterPoint, int>> values, int childrenPerNode = 19);
     int find(const TargetPoint& target) const;             // ParameterList.findValue (RTree + thread-local lastResult)
     const std::vector<std::pair<ParameterPoint, int>>& values() const { return values_; }

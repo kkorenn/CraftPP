@@ -33,20 +33,17 @@ double clampd(double v, double mn, double mx) { return v < mn ? mn : std::min(v,
 // ---------------------------------------------------------------- Aquifer
 int Aquifer::FluidStatus::at(int y) const { return y < level ? type : blocks::air; }
 
-// NoiseBasedChunkGenerator.createFluidPicker: lava below -54, else sea level water.
-Aquifer::FluidStatus Aquifer::globalFluid(int y) {
-  return y < std::min(-54, TerrainGenerator::SEA_LEVEL) ? FluidStatus{-54, blocks::lava}
-                                                        : FluidStatus{TerrainGenerator::SEA_LEVEL, blocks::water};
+// NoiseBasedChunkGenerator.createFluidPicker: lava below -54, else sea level default_fluid.
+Aquifer::FluidStatus Aquifer::globalFluid(int y) const {
+  return y < std::min(-54, g.SEA_LEVEL) ? FluidStatus{-54, blocks::lava} : FluidStatus{g.SEA_LEVEL, g.defaultFluid};
 }
 
-Aquifer::Aquifer(TerrainGenerator& g, df::SamplerContext& ctx, const DensityVolume& v)
-    : barrier(g.dfs.bind(g.aqBarrier, ctx)),
-      floodedness(g.dfs.bind(g.aqFloodedness, ctx)),
-      spread(g.dfs.bind(g.aqSpread, ctx)),
-      lava(g.dfs.bind(g.aqLava, ctx)),
-      exclusion(g.dfs.bind(g.aqExclusion, ctx)),
-      surface(g.dfs.bind(g.aqSurfaceLevel, ctx)),
-      random(*g.aquiferRandom) {
+Aquifer::Aquifer(TerrainGenerator& gen, df::SamplerContext& ctx, const DensityVolume& v)
+    : g(gen), enabled(gen.aqBarrier != nullptr), random(*gen.aquiferRandom) {
+  if (!enabled) return;
+  barrier = g.dfs.bind(g.aqBarrier, ctx), floodedness = g.dfs.bind(g.aqFloodedness, ctx);
+  spread = g.dfs.bind(g.aqSpread, ctx), lava = g.dfs.bind(g.aqLava, ctx);
+  exclusion = g.dfs.bind(g.aqExclusion, ctx), surface = g.dfs.bind(g.aqSurfaceLevel, ctx);
   int maxBX = v.minBlockX + v.sizeX - 1, maxBY = v.minBlockY + v.sizeY - 1, maxBZ = v.minBlockZ + v.sizeZ - 1;
   minGridX = gridX(v.minBlockX - 5);
   int maxGridX = gridX(maxBX - 5) + 1;
@@ -104,6 +101,7 @@ int Aquifer::computeSubstance(int bx, int by, int bz, double density) {
   // ponytail: shouldScheduleFluidUpdate (fluid post-processing marks) not tracked; add with fluid ticking.
   if (density > 0.0) return -1;
   FluidStatus global = globalFluid(by);
+  if (!enabled) return global.at(by);
   if (by > skipSamplingAboveY) return global.at(by);
   if (global.at(by) == blocks::lava) return blocks::lava;
   int xa = gridX(bx - 5), ya = gridY(by + 1), za = gridX(bz - 5);
@@ -221,27 +219,54 @@ Aquifer::FluidStatus Aquifer::computeFluid(int x, int y, int z) {
 // ---------------------------------------------------------------- TerrainGenerator
 TerrainGenerator::~TerrainGenerator() = default;
 
-TerrainGenerator::TerrainGenerator(int64_t seed, const std::string& dataRoot, bool surface) : seed(seed), dfs(seed, dataRoot) {
-  Json s = Json::parseFile(dataRoot + "/minecraft/worldgen/noise_settings/overworld.json");
+static Json loadSettings(const std::string& root, const std::string& name) {
+  return Json::parseFile(root + "/minecraft/worldgen/noise_settings/" + name + ".json");
+}
+static int blockState(const Json& j) {  // default_block / default_fluid (no properties in vanilla settings)
+  static const std::map<std::string, int> known = {{"minecraft:stone", blocks::stone}, {"minecraft:water", blocks::water},
+                                                   {"minecraft:lava", blocks::lava}, {"minecraft:air", blocks::air},
+                                                   {"minecraft:netherrack", blocks::netherrack},
+                                                   {"minecraft:end_stone", blocks::end_stone}};
+  const std::string& name = j.isString() ? j.asString() : j["Name"].asString();
+  auto it = known.find(name);
+  if (it == known.end()) throw std::runtime_error("terrain: unsupported block " + name);
+  return it->second;
+}
+
+TerrainGenerator::TerrainGenerator(int64_t seed, const std::string& dataRoot, bool surface, const std::string& settings,
+                                   int cMinY, int cHeight)
+    : seed(seed), chunkMinY(cMinY), chunkHeight(cHeight),
+      dfs(seed, dataRoot, loadSettings(dataRoot, settings)["legacy_random_source"].asBool()) {
+  Json s = loadSettings(dataRoot, settings);
+  MIN_Y = std::max(s["noise"]["min_y"].asInt(), cMinY);  // NoiseSettings.clampToHeightAccessor
+  HEIGHT = std::min(s["noise"]["min_y"].asInt() + s["noise"]["height"].asInt(), cMinY + cHeight) - MIN_Y;
+  SEA_LEVEL = s["sea_level"].asInt();
+  defaultBlock = blockState(s["default_block"]), defaultFluid = blockState(s["default_fluid"]);
+  endBiomes = settings == "end";
+  if (!endBiomes) {
+    auto make = [&] { return std::make_unique<BiomeSource>(settings == "nether" ? BiomeSource::nether() : BiomeSource()); };
+    biomeSource = make(), neighbourBiomeSource = make();
+  }
   const Json& r = s["noise_router"];
-  const Json& a = s["aquifers"];
   temperature = dfs.parse(r["temperature"]), vegetation = dfs.parse(r["vegetation"]);
   continents = dfs.parse(r["continents"]), erosion = dfs.parse(r["erosion"]), depth = dfs.parse(r["depth"]);
   ridges = dfs.parse(r["ridges"]), chunkSurfaceLevel = dfs.parse(r["chunk_surface_level"]);
   finalDensity = dfs.parse(r["final_density"]);
-  aqBarrier = dfs.parse(a["barrier"]), aqFloodedness = dfs.parse(a["fluid_level_floodedness"]);
-  aqSpread = dfs.parse(a["fluid_level_spread"]), aqLava = dfs.parse(a["lava"]);
-  aqExclusion = dfs.parse(a["exclusion"]), aqSurfaceLevel = dfs.parse(a["surface_level"]);
+  std::vector<df::NodeP> compile = {temperature, vegetation, continents, erosion, depth, ridges, chunkSurfaceLevel, finalDensity};
+  if (const Json* a = s.find("aquifers")) {
+    aqBarrier = dfs.parse((*a)["barrier"]), aqFloodedness = dfs.parse((*a)["fluid_level_floodedness"]);
+    aqSpread = dfs.parse((*a)["fluid_level_spread"]), aqLava = dfs.parse((*a)["lava"]);
+    aqExclusion = dfs.parse((*a)["exclusion"]), aqSurfaceLevel = dfs.parse((*a)["surface_level"]);
+    compile.insert(compile.end(), {aqBarrier, aqFloodedness, aqSpread, aqLava, aqExclusion, aqSurfaceLevel});
+  }
   for (auto& t : s["spawn_target"].arr) {
     spawnTarget.emplace_back();
     for (auto& [id, r] : t.obj)  // Climate.Parameter.span(min, max), quantized
       spawnTarget.back().push_back({id, {quantize_coord(r[0].asFloat()), quantize_coord(r[1].asFloat())}});
   }
-  for (auto& f : {temperature, vegetation, continents, erosion, depth, ridges, chunkSurfaceLevel, finalDensity, aqBarrier,
-                  aqFloodedness, aqSpread, aqLava, aqExclusion, aqSurfaceLevel})
-    dfs.sampler(f);  // compile up front
+  for (auto& f : compile) dfs.sampler(f);  // compile up front
   aquiferRandom = &dfs.randomState().getOrCreateRandomFactory("minecraft:aquifer");
-  if (surface) materials = std::make_unique<material::MaterialSystem>(dfs.randomState(), "minecraft:overworld", dataRoot);
+  if (surface) materials = std::make_unique<material::MaterialSystem>(dfs.randomState(), "minecraft:" + settings, dataRoot);
 }
 
 std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::createNoiseChunk(const DensityVolume& volume) {
@@ -262,27 +287,39 @@ std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Ch
       for (int y = HEIGHT - 1; y >= 0; y--) {
         int by = MIN_Y + y;
         int state = nc->aquifer->computeSubstance(v.minBlockX + x, by, v.minBlockZ + z, density.get(y + (x + z * 16) * HEIGHT));
-        if (state < 0) state = blocks::stone;
+        if (state < 0) state = defaultBlock;
         if (state != blocks::air) c.set(x, by, z, (uint16_t)state);
       }
   return nc;
 }
 
 // doCreateBiomes for one chunk into out[(qy * 4 + qz) * 4 + qx] (qy from MIN_Y), find() in fillBiomesFromNoise order.
-void TerrainGenerator::chunkBiomes(int cx, int cz, const BiomeSource& source, std::vector<uint16_t>& out) {
+void TerrainGenerator::chunkBiomes(int cx, int cz, const BiomeSource* source, std::vector<uint16_t>& out) {
   df::SamplerContext ctx(true);
-  DensityVolume v{4, HEIGHT / 4, 4, cx * 16, MIN_Y, cz * 16, 4, 4, 4};
+  const int QH = chunkHeight / 4;
+  if (endBiomes) {  // TheEndBiomeSource.getNoiseBiome (point path through the climate sampler's erosion)
+    out.resize(16 * QH);
+    df::Bound e = dfs.bind(erosion, ctx);
+    for (int qy = 0; qy < QH; qy += 4)
+      for (int x = 0; x < 4; x++)
+        for (int y = qy; y < qy + 4; y++)
+          for (int z = 0; z < 4; z++) {
+            out[(y * 4 + z) * 4 + x] = (uint16_t)endBiome(e, cx * 16 + x * 4, chunkMinY + y * 4, cz * 16 + z * 4);
+          }
+    return;
+  }
+  DensityVolume v{4, QH, 4, cx * 16, chunkMinY, cz * 16, 4, 4, 4};
   std::vector<DensityBuffer> b(6, DensityBuffer(v.size()));
   const df::NodeP* fns[6] = {&temperature, &vegetation, &continents, &erosion, &depth, &ridges};
   for (int i = 0; i < 6; i++) dfs.bind(*fns[i], ctx).sampleVolume(b[i], v);
   out.resize(v.size());
-  for (int qy = 0; qy < HEIGHT / 4; qy += 4)  // per section: x, y, z
+  for (int qy = 0; qy < QH; qy += 4)  // per section: x, y, z
     for (int x = 0; x < 4; x++)
       for (int y = qy; y < qy + 4; y++)
         for (int z = 0; z < 4; z++) {
           int i = y + (x + z * 4) * v.sizeY;
           out[(y * 4 + z) * 4 + x] =
-              (uint16_t)source.find(target(b[0].get(i), b[1].get(i), b[2].get(i), b[3].get(i), b[4].get(i), b[5].get(i)));
+              (uint16_t)source->find(target(b[0].get(i), b[1].get(i), b[2].get(i), b[3].get(i), b[4].get(i), b[5].get(i)));
         }
 }
 
@@ -305,9 +342,9 @@ std::shared_ptr<const std::vector<uint8_t>> TerrainGenerator::storeBiomes(int cx
 
 void TerrainGenerator::createBiomes(Chunk& c) {
   std::vector<uint16_t> q;
-  chunkBiomes(c.cx, c.cz, biomeSource, q);
+  chunkBiomes(c.cx, c.cz, biomeSource.get(), q);
   storeBiomes(c.cx, c.cz, q);
-  for (int y = 0; y < HEIGHT / 4; y++)
+  for (int y = 0; y < chunkHeight / 4; y++)
     for (int z = 0; z < 4; z++)
       for (int x = 0; x < 4; x++) c.set_biome(x, y, z, q[(y * 4 + z) * 4 + x]);
 }
@@ -334,14 +371,14 @@ struct SurfaceContext : material::MaterialContext {
     get(id).sampleVolume(out, v);
   }
   int noiseBiome(int qx, int qy, int qz) override {
-    int y = std::clamp(qy - (TerrainGenerator::MIN_Y >> 2), 0, TerrainGenerator::HEIGHT / 4 - 1);
+    int y = std::clamp(qy - (g.chunkMinY >> 2), 0, g.chunkHeight / 4 - 1);
     int cx = qx >> 2, cz = qz >> 2;
     if (cx == chunk.cx && cz == chunk.cz) return chunk.get_biome(qx & 3, y, qz & 3);
     if (regionBiome) return (*regionBiome)(qx, y, qz);
     auto& q = neighbours[{cx, cz}];
     if (!q && !(q = g.cachedBiomes(cx, cz))) {
       std::vector<uint16_t> v;
-      g.chunkBiomes(cx, cz, g.neighbourBiomeSource, v);
+      g.chunkBiomes(cx, cz, g.neighbourBiomeSource.get(), v);
       q = g.storeBiomes(cx, cz, v);
     }
     return (*q)[(y * 4 + (qz & 3)) * 4 + (qx & 3)];
@@ -364,11 +401,21 @@ std::unique_ptr<TerrainGenerator::ClimateSampler> TerrainGenerator::climateSampl
   return s;
 }
 
+// TheEndBiomeSource.getNoiseBiome at block (bx, by, bz) with the climate sampler's erosion (end/islands).
+int TerrainGenerator::endBiome(const df::Bound& erosion, int bx, int by, int bz) const {
+  int cx = bx >> 4, cz = bz >> 4;
+  if ((int64_t)cx * cx + (int64_t)cz * cz <= 4096) return biomes::the_end;
+  double h = erosion.sampleValue((cx * 2 + 1) * 8, by, (cz * 2 + 1) * 8);
+  return h > 0.25 ? biomes::end_highlands : h >= -0.0625 ? biomes::end_midlands
+         : h < -0.21875 ? biomes::small_end_islands : biomes::end_barrens;
+}
+
 int TerrainGenerator::uncachedBiome(ClimateSampler& s, int qx, int qy, int qz) {
   int x = qx << 2, y = qy << 2, z = qz << 2;
+  if (endBiomes) return endBiome(s.f[3], x, y, z);
   float v[6];
   for (int i = 0; i < 6; i++) v[i] = s.f[size_t(i)].sampleValue(x, y, z);
-  return biomeSource.find(target(v[0], v[1], v[2], v[3], v[4], v[5]));
+  return biomeSource->find(target(v[0], v[1], v[2], v[3], v[4], v[5]));
 }
 
 void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
@@ -452,8 +499,8 @@ int TerrainGenerator::baseHeight(int x, int z, bool oceanFloor) {
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
   for (int y = HEIGHT - 1; y >= 0; y--) {
     int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
-    if (state < 0) state = blocks::stone;
-    if (oceanFloor ? state == blocks::stone : state != blocks::air) return MIN_Y + y + 1;
+    if (state < 0) state = defaultBlock;
+    if (oceanFloor ? state == defaultBlock : state != blocks::air) return MIN_Y + y + 1;
   }
   return MIN_Y;
 }

@@ -133,6 +133,7 @@ inline void tick_once() {
         }
         for (auto& pkt : pkts) {
             try {
+                InLevel in_level(p.level);  // per packet: a handler may move the player to another level
                 dispatch_packet(p, pkt);
             } catch (const std::exception& e) {
                 log_warn("%s: bad packet (%s), disconnecting", p.name.c_str(), e.what());
@@ -145,8 +146,12 @@ inline void tick_once() {
     }
     for (auto f : tick_hooks) f();
     for (auto& pp : players)
-        for (auto f : player_tick_hooks) f(*pp);
+        for (auto f : player_tick_hooks) {
+            InLevel in_level(pp->level);
+            f(*pp);
+        }
     for (auto& pp : players) {
+        InLevel in_level(pp->level);
         for (auto f : player_sync_hooks) f(*pp);
         if (pp->out.pending() > (32u << 20)) kick(*pp);
         pp->out.flush();
