@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 #include <zlib.h>
 
-#include <algorithm>
 #include <cstring>
 
 inline int compression_threshold = -1;            // network-compression-threshold; -1 = off (set at startup)
@@ -66,6 +65,8 @@ inline std::vector<uint8_t> reframe(const std::vector<uint8_t>& blob, bool compr
 struct RecvBuf { uint8_t b[8192]; size_t i = 0, n = 0; };
 inline thread_local RecvBuf conn_rbuf;
 
+#include <algorithm>
+
 inline bool read_exact(int fd, uint8_t* buf, size_t n) {
     RecvBuf& rb = conn_rbuf;
     while (n) {
@@ -96,8 +97,14 @@ inline bool read_packet(int fd, std::vector<uint8_t>& out) {
         len |= uint32_t(b & 0x7F) << s;
         if (!(b & 0x80)) break;
     }
-    out.resize(len);
-    if (!read_exact(fd, out.data(), len)) return false;
+    // Grow with the data actually received: a bare 2 MiB length header must not cost 2 MiB of memory.
+    out.clear();
+    for (size_t got = 0; got < len;) {
+        size_t step = std::min<size_t>(len - got, 64u << 10);
+        out.resize(got + step);
+        if (!read_exact(fd, out.data() + got, step)) return false;
+        got += step;
+    }
     if (!conn_compressed) return true;
     Reader r(out);
     uint32_t data_len = uint32_t(r.varint());

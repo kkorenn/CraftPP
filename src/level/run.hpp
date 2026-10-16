@@ -93,8 +93,11 @@ inline void post_process(LChunk& l) {
     }
     if (getenv("CRAFTPP_LEVEL_DEBUG") && !post.empty()) log_info("post-process %d,%d: %zu marks", l.c->cx, l.c->cz, post.size());
     std::stable_sort(post.begin(), post.end(), [](uint32_t a, uint32_t b) { return (a >> 12) < (b >> 12); });  // by section
+    static const char* dump = getenv("CRAFTPP_POST_DUMP");  // "cx,cz": log that chunk's marks
+    bool dumping = dump && std::to_string(l.c->cx) + "," + std::to_string(l.c->cz) == dump;
     for (uint32_t v : post) {
         Pos p{l.c->cx * 16 + int(v & 15), MIN_Y + int(v >> 8), l.c->cz * 16 + int(v >> 4 & 15)};
+        if (dumping) log_info("mark %d %d %d state %d", p.x, p.y, p.z, get(p));
         int s = get(p);
         if (has_fluid(s)) fluid_tick(p, s);
         if (kind(s) == K_LIQUID) {

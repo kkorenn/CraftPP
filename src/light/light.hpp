@@ -32,7 +32,10 @@ void ensure_lit(World& world, Chunk& c);    // before sending; any thread, witho
 uint32_t write(Writer& w, Chunk& c);
 std::vector<uint8_t> save(Chunk& c, uint32_t& version);  // light to store with the chunk (-> Chunk::saved_light)        // light tail of level_chunk_with_light; returns c.light_version
 void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state);  // mutex() held
-int level(bool sky, int x, int y, int z);  // stored sky / block light at a position (takes mutex())
+// Light level at a block (LevelLightEngine.getLayerListener(...).getLightValue); -1 when the column isn't lit yet.
+// Takes mutex(); call without it held.
+int get(int x, int y, int z, bool sky);
+int level(bool sky, int x, int y, int z);  // get() with unlit columns read as sky 15 / block 0
 
 struct Change {
     int cx, cz;

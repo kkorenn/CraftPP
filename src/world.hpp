@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <filesystem>
 #include <fstream>
@@ -157,7 +158,7 @@ struct Chunk {
     std::array<Section, SECTIONS> sections;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
-    bool dirty = false;  // modified since last save
+    std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
     bool on_disk = false;
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
@@ -506,6 +507,13 @@ struct World {
     // Reference stays valid while a player views the chunk (or the caller holds a ChunkPtr): unloading only
     // happens in save_dirty(). Prefer get_ptr() off the tick thread.
     Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
+
+    // Already loaded chunk, or null (never loads or generates). Holding the pointer keeps it from unloading.
+    ChunkPtr get_if_loaded(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
 
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;

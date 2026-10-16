@@ -150,7 +150,9 @@ inline std::unordered_map<int64_t, std::vector<uint16_t>> changed;  // section k
 inline int64_t section_key(int sx, int sy, int sz) {  // SectionPos.asLong
     return int64_t((uint64_t(int64_t(sx)) & 0x3FFFFF) << 42 | (uint64_t(int64_t(sz)) & 0x3FFFFF) << 20 | (uint64_t(int64_t(sy)) & 0xFFFFF));
 }
+inline std::unordered_map<int64_t, int64_t> chunk_changed_at;  // chunk -> server_tick of its last client-visible change
 inline void block_changed(const Pos& p) {
+    chunk_changed_at[chunk_key(p.x >> 4, p.z >> 4)] = server_tick;
     changed[section_key(p.x >> 4, p.y >> 4, p.z >> 4)].push_back(uint16_t((p.x & 15) << 8 | (p.z & 15) << 4 | (p.y & 15)));
 }
 inline void broadcast_changes() {

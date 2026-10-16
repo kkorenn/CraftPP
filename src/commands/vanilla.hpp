@@ -10,6 +10,12 @@ inline int clear_inventory(Player& p, int item, int max);
 inline void kill(Player& p, const std::string& type);
 inline bool hurt(Player& p, float amount, const std::string& type);
 inline void send_experience(Player& p);
+// Non-player entity operations (src/mobs/mobs.cpp).
+void entity_kill(Entity* e);
+bool entity_hurt(Entity* e, float amount, const std::string& type);
+void entity_teleport(Entity* e, double x, double y, double z, const float* yaw, const float* pitch);
+void entity_rotation(const Entity* e, float& yaw, float& pitch);
+double entity_eye_height(const Entity* e);
 
 // ---------- helpers ----------
 inline std::string fmt_f(double v, int prec) {  // String.format(Locale.ROOT, "%.<prec>f")
@@ -29,6 +35,11 @@ inline Text gamemode_text(int g) { static const char* n[] = {"survival", "creati
 template <class FS, class FM>
 inline int respond(Cmd& c, const std::vector<PlayerPtr>& t, bool broadcast_admins, FS single, FM multiple) {
     c.success(t.size() == 1 ? single(player_name(*t[0])) : multiple(int(t.size())), broadcast_admins);
+    return int(t.size());
+}
+template <class FS, class FM>
+inline int respond(Cmd& c, const std::vector<Target>& t, bool broadcast_admins, FS single, FM multiple) {
+    c.success(t.size() == 1 ? single(t[0].display()) : multiple(int(t.size())), broadcast_admins);
     return int(t.size());
 }
 
@@ -135,27 +146,43 @@ inline void register_vanilla_commands() {
 
     // teleport / tp
     reg("teleport", [](Cmd& c) {
-        auto do_tp = [&](Player& p, double x, double y, double z, std::optional<std::pair<float, float>> rot) {
+        auto do_tp = [&](Target& t, double x, double y, double z, std::optional<std::pair<float, float>> rot) {
             if (std::abs(x) > 30000000 || std::abs(z) > 30000000 || y < -20000000 || y >= 20000000) throw err("commands.teleport.invalidPosition");
+            if (!t.p) {
+                float yw = 0, pt = 0;
+                if (rot) yw = std::remainder(rot->first, 360.0f), pt = std::clamp(std::remainder(rot->second, 360.0f), -90.f, 90.f);
+                entity_teleport(t.e, x, y, z, rot ? &yw : nullptr, rot ? &pt : nullptr);
+                return;
+            }
+            Player& p = *t.p;
             if (rot) {
                 p.yaw = std::remainder(rot->first, 360.0f);
                 p.pitch = std::clamp(std::remainder(rot->second, 360.0f), -90.f, 90.f);
             }
             teleport(p, x, y, z);
         };
-        auto face = [&](Player& p, Vec3 at) {  // LookAt.perform (feet anchor of the victim's eyes)
-            double dx = at.x - p.x, dy = at.y - (p.y + 1.62), dz = at.z - p.z;
+        auto face = [&](Target& t, Vec3 at) {  // LookAt.perform (feet anchor of the victim's eyes)
+            Vec3 tp = t.pos();
+            double eye = t.p ? 1.62 : entity_eye_height(t.e);
+            double dx = at.x - tp.x, dy = at.y - (tp.y + eye), dz = at.z - tp.z;
             double h = std::sqrt(dx * dx + dz * dz);
-            p.pitch = float(-(std::atan2(dy, h) * 180 / M_PI));
-            p.yaw = float(std::atan2(dz, dx) * 180 / M_PI - 90);
-            teleport(p, p.x, p.y, p.z);
+            float pitch = float(-(std::atan2(dy, h) * 180 / M_PI)), yaw = float(std::atan2(dz, dx) * 180 / M_PI - 90);
+            if (t.p) { t.p->pitch = pitch, t.p->yaw = yaw; teleport(*t.p, tp.x, tp.y, tp.z); }
+            else entity_teleport(t.e, tp.x, tp.y, tp.z, &yaw, &pitch);
         };
-        std::vector<PlayerPtr> targets = c.has("targets") ? c.players("targets") : std::vector<PlayerPtr>{c.self_player(true)};
+        std::vector<Target> targets = c.has("targets") ? c.targets("targets") : c.targets_or_self_any("targets");
+        auto rot_of = [](const Target& t) {
+            float y, p;
+            if (t.p) y = t.p->yaw, p = t.p->pitch;
+            else entity_rotation(t.e, y, p);
+            return std::make_pair(y, p);
+        };
         if (c.has("destination")) {
-            auto dest = c.player("destination");
-            for (auto& t : targets) do_tp(*t, dest->x, dest->y, dest->z, std::make_pair(dest->yaw, dest->pitch));
-            return respond(c, targets, true, [&](Text n) { return tr("commands.teleport.success.entity.single", {n, player_name(*dest)}); },
-                           [&](int k) { return tr("commands.teleport.success.entity.multiple", {k, player_name(*dest)}); });
+            auto dest = c.targets("destination")[0];
+            Vec3 d = dest.pos();
+            for (auto& t : targets) do_tp(t, d.x, d.y, d.z, rot_of(dest));
+            return respond(c, targets, true, [&](Text n) { return tr("commands.teleport.success.entity.single", {n, dest.display()}); },
+                           [&](int k) { return tr("commands.teleport.success.entity.multiple", {k, dest.display()}); });
         }
         Vec3 pos = c.vec("location");
         for (auto& t : targets) {
@@ -163,17 +190,19 @@ inline void register_vanilla_commands() {
             if (c.has("rotation")) {
                 float yaw, pitch;
                 Source s = c.src;
-                s.yaw = t->yaw;
-                s.pitch = t->pitch;
+                auto r = rot_of(t);
+                s.yaw = r.first;
+                s.pitch = r.second;
                 c.get<Coords>("rotation").rotation(s, yaw, pitch);
                 rot = std::make_pair(yaw, pitch);
             }
-            do_tp(*t, pos.x, pos.y, pos.z, rot);
-            if (c.has("facingLocation")) face(*t, c.vec("facingLocation"));
+            do_tp(t, pos.x, pos.y, pos.z, rot);
+            if (c.has("facingLocation")) face(t, c.vec("facingLocation"));
             if (c.has("facingEntity")) {
-                auto e = c.player("facingEntity");
+                auto e = c.targets("facingEntity")[0];
                 bool eyes = c.str("facingAnchor", "feet") == "eyes";
-                face(*t, {e->x, e->y + (eyes ? 1.62 : 0), e->z});
+                Vec3 ep = e.pos();
+                face(t, {ep.x, ep.y + (eyes ? (e.p ? 1.62 : entity_eye_height(e.e)) : 0), ep.z});
             }
         }
         auto f6 = [](double v) { return fmt_f(v, 6); };
@@ -265,16 +294,20 @@ inline void register_vanilla_commands() {
         return total;
     });
     reg("kill", [](Cmd& c) {
-        auto targets = c.targets_or_self("targets", true);
-        for (auto& t : targets) kill(*t, "generic_kill");
+        auto targets = c.targets_or_self_any("targets");
+        for (auto& t : targets) {
+            if (t.p) kill(*t.p, "generic_kill");
+            else entity_kill(t.e);
+        }
         return respond(c, targets, true, [&](Text n) { return tr("commands.kill.success.single", {n}); },
                        [&](int k) { return tr("commands.kill.success.multiple", {k}); });
     });
     reg("damage", [](Cmd& c) {
-        auto t = c.player("target");
+        auto t = c.targets("target")[0];
         float amount = float(c.real("amount"));
-        if (!hurt(*t, amount, short_id(c.str("damageType", "minecraft:generic")))) throw err("commands.damage.invulnerable");
-        c.success(tr("commands.damage.success", {amount, player_name(*t)}), true);
+        std::string type = short_id(c.str("damageType", "minecraft:generic"));
+        if (!(t.p ? hurt(*t.p, amount, type) : entity_hurt(t.e, amount, type))) throw err("commands.damage.invulnerable");
+        c.success(tr("commands.damage.success", {amount, t.display()}), true);
         return 1;
     });
 
@@ -832,7 +865,7 @@ inline void register_vanilla_commands() {
         auto f2 = [](double v) { return fmt_f(v, 2); };
         if (c.is("get")) {
             c.success(tr("commands.worldborder.get", {fmt_f(border.size(), 0)}), false);
-            return int(std::floor(border.size() + 0.5));
+            return Mth::floor(border.size() + 0.5);
         }
         if (c.is("center")) {
             Coords cc = c.get<Coords>("pos");
@@ -854,7 +887,7 @@ inline void register_vanilla_commands() {
             if (field == v) throw err(amount ? "commands.worldborder.damage.amount.failed" : "commands.worldborder.damage.buffer.failed");
             field = v;
             c.success(tr(amount ? "commands.worldborder.damage.amount.success" : "commands.worldborder.damage.buffer.success", {f2(v)}), true);
-            return int(v);
+            return Mth::d2i(v);  // Java (int) cast
         }
         if (c.is("warning")) {
             if (c.is("time")) {
@@ -895,7 +928,7 @@ inline void register_vanilla_commands() {
             broadcast(pkt(play_cb::set_border_size).f64(target));
             c.success(tr("commands.worldborder.set.immediate", {fd}), true);
         }
-        return int(target - current);
+        return Mth::d2i(target - current);
     });
 
     reg("experience", [](Cmd& c) {
@@ -1277,8 +1310,12 @@ inline void register_vanilla_commands() {
                     else if (op == "+=") x = int(uint32_t(x) + uint32_t(y));
                     else if (op == "-=") x = int(uint32_t(x) - uint32_t(y));
                     else if (op == "*=") x = int(uint32_t(x) * uint32_t(y));
-                    else if (op == "/=") { if (y != 0) x = int(std::floor(double(x) / y)); }
-                    else if (op == "%=") { if (y != 0) x = ((x % y) + y) % y; }
+                    else if (op == "/=" || op == "%=") {  // Math.floorDiv / Math.floorMod, Java int wrap-around
+                        if (y == 0) throw err("arguments.operation.div0");
+                        int q = y == -1 ? int(0u - uint32_t(x)) : x / y, m = y == -1 ? 0 : x % y;
+                        if (m != 0 && (m < 0) != (y < 0)) q--, m += y;
+                        x = op == "/=" ? q : m;
+                    }
                     else if (op == "<") x = std::min(x, y);
                     else if (op == ">") x = std::max(x, y);
                     else if (op == "><") { a.value = y; b.value = x; broadcast_score(sh, from.name); continue; }
@@ -1407,9 +1444,10 @@ inline void register_vanilla_commands() {
     reg("forceload", [](Cmd& c) {
         // Chunks are never unloaded here, so force-loading is pure bookkeeping (vanilla's messages).
         static std::set<std::pair<int, int>> forced;
-        auto col = [&](const char* n, int& cx, int& cz) {
+        auto col = [&](const char* n, int& cx, int& cz, bool bounded = false) {
             Coords cc = c.get<Coords>(n);
-            int x = int(std::floor(cc.c[0].rel ? c.src.x + cc.c[0].v : cc.c[0].v)), z = int(std::floor(cc.c[1].rel ? c.src.z + cc.c[1].v : cc.c[1].v));
+            int x = Mth::floor(cc.c[0].rel ? c.src.x + cc.c[0].v : cc.c[0].v), z = Mth::floor(cc.c[1].rel ? c.src.z + cc.c[1].v : cc.c[1].v);
+            if (bounded && (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)) throw err("argument.pos.outofworld");
             cx = x >> 4; cz = z >> 4;
         };
         auto cp = [](int x, int z) { return "[" + std::to_string(x) + ", " + std::to_string(z) + "]"; };
@@ -1431,8 +1469,8 @@ inline void register_vanilla_commands() {
         if (c.is("all")) { forced.clear(); c.success(tr("commands.forceload.removed.all", {dim}), true); return 0; }
         bool add = c.is("add");
         int ax, az, bx, bz;
-        col("from", ax, az);
-        if (c.has("to")) col("to", bx, bz); else { bx = ax; bz = az; }
+        col("from", ax, az, true);
+        if (c.has("to")) col("to", bx, bz, true); else { bx = ax; bz = az; }
         if (ax > bx) std::swap(ax, bx);
         if (az > bz) std::swap(az, bz);
         int64_t n = int64_t(bx - ax + 1) * (bz - az + 1);

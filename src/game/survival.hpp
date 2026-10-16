@@ -6,6 +6,7 @@
 //      add_exhaustion(p, amount), kill(p, damage_type), respawn(p).
 #include "inventory.hpp"
 #include "loot.hpp"
+#include "../mobs/api.hpp"
 
 #include <unistd.h>
 
@@ -40,6 +41,7 @@ inline void heal(Player& p, float a) {
 }
 
 inline void kill(Player& p, const std::string& type);
+inline void kill(Player& p, const DamageSource& s);
 
 // LivingEntity.getDamageAfterArmorAbsorb: Player.hurtArmor (durability) then CombatRules.getDamageAfterAbsorb.
 inline float armor_absorb(Player& p, float damage) {
@@ -68,19 +70,23 @@ inline float armor_absorb(Player& p, float damage) {
     return damage * (1.0f - real / 25.0f);
 }
 
-// LivingEntity.hurtServer (no armor/effects yet). Returns whether damage was applied.
-inline bool hurt(Player& p, float amount, const std::string& type) {
+// Player.hurtServer + LivingEntity.hurtServer/actuallyHurt for players: difficulty scaling, invulnerability frames,
+// armour/toughness (player_damage_after_armor, src/mobs), absorption-free health loss. Returns whether damage applied.
+inline bool hurt(Player& p, const DamageSource& s, float amount) {
     if (p.g.dead || amount <= 0) return false;
-    bool bypass_invuln = type == "out_of_world" || type == "generic_kill";
-    if (!survival_like(p) && !bypass_invuln) return false;
-    // Player.isInvulnerableTo: damage-type game rules (tags is_drowning / is_fall / is_fire / is_freezing)
-    if (type == "drown" && !rule("drowning_damage")) return false;
-    if ((type == "fall" || type == "ender_pearl" || type == "stalagmite") && !rule("fall_damage")) return false;
-    if ((type == "in_fire" || type == "campfire" || type == "on_fire" || type == "lava" || type == "hot_floor" || type == "sulfur_cube_hot" ||
-         type == "unattributed_fireball" || type == "fireball") && !rule("fire_damage")) return false;
-    if (type == "freeze" && !rule("freeze_damage")) return false;
+    if (!survival_like(p) && !s.is(DT_BYPASSES_INVULNERABILITY)) return false;
+    if ((s.is(DT_IS_DROWNING) && !rule("drowning_damage")) || (s.is(DT_IS_FALL) && !rule("fall_damage")) ||
+        (s.is(DT_IS_FIRE) && !rule("fire_damage")) || (s.is(DT_IS_FREEZING) && !rule("freeze_damage")))
+        return false;
+    if (s.scales_with_difficulty()) {
+        int d = difficulty();
+        if (d == 0) amount = 0;
+        else if (d == 1) amount = std::min(amount / 2.0f + 1.0f, amount);
+        else if (d == 3) amount = amount * 3.0f / 2.0f;
+        if (amount == 0) return false;
+    }
     float applied;
-    if (p.g.invulnerable > 10) {
+    if (p.g.invulnerable > 10 && !s.is(DT_BYPASSES_COOLDOWN)) {
         if (amount <= p.g.last_hurt) return false;
         applied = amount - p.g.last_hurt;
         p.g.last_hurt = amount;
@@ -89,17 +95,22 @@ inline bool hurt(Player& p, float amount, const std::string& type) {
         p.g.invulnerable = 20;
         applied = amount;
     }
-    auto dt = damage_types.find(type);
-    if (dt == damage_types.end() || !dt->second.bypasses_armor) applied = armor_absorb(p, applied);
-    // ponytail: enchantment protection, resistance and absorption are not applied yet (no effects/enchantments).
-    if (applied != 0 && dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
+    applied = player_damage_after_armor(p, s, applied);
+    // ponytail: enchantment protection, resistance and absorption are not applied yet.
+    auto dt = damage_types.find(s.name());
+    if (dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
     p.g.health = std::max(0.0f, p.g.health - applied);
     Writer w;
-    w.varint(play_cb::damage_event).varint(p.eid).varint(damage_type_id(type)).varint(0).varint(0).boolean(false);
+    w.varint(play_cb::damage_event).varint(p.eid).varint(s.type).varint(s.causing ? s.causing->id + 1 : 0)
+        .varint(s.direct ? s.direct->id + 1 : 0);
+    if (s.source_pos) w.boolean(true).f64(s.source_pos->x).f64(s.source_pos->y).f64(s.source_pos->z);
+    else w.boolean(false);
     broadcast_near(p.x, p.z, w);
-    if (p.g.health <= 0) kill(p, type);
+    if (p.g.invulnerable == 20 && !s.is(DT_NO_KNOCKBACK)) player_knockback_from(p, s);
+    if (p.g.health <= 0) kill(p, s);
     return true;
 }
+inline bool hurt(Player& p, float amount, const std::string& type) { return hurt(p, DamageSource::of(type), amount); }
 
 inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off)
     for (auto& s : p.inv)
@@ -110,21 +121,40 @@ inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off)
     p.g.result = {};
 }
 
-inline void kill(Player& p, const std::string& type) {
+inline void kill(Player& p, const std::string& type) { kill(p, DamageSource::of(type)); }
+// Killer name for death messages: a player's name, a mob's custom name or its type translation key.
+inline Writer& death_component(Writer& w, const std::string& key, const Player& p, const Entity* killer) {
+    w.u8(0x0A);
+    w.u8(0x08); nbt_str(w, "translate"); nbt_str(w, key);
+    w.u8(0x09); nbt_str(w, "with"); w.u8(0x0A).i32(killer ? 2 : 1);
+    w.u8(0x08); nbt_str(w, "text"); nbt_str(w, p.name); w.u8(0);
+    if (killer) {
+        if (const Player* kp = killer->as_player_const()) { w.u8(0x08); nbt_str(w, "text"); nbt_str(w, kp->name); }
+        else if (killer->has_custom_name()) { w.u8(0x08); nbt_str(w, "text"); nbt_str(w, killer->custom_name); }
+        else { w.u8(0x08); nbt_str(w, "translate"); nbt_str(w, "entity.minecraft." + killer->info().id); }
+        w.u8(0);
+    }
+    return w.u8(0);
+}
+inline void kill(Player& p, const DamageSource& s) {
     if (p.g.dead) return;
     p.g.dead = true;
     p.g.health = 0;
     p.g.use_ticks = 0;
     p.g.digging = p.g.delayed = false;
-    auto dt = damage_types.find(type);
+    auto dt = damage_types.find(s.name());
     std::string key = "death.attack.generic";
+    // DamageSource.getLocalizedDeathMessage: the killer (causing, else direct entity) is the second argument
+    const Entity* killer = s.causing ? s.causing : s.direct;
+    if (killer && killer->as_player_const() == &p) killer = nullptr;
     if (dt != damage_types.end()) {
         key = "death.attack." + dt->second.msg;
-        if (dt->second.fall_variants && p.g.fall_distance > 5) key = "death.fell.accident.generic";
+        if (dt->second.fall_variants && p.g.fall_distance > 5) key = "death.fell.accident.generic", killer = nullptr;
     }
     Writer msg;
-    if (rule("show_death_messages")) translate_component(msg, key, {p.name});
-    else msg.u8(0x08).u8(0).u8(0);  // CommonComponents.EMPTY
+    if (!rule("show_death_messages")) msg.u8(0x08).u8(0).u8(0);  // CommonComponents.EMPTY
+    else if (killer) death_component(msg, key, p, killer);
+    else translate_component(msg, key, {p.name});
     std::vector<uint8_t> component(msg.b);
     Writer k;
     k.varint(play_cb::player_combat_kill).varint(p.eid).bytes(component);
@@ -141,7 +171,9 @@ inline void kill(Player& p, const std::string& type) {
         return_grid(p);
     } else {
         drop_all(p);
-        p.g.xp_level = p.g.xp_total = 0, p.g.xp_progress = 0;  // ponytail: no xp orbs dropped yet
+        int xp = std::min(p.g.xp_level * 7, 100);  // Player.getBaseExperienceReward
+        if (xp > 0 && survival_like(p)) spawn_xp_orbs(p.x, p.y, p.z, xp);
+        p.g.xp_level = p.g.xp_total = 0, p.g.xp_progress = 0;
     }
     send_health(p);
 }
@@ -167,11 +199,8 @@ inline void respawn(Player& p) {
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // client dropped its entities
-    broadcast(remove_entities_packet({p.eid}), &p);
-    broadcast(spawn_entity(p), &p);
-    for (auto& q : players)
-        if (q.get() != &p) p.send(spawn_entity(*q));
+    entities_reset_view(p);  // client dropped its entities: resend them
+    player_entity_respawned(p);  // others see the player re-added at its new position
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -695,6 +724,8 @@ inline void game_leave(Player& p) {
 }
 inline void game_init() {
     if (!load_game_data()) _exit(1);
+    mobs_init();  // entity framework, mobs, spawning (src/mobs/)
+    entity_post_tick_hooks.push_back(entity_player_touches);
     on_player_join(game_join);
     on_player_tick(game_player_tick);
     on_tick(tick_entities);

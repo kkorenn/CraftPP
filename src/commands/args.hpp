@@ -10,7 +10,7 @@
 
 // ---------- SNBT (SnbtGrammar subset: compounds, lists, typed arrays, quoted/unquoted strings,
 // suffixed/hex/binary numbers, true/false) ----------
-inline Nbt read_snbt(StringReader& r);
+inline Nbt read_snbt(StringReader& r, int depth = 0);
 
 inline bool snbt_unquoted_char(char c) {
     return isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.' || c == '+';
@@ -77,7 +77,8 @@ inline std::string snbt_key(StringReader& r) {
     if (r.c == st) throw r.error("argument.nbt.expected.key");
     return r.s.substr(st, r.c - st);
 }
-inline Nbt read_snbt(StringReader& r) {
+inline Nbt read_snbt(StringReader& r, int depth) {
+    if (depth > 512) throw r.error("arguments.nbtpath.too_deep");  // Tag.MAX_DEPTH; also bounds the recursion
     r.skip_ws();
     if (!r.can()) throw r.error("argument.nbt.expected.value");
     char c = r.peek();
@@ -91,7 +92,7 @@ inline Nbt read_snbt(StringReader& r) {
             if (k.empty()) throw r.error_at(st, "snbt.parser.empty_key");
             r.skip_ws();
             r.expect(':');
-            n.set(k, read_snbt(r));
+            n.set(k, read_snbt(r, depth + 1));
             r.skip_ws();
             if (!r.can() || r.peek() != ',') break;
             r.skip();
@@ -111,7 +112,7 @@ inline Nbt read_snbt(StringReader& r) {
             r.skip_ws();
             while (r.can() && r.peek() != ']') {
                 size_t st = r.c;
-                Nbt e = read_snbt(r);
+                Nbt e = read_snbt(r, depth + 1);
                 if (!e.is_num() || e.t == Nbt::Float || e.t == Nbt::Double) throw r.error_at(st, "snbt.parser.invalid_array_element_type");
                 n.arr.push_back(e.i);
                 r.skip_ws();
@@ -125,7 +126,7 @@ inline Nbt read_snbt(StringReader& r) {
         Nbt n = Nbt::make_list();
         r.skip_ws();
         while (r.can() && r.peek() != ']') {
-            n.list.push_back(read_snbt(r));
+            n.list.push_back(read_snbt(r, depth + 1));
             r.skip_ws();
             if (!r.can() || r.peek() != ',') break;
             r.skip();
@@ -185,17 +186,21 @@ inline Text to_component(const Nbt& n) {
 }
 
 // ---------- command source (CommandSourceStack) ----------
+struct Entity;  // non-player entities live in src/mobs (opaque here; see the entity_* functions below)
+Text entity_display_name(const Entity* e);  // mobs.cpp
+std::string entity_name_string(const Entity* e);
 struct Source {
     PlayerPtr sender;  // who receives feedback; null = server console
     PlayerPtr entity;  // executing entity (@s); null = none
+    Entity* mob = nullptr;  // executing non-player entity (execute as @e[type=...]); entity is null then
     double x = 0, y = 0, z = 0;
     float yaw = 0, pitch = 0;
     bool eyes = false;  // anchor
     int level = 4;
     bool silent = false;
     std::string dimension = "minecraft:overworld";
-    std::string name() const { return entity ? entity->name : sender ? sender->name : "Server"; }
-    Text display() const { return entity ? player_name(*entity) : sender ? player_name(*sender) : lit("Server"); }
+    std::string name() const { return mob ? entity_name_string(mob) : entity ? entity->name : sender ? sender->name : "Server"; }
+    Text display() const { return mob ? entity_display_name(mob) : entity ? player_name(*entity) : sender ? player_name(*sender) : lit("Server"); }
 };
 inline Source source_for(const PlayerPtr& p) {
     Source s;
@@ -212,7 +217,7 @@ inline Source console_source() {
 }
 
 // ---------- coordinates ----------
-struct Vec3 { double x, y, z; };
+#include "../game/vec.hpp"  // Vec3
 struct Coord { double v = 0; bool rel = false; };
 struct Coords {
     Coord c[3];
@@ -237,7 +242,7 @@ struct Coords {
     }
     void block(const Source& s, int& x, int& y, int& z) const {
         Vec3 v = pos(s);
-        x = int(std::floor(v.x)); y = int(std::floor(v.y)); z = int(std::floor(v.z));
+        x = Mth::floor(v.x); y = Mth::floor(v.y); z = Mth::floor(v.z);  // BlockPos.containing: saturating
     }
     // Vec2 / rotation: c[0], c[1]
     void rotation(const Source& s, float& yaw, float& pitch) const {
@@ -691,8 +696,7 @@ inline Selector read_selector(StringReader& r, bool allow_selectors) {
     return sel;
 }
 
-inline std::vector<PlayerPtr> select(const Selector& sel, const Source& src) {
-    // ponytail: players are the only entities; mobs/items join here once the entity system exists.
+inline std::vector<PlayerPtr> select_players_unsorted(const Selector& sel, const Source& src) {
     std::vector<PlayerPtr> out;
     if (sel.by_name || sel.by_uuid) {
         for (auto& p : snapshot())
@@ -750,7 +754,45 @@ inline std::vector<PlayerPtr> select(const Selector& sel, const Source& src) {
         if (!ok) continue;
         out.push_back(p);
     }
+    return out;
+}
+inline std::vector<PlayerPtr> select(const Selector& sel, const Source& src) {  // players only
+    std::vector<PlayerPtr> out = select_players_unsorted(sel, src);
+    if (sel.by_name || sel.by_uuid) return out;
+    double ox = sel.x.value_or(src.x), oy = sel.y.value_or(src.y), oz = sel.z.value_or(src.z);
     auto dist = [&](const PlayerPtr& p) { return (p->x - ox) * (p->x - ox) + (p->y - oy) * (p->y - oy) + (p->z - oz) * (p->z - oz); };
+    if (sel.sort == Selector::NEAREST) std::stable_sort(out.begin(), out.end(), [&](auto& a, auto& b) { return dist(a) < dist(b); });
+    if (sel.sort == Selector::FURTHEST) std::stable_sort(out.begin(), out.end(), [&](auto& a, auto& b) { return dist(a) > dist(b); });
+    if (sel.sort == Selector::RANDOM) std::shuffle(out.begin(), out.end(), cmd_rng);
+    if (int(out.size()) > sel.limit) out.resize(size_t(sel.limit));
+    return out;
+}
+
+// ---------- players + other entities (EntitySelector.findEntities) ----------
+// Non-player entities matching the selector's filters (no sort/limit); defined in src/mobs/mobs.cpp.
+void select_entity_candidates(const Selector& sel, const Source& src, double ox, double oy, double oz, std::vector<Entity*>& out);
+Vec3 entity_position(const Entity* e);
+struct Target {  // a selected entity: a player or another entity
+    PlayerPtr p;
+    Entity* e = nullptr;
+    Vec3 pos() const { return p ? Vec3{p->x, p->y, p->z} : entity_position(e); }
+    Text display() const { return p ? player_name(*p) : entity_display_name(e); }
+    std::string name() const { return p ? p->name : entity_name_string(e); }
+};
+inline std::vector<Target> select_targets(const Selector& sel, const Source& src) {
+    std::vector<Target> out;
+    bool players_only = sel.players_only_type || sel.by_name;
+    if (!(sel.self && src.mob))
+        for (auto& p : select_players_unsorted(sel, src)) out.push_back({p, nullptr});
+    if (!players_only) {
+        std::vector<Entity*> es;
+        double ox = sel.x.value_or(src.x), oy = sel.y.value_or(src.y), oz = sel.z.value_or(src.z);
+        select_entity_candidates(sel, src, ox, oy, oz, es);
+        for (Entity* e : es) out.push_back({nullptr, e});
+    }
+    if (sel.by_uuid) return out;
+    double ox = sel.x.value_or(src.x), oy = sel.y.value_or(src.y), oz = sel.z.value_or(src.z);
+    auto dist = [&](const Target& t) { Vec3 v = t.pos(); return (v.x - ox) * (v.x - ox) + (v.y - oy) * (v.y - oy) + (v.z - oz) * (v.z - oz); };
     if (sel.sort == Selector::NEAREST) std::stable_sort(out.begin(), out.end(), [&](auto& a, auto& b) { return dist(a) < dist(b); });
     if (sel.sort == Selector::FURTHEST) std::stable_sort(out.begin(), out.end(), [&](auto& a, auto& b) { return dist(a) > dist(b); });
     if (sel.sort == Selector::RANDOM) std::shuffle(out.begin(), out.end(), cmd_rng);
