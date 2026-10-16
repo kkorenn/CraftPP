@@ -9,6 +9,7 @@ namespace worldgen::feat {
 namespace {
 const bs::Registry& R() { return bs::R(); }
 bool in(int s, const char* tag) { return R().in(s, R().tag(tag)); }
+bool has_face(int s, bs::Dir d) { return R().bool_value(s, dir_name(d)); }
 bool is(int s, int def) { return R().is(s, def); }
 bool sturdy(Level& l, const P& p, bs::Dir d, bs::Support t = bs::FULL) { return R().sturdy(l.get(p), d, t); }
 
@@ -279,7 +280,6 @@ void place_mossy_carpet(Level& l, const P& p, RandomSource& r) {
 
 namespace worldgen::feat {
 namespace {
-bool has_face(int s, bs::Dir d) { return R().bool_value(s, dir_name(d)); }
 bool multiface_valid(Level& l, int block, int old, const P& p, bs::Dir d) {  // isValidStateForPlacement
   if (!R().has(R().default_state(block), dir_name(d))) return false;  // isFaceSupported
   if (R().block_of(old) == block && has_face(old, d)) return false;
@@ -296,27 +296,55 @@ int multiface_placement(Level& l, int block, int old, const P& p, bs::Dir d) {
   return R().with_bool(s, dir_name(d), true);
 }
 
-// MultifaceSpreader (DefaultSpreaderConfig).spreadFromFaceTowardRandomDirection.
-bool multiface_spread_from_face_random(Level& l, int state, const P& p, bs::Dir face, RandomSource& r, bool postProcess) {
-  int block = R().block_of(state);
-  for (bs::Dir spread : all_shuffled(r)) {
-    if (spread / 2 == face / 2) continue;  // same axis
-    if (!(has_face(state, face) && !has_face(state, spread))) continue;
-    P sp[3] = {p, p.rel(spread), p.rel(spread).rel(face)};
-    bs::Dir sf[3] = {spread, face, bs::opposite(spread)};
-    for (int t = 0; t < 3; t++) {
-      int existing = l.get(sp[t]);
-      bool replaceable = R().is_air(existing) || R().block_of(existing) == block ||
-                         (R().is(existing, blocks::water) && R().is_source(existing));
-      if (!replaceable || !multiface_valid(l, block, existing, sp[t], sf[t])) continue;
-      int ns = multiface_placement(l, block, existing, sp[t], sf[t]);  // placeBlock
-      if (ns < 0) break;
-      if (postProcess) l.mark_post_processing(sp[t]);
-      if (l.set(sp[t], ns)) return true;
-      break;
-    }
+// MultifaceSpreader with DefaultSpreaderConfig or SculkVeinBlock.SculkVeinSpreaderConfig.
+namespace {
+bool spread_into(Level& l, const Spreader& sp, const P& source, const P& pos, bs::Dir face) {  // canSpreadInto
+  int existing = l.get(pos);
+  auto defaultReplace = [&] { return R().is_air(existing) || R().block_of(existing) == sp.block || (is(existing, blocks::water) && R().is_source(existing)); };
+  bool replace;
+  if (!sp.sculk) {
+    replace = defaultReplace();
+  } else {
+    int against = l.get(pos.rel(face));
+    if (is(against, blocks::sculk) || is(against, blocks::sculk_catalyst) || is(against, blocks::moving_piston)) return false;
+    if (dist_manhattan(source, pos) == 2 && R().sturdy(l.get(source.rel(bs::opposite(face))), face)) return false;
+    if (R().has_fluid(existing) && R().fluid_type(existing) != bs::WATER) return false;
+    if (in(existing, "minecraft:fire")) return false;
+    replace = R().can_be_replaced(existing) || defaultReplace();
+  }
+  return replace && multiface_valid(l, sp.block, existing, pos, face);
+}
+bool other_source(const Spreader& sp, int state) { return sp.sculk && !is(state, blocks::sculk_vein); }
+// getSpreadFromFaceTowardDirection + spreadToFace
+bool spread_toward(Level& l, const Spreader& sp, int state, const P& p, bs::Dir from, bs::Dir dir, bool post) {
+  if (dir / 2 == from / 2) return false;
+  if (!(other_source(sp, state) || (has_face(state, from) && !has_face(state, dir)))) return false;
+  P sp_[3] = {p, p.rel(dir), p.rel(dir).rel(from)};
+  bs::Dir sf[3] = {dir, from, bs::opposite(dir)};
+  for (int t = 0; t < (sp.sameSpaceOnly ? 1 : 3); t++) {
+    if (!spread_into(l, sp, p, sp_[t], sf[t])) continue;
+    int ns = multiface_placement(l, sp.block, l.get(sp_[t]), sp_[t], sf[t]);  // placeBlock
+    if (ns < 0) return false;
+    if (post) l.mark_post_processing(sp_[t]);
+    return l.set(sp_[t], ns);
   }
   return false;
+}
+}  // namespace
+
+bool multiface_spread_from_face_random(Level& l, const Spreader& sp, int state, const P& p, bs::Dir face, RandomSource& r, bool post) {
+  for (bs::Dir dir : all_shuffled(r))
+    if (spread_toward(l, sp, state, p, face, dir, post)) return true;
+  return false;
+}
+
+long multiface_spread_all(Level& l, const Spreader& sp, int state, const P& p, bool post) {
+  long n = 0;
+  for (bs::Dir face : ALL_DIRS) {
+    if (!(other_source(sp, state) || has_face(state, face))) continue;  // canSpreadFrom
+    for (bs::Dir dir : ALL_DIRS) n += spread_toward(l, sp, state, p, face, dir, post);
+  }
+  return n;
 }
 
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& np, int ns) {

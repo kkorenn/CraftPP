@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -675,6 +676,7 @@ const Placed* Loader::placed(const Json& j) {
     const Placed* p = placed(load("placed_feature", id));
     auto* q = const_cast<Placed*>(p);
     q->id = int(f.placedList.size());
+    q->name = id;
     f.placedList.push_back(q);
     return placedById[id] = p;
   }
@@ -899,7 +901,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   std::vector<std::vector<std::vector<const Placed*>>> lists(names.size());
   hasPrecipitation.assign(names.size(), 1);
   for (size_t b = 0; b < names.size(); b++) {
-    Json j = Json::parseFile(root + "/minecraft/worldgen/biome/" + names[b] + ".json");
+    Json j = Json::parseFile(biome_file(root, ow.pack, names[b]));
     hasPrecipitation[b] = j["has_precipitation"].asBool();
     if (!possibleBiome[b]) continue;  // other dimensions: never decorated here
     for (auto& step : j["features"].arr) {
@@ -1040,9 +1042,12 @@ void Features::decorate(Region& r) const {
         idx.insert(idx.end(), biomeSteps[b][size_t(step)].begin(), biomeSteps[b][size_t(step)].end());
     std::sort(idx.begin(), idx.end());
     idx.erase(std::unique(idx.begin(), idx.end()), idx.end());
+    static const char* dbg = getenv("CRAFTPP_FEATURE_LOG");  // "cx,cz": log the features of that chunk
+    bool log = dbg && std::to_string(r.cx) + "," + std::to_string(r.cz) == dbg;
     for (int i : idx) {
       random.setFeatureSeed(decorationSeed, i, step);
-      steps[size_t(step)][size_t(i)]->place(level, random, origin, true);
+      bool ok = steps[size_t(step)][size_t(i)]->place(level, random, origin, true);
+      if (log) fprintf(stderr, "step %d idx %d %s -> %d\n", step, i, steps[size_t(step)][size_t(i)]->name.c_str(), ok);
     }
   }
 }

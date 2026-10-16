@@ -16,6 +16,8 @@ namespace worldgen {
 inline constexpr int GEN_MIN_Y = -64, GEN_DEPTH = 384, GEN_SEA_LEVEL = 63;  // overworld WorldGenerationContext
 
 inline std::string strip_ns(const std::string& s) { return s.rfind("minecraft:", 0) == 0 ? s.substr(10) : s; }
+// Biome JSON path: a datapack override (<pack>/data/minecraft/worldgen/biome/<name>.json) wins over vanilla.
+std::string biome_file(const std::string& root, const std::string& pack, const std::string& name);
 
 namespace mth {
 inline int randomBetweenInclusive(RandomSource& r, int min, int max) { return r.nextInt(max - min + 1) + min; }
