@@ -4,10 +4,9 @@
 
 inline int biome_at(int x, int y, int z) {
     if (y < MIN_Y || y >= MIN_Y + HEIGHT) return -1;
-    Chunk& c = world.get(x >> 4, z >> 4);
-    std::lock_guard lock(c.m);
-    int ly = (y - MIN_Y) & 15;
-    return c.sections[size_t((y - MIN_Y) >> 4)].biomes[size_t(((ly >> 2) * 4 + ((z & 15) >> 2)) * 4 + ((x & 15) >> 2))];
+    ChunkPtr c = world.get_ptr(x >> 4, z >> 4);  // world.hpp: paletted sections
+    std::lock_guard lock(c->m);
+    return c->get_biome((x & 15) >> 2, (y - MIN_Y) >> 2, (z & 15) >> 2);
 }
 
 // The subcommand literal of an execute segment (skipping the leading `execute`) and its position.
