@@ -113,7 +113,7 @@ inline void track_players() {
     static size_t last_count = 0;
     bool any_moved = false;
     for (auto& p : players) any_moved |= p->g.moved;
-    if (!any_moved && !tracking_dirty && players.size() == last_count) return;
+    if (!any_moved && !tracking_dirty && players.size() == last_count) return;  // nothing can have changed
     tracking_dirty = false, last_count = players.size();
     if (moves.size() < players.size()) moves.resize(players.size());
     for (size_t j = 0; j < players.size(); j++) {
