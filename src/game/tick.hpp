@@ -226,19 +226,25 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
         for (auto f : tick_detail::join_hooks) f(*pp);
     });
     std::vector<uint8_t> pkt;
-    while (read_packet(pp->fd, pkt)) {
-        // Backpressure: a client sending faster than the tick thread handles waits (TCP pushes back on it)
-        // instead of growing the queue without bound; 30 s without progress drops the connection.
-        int waited = 0;
-        while (pp->in.pending() > (1u << 20) && waited++ < 600) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (waited > 600) break;
-        std::lock_guard lock(pp->in.m);
-        pp->in.bytes += pkt.size();
-        pp->in.q.push_back(std::move(pkt));
-        pkt = {};
+    std::string error;  // a malformed frame (e.g. bad compression) must still unregister the player below
+    try {
+        while (read_packet(pp->fd, pkt)) {
+            // Backpressure: a client sending faster than the tick thread handles waits (TCP pushes back on it)
+            // instead of growing the queue without bound; 30 s without progress drops the connection.
+            int waited = 0;
+            while (pp->in.pending() > (1u << 20) && waited++ < 600) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (waited > 600) break;
+            std::lock_guard lock(pp->in.m);
+            pp->in.bytes += pkt.size();
+            pp->in.q.push_back(std::move(pkt));
+            pkt = {};
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
     }
     std::promise<void> done;
     run_on_tick([&] {
+        if (!error.empty() && pp->quit_reason.empty()) pp->quit_reason = "Internal Exception: " + error;
         try {
             if (std::find(players.begin(), players.end(), pp) != players.end()) {
                 for (auto f : tick_detail::leave_hooks) f(*pp);

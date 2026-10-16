@@ -81,6 +81,7 @@ static void handle(int fd) {
         if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
         if (find_player(name)) return disconnect_login(fd, "You are already logged in", name);
         if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!", name);
+        start_compression(fd, login_cb::login_compression);  // net.hpp, network-compression-threshold
         send_packet(fd, Writer()
                             .varint(login_cb::login_finished)
                             .i64(uuid_hi).i64(uuid_lo).str(name).varint(0)  // profile, no properties
@@ -94,7 +95,8 @@ static void handle(int fd) {
                             .varint(config_cb::select_known_packs)
                             .varint(1).str("minecraft").str("core").str(GAME_VERSION));
         wait_for(fd, pkt, config_sb::select_known_packs);
-        send_raw(fd, config_packets.data(), config_packets.size());
+        auto cfg = reframe(config_packets, conn_compressed);
+        send_raw(fd, cfg.data(), cfg.size());
         send_packet(fd, Writer().varint(config_cb::finish_configuration));
         wait_for(fd, pkt, config_sb::finish_configuration);
 
@@ -120,11 +122,12 @@ static void handle(int fd) {
     // play() returns only after the tick thread has run the leave hooks and saved the player (tick.hpp).
 }
 
-static void request_shutdown(int) { shutdown_requested = 1; }
+static void request_shutdown(int) { request_shutdown_async(); }
 
 int main(int argc, char** argv) {
     auto boot = std::chrono::steady_clock::now();
     signal(SIGPIPE, SIG_IGN);
+    if (pipe(shutdown_pipe) != 0) shutdown_pipe[0] = shutdown_pipe[1] = -1;
     for (int sig : {SIGINT, SIGTERM, SIGHUP}) signal(sig, request_shutdown);  // all save first, like the JVM's hook
     std::string props_path = argc > 1 ? argv[1] : "server.properties";
     server_dir = std::filesystem::path(props_path).parent_path().string();
@@ -188,6 +191,7 @@ int main(int argc, char** argv) {
     register_command_handlers();
     register_paper_commands();
     on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
+    on_tick(broadcast_light);  // light_update for block edits (src/light)
     start_game();  // tick thread (game/tick.hpp)
     log_info("Running delayed init tasks");
     log_info("Done (%.3fs)! For help, type \"help\"", secs(boot));
@@ -215,12 +219,19 @@ int main(int argc, char** argv) {
             if (!line.empty() && line[0] == '/') line.erase(0, 1);  // Paper accepts both
             if (line.empty()) return;
             run_on_tick([line] { if (!plugins::console_command(line)) run_command(nullptr, line); });
-        }, [stop_on_eof] { if (stop_on_eof) shutdown_requested = 1; });
+        }, [stop_on_eof] { if (stop_on_eof) request_shutdown_async(); });
     }).detach();
 
     std::thread([] {  // autosave every 5 s; on stop/Ctrl+C save everything and exit
-        for (int tick = 0;; tick++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        auto next = std::chrono::steady_clock::now();
+        for (int tick = 24;; tick += 25) {  // `tick` counts the old 200 ms steps: tick % 25 == 24 every 5 s
+            next += std::chrono::seconds(5);
+            for (;;) {  // sleep until the next autosave or a shutdown request, whichever comes first
+                auto left = std::chrono::duration_cast<std::chrono::milliseconds>(next - std::chrono::steady_clock::now());
+                if (shutdown_requested == 1 || left.count() <= 0) break;
+                pollfd pfd{shutdown_pipe[0], POLLIN, 0};
+                if (poll(&pfd, 1, int(left.count()) + 1) > 0) { char b[16]; (void)!read(shutdown_pipe[0], b, sizeof b); }
+            }
             if (shutdown_requested == 1) {
                 shutdown_requested = 2;
                 log_info("Stopping server");
@@ -229,7 +240,7 @@ int main(int argc, char** argv) {
             }
             if (tick % 25 == 24 && !autosave_off && shutdown_requested == 0) {
                 world.save_dirty();
-                run_on_tick(save_level);
+                if (tick % 1500 == 1499) run_on_tick(save_level);  // level.dat: vanilla autosave period, 6000 ticks
             }
         }
     }).detach();

@@ -19,14 +19,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def frame(body): return varint(len(body)) + body
 def pkt(pid, body=b""): return frame(varint(pid) + body)
+COMPRESSED = True  # server sends set_compression after hello (network-compression-threshold >= 0)
+def cpkt(pid, body=b""):
+    """A packet after login hello: compressed framing with data length 0 (stored) when compression is on."""
+    return frame(b"\x00" + varint(pid) + body) if COMPRESSED else pkt(pid, body)
 def handshake(port, nxt, proto=PROTO): return pkt(0, varint(proto) + string("localhost") + struct.pack(">H", port) + varint(nxt))
 def pos(x, y, z): return struct.pack(">Q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
 
 def play_prefix(port, name):
     """Handshake + login + configuration, pipelined: the server reads them in order, so no round trips."""
-    return (handshake(port, 2) + pkt(0, string(name) + uuid.uuid4().bytes) + pkt(3) +
-            pkt(CFG_SB["select_known_packs"], varint(1) + string("minecraft") + string("core") + string(VERSION)) +
-            pkt(CFG_SB["finish_configuration"]))
+    return (handshake(port, 2) + pkt(0, string(name) + uuid.uuid4().bytes) + cpkt(3) +
+            cpkt(CFG_SB["select_known_packs"], varint(1) + string("minecraft") + string("core") + string(VERSION)) +
+            cpkt(CFG_SB["finish_configuration"]))
 
 def blast(host, port, data, linger=0.2):
     """Fresh connection: send `data`, drain replies until the server closes or `linger` s of silence."""
@@ -48,6 +52,27 @@ def close(c):
     try: c.s.shutdown(socket.SHUT_RDWR)
     except OSError: pass
     c.s.close()
+
+def online(host, port):
+    """Player count from a status ping."""
+    s = socket.create_connection((host, port), timeout=10)
+    s.sendall(handshake(port, 1) + pkt(0))
+    data = b""
+    while not data.endswith(b"}}"):
+        d = s.recv(4096)
+        if not d: break
+        data += d
+    s.close()
+    import json, re
+    return json.loads(data[data.index(b"{"):])["players"]["online"]
+
+def all_left(host, port):
+    """Every connection is closed now: the server must forget all players (no ghosts left in the list)."""
+    for _ in range(100):
+        n = online(host, port)
+        if n == 0: return
+        time.sleep(0.1)
+    raise AssertionError(f"{n} players still online after every client disconnected")
 
 def alive(host, port, what):
     """Status ping + a full login must still work."""
@@ -96,6 +121,16 @@ def atom(r):
 
 def body(r): return b"".join(atom(r) for _ in range(r.randrange(0, 12)))
 
+def bad_compressed(r):
+    """A compressed frame that lies: wrong/huge/negative uncompressed length, broken zlib, or a zlib bomb."""
+    import zlib
+    k = r.randrange(5)
+    if k == 0: return frame(varint((8 << 20) + 1) + zlib.compress(b"x"))
+    if k == 1: return frame(varint(-1 & 0xFFFFFFFF) + bytes(20))
+    if k == 2: return frame(varint(1000) + zlib.compress(bytes(10)))
+    if k == 3: return frame(varint(500) + bytes(r.randrange(256) for _ in range(40)))
+    return frame(varint(8 << 20) + zlib.compress(bytes(8 << 20), 9))  # 8 MiB of zeros in ~8 KiB
+
 def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
     r0 = random.Random(seed)
     # Framing / handshake / status / login garbage.
@@ -116,16 +151,17 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
         handshake(port, 2) + pkt(0, string("ok") + b"\x00" * 4),   # truncated uuid
         handshake(port, 2) + pkt(0, string("../../etc") + uuid.uuid4().bytes),
         handshake(port, 2) + pkt(0, string("Fz%d" % r0.randrange(10**6)) + uuid.uuid4().bytes) + b"\xff\xff\x7f",
-        handshake(port, 2) + pkt(0, string("Fz%d" % r0.randrange(10**6)) + uuid.uuid4().bytes) + pkt(3) + pkt(99) +
-        pkt(CFG_SB["select_known_packs"], varint(2**31 - 1)) + pkt(CFG_SB["finish_configuration"], b"junk"),
+        handshake(port, 2) + pkt(0, string("Fz%d" % r0.randrange(10**6)) + uuid.uuid4().bytes) + cpkt(3) + cpkt(99) +
+        cpkt(CFG_SB["select_known_packs"], varint(2**31 - 1)) + cpkt(CFG_SB["finish_configuration"], b"junk"),
         play_prefix(port, "Fz%d" % r0.randrange(10**6))[:-3],   # cut mid-configuration
     ]
     for d in cases: blast(host, port, d)
     for i in range(rounds * 20):                          # random bytes in each pre-play state
         r = random.Random(seed * 7919 + i)
         pre = r.choice([b"", handshake(port, 1), handshake(port, 2),
-                        handshake(port, 2) + pkt(0, string("Fz%d" % i) + uuid.uuid4().bytes) + pkt(3)])
-        blast(host, port, pre + b"".join(pkt(r.randrange(-1, 12) & 0xFFFFFFFF, body(r)) for _ in range(3)), 0.05)
+                        handshake(port, 2) + pkt(0, string("Fz%d" % i) + uuid.uuid4().bytes) + cpkt(3)])
+        mk = cpkt if b"Fz" in pre else pkt
+        blast(host, port, pre + b"".join(mk(r.randrange(-1, 12) & 0xFFFFFFFF, body(r)) for _ in range(3)), 0.05)
     alive(host, port, "fuzz: framing/handshake/status/login/config")
 
     # Play: every serverbound id with structured garbage. A handler that throws kicks the player (expected),
@@ -137,8 +173,9 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
             for i in range(t, rounds * len(ids), threads):
                 r = random.Random(seed * 104729 + i)
                 pid = ids[i % len(ids)]
-                burst = b"".join(pkt(pid, body(r)) for _ in range(4))
-                blast(host, port, play_prefix(port, "Fz%d_%d" % (t, i)) + pkt(PLAY_SB["player_loaded"]) + burst, 0.15)
+                burst = b"".join(cpkt(pid, body(r)) for _ in range(4))
+                if COMPRESSED and i % 5 == 0: burst = bad_compressed(r) + burst
+                blast(host, port, play_prefix(port, "Fz%d_%d" % (t, i)) + cpkt(PLAY_SB["player_loaded"]) + burst, 0.15)
         except Exception as e:
             errs.append(e)
     ts = [threading.Thread(target=worker, args=(t,)) for t in range(threads)]
@@ -150,8 +187,8 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
     # Flood: 1 MiB packets as fast as loopback goes. The inbox must apply backpressure, not buffer it all.
     before = rss_kib(pid) if pid else 0
     s = socket.create_connection((host, port), timeout=30)
-    s.sendall(play_prefix(port, "Flood") + pkt(PLAY_SB["player_loaded"]))
-    big = pkt(1000, bytes(1 << 20))
+    s.sendall(play_prefix(port, "Flood") + cpkt(PLAY_SB["player_loaded"]))
+    big = cpkt(1000, bytes(1 << 20))
     drained = [0]
     def drain():
         try:
@@ -264,7 +301,7 @@ def storm(host, port, n, seed, threads=8):
         try:
             for i in range(t, n, threads):
                 d = play_prefix(port, "St%d" % i)
-                d = d[:r.randrange(len(d) + 1)] if r.randrange(3) else d + pkt(PLAY_SB["player_loaded"])
+                d = d[:r.randrange(len(d) + 1)] if r.randrange(3) else d + cpkt(PLAY_SB["player_loaded"])
                 blast(host, port, d, r.choice([0, 0.01, 0.1]))
         except Exception as e:
             errs.append(e)
@@ -417,6 +454,7 @@ def main():
             else:
                 raise SystemExit(f"unknown phase {ph}")
             if proc: assert proc.poll() is None, "server died"
+        all_left(a.host, a.port)
         if a.pid: print(f"server RSS {rss_kib(a.pid) // 1024} MiB")
         print(f"stress ok ({time.time() - t0:.1f}s)")
     finally:
