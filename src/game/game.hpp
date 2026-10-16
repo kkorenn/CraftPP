@@ -2,7 +2,7 @@
 // Survival gameplay entry point: included from play.hpp after the handler registry.
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
-#include "tick.hpp"
+#include "survival.hpp"
 #include "../plugins/plugins.hpp"
 
 #include <unistd.h>
@@ -49,6 +49,8 @@ inline void keepalive_tick(Player& p) {
 
 // Called once from main() after register_core_handlers().
 inline void start_game() {
+    game_init();
+    register_game_handlers();
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }

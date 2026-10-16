@@ -68,7 +68,7 @@ struct Player {
     std::array<Slot, 41> inv;  // vanilla Inventory indices: 0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand
     int selected = 0;          // hotbar slot 0-8
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
-    Outbox out;                // queued outgoing packets, sent by the writer thread (src/game/tick.hpp)
+    Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
@@ -214,10 +214,9 @@ inline PlayerPtr find_player(const std::string& name) {
 }
 
 inline void broadcast(const Writer& body, const Player* except = nullptr) {
-    for (auto& p : snapshot()) {
-        if (p.get() == except) continue;
-        try { p->send(body); } catch (...) {}  // its own thread notices the dead socket
-    }
+    std::lock_guard lock(players_mtx);  // no copy: send() only appends to the player's outbox
+    for (auto& p : players)
+        if (p.get() != except) p->send(body);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
@@ -279,6 +278,7 @@ inline bool load_player(Player& p) {
     if (!(f >> p.x >> p.y >> p.z >> p.yaw >> p.pitch >> p.gamemode >> p.selected)) return false;
     for (int slot, item, count; f >> slot >> item >> count;)
         if (slot >= 0 && slot < int(p.inv.size()) && item >= 0 && item < ITEM_COUNT) p.inv[slot] = {item, count};
+    load_player_extra(p, f);  // game/survival.hpp: vitals, xp, tool damage
     return true;
 }
 
@@ -292,6 +292,7 @@ inline void save_player(const Player& p) {
           << p.selected << '\n';
         for (size_t i = 0; i < p.inv.size(); i++)
             if (p.inv[i].item >= 0) f << i << ' ' << p.inv[i].item << ' ' << p.inv[i].count << '\n';
+        save_player_extra(p, f);
     }
     std::filesystem::rename(path + ".tmp", path);
 }
