@@ -319,8 +319,24 @@ inline int view_distance() { return std::stoi(props["view-distance"]); }
 inline void send_chunk(Player& p, int cx, int cz) {
     Writer w;
     w.varint(play_cb::level_chunk_with_light);
+    light::ensure_lit(world, cx, cz);
     write_chunk(w, world.get(cx, cz));
     p.send(w);
+}
+
+// Tick hook: light changed by block edits -> light_update to every player that has the chunk.
+inline void broadcast_light() {
+    auto changes = light::take_changes();
+    if (changes.empty()) return;
+    int v = view_distance();
+    auto ps = snapshot();
+    for (auto& ch : changes) {
+        Writer w;
+        w.varint(play_cb::light_update);
+        light::write_update(w, ch);
+        for (auto& p : ps)
+            if (std::abs(ch.cx - p->cx) <= v && std::abs(ch.cz - p->cz) <= v) p->send(w);
+    }
 }
 
 // Send chunks entering the view square, forget ones leaving it.
