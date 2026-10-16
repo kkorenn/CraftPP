@@ -18,6 +18,14 @@ struct Json {
   std::string str;
   std::vector<Json> arr;
   std::vector<std::pair<std::string, Json>> obj;
+  // Special members defined after the class: clang 14 + libstdc++ 12 (Raspberry Pi OS) otherwise instantiates
+  // ~vector<pair<string, Json>> while Json is still incomplete.
+  Json() = default;
+  Json(const Json&);
+  Json(Json&&) noexcept;
+  Json& operator=(const Json&);
+  Json& operator=(Json&&) noexcept;
+  ~Json();
 
   bool isNull() const { return type == Null; }
   bool isBool() const { return type == Bool; }
@@ -187,3 +195,9 @@ struct Json {
     }
   };
 };
+inline Json::Json(const Json&) = default;
+inline Json::Json(Json&&) noexcept = default;
+inline Json& Json::operator=(const Json&) = default;
+inline Json& Json::operator=(Json&&) noexcept = default;
+inline Json::~Json() = default;
+

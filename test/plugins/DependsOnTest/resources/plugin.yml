@@ -1,0 +1,5 @@
+name: DependsOnTest
+version: 0.1
+main: craft.dep.DependsOnTest
+api-version: '1.21'
+depend: [CraftTestPlugin]

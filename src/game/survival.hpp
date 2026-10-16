@@ -98,8 +98,7 @@ inline void kill(Player& p, const std::string& type) {
     Writer chat;
     chat.varint(play_cb::system_chat).bytes(component).boolean(false);
     for (auto& q : players) q->send(chat);
-    printf("[death] %s (%s)\n", p.name.c_str(), key.c_str());
-    fflush(stdout);
+    log_info("%s", plain(tr(key, {p.name})).c_str());  // vanilla logs the death message like other system chat
     broadcast_near(p.x, p.z, entity_event_packet(p.eid, 3), &p);
     if (p.g.container) close_container(p, true);
     drop_all(p);
