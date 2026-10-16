@@ -38,7 +38,7 @@ if [ "$1" = "test" ]; then
   rm -f build/console.fifo && mkfifo build/console.fifo
   ./build/craftpp build/test.properties < build/console.fifo > $LOG 2>&1 &
   PID=$!
-  trap 'kill $PID 2>/dev/null; rm -f build/console.fifo' EXIT
+  trap 'kill $PID 2>/dev/null || true; rm -f build/console.fifo' EXIT
   exec 3> build/console.fifo
   wait_log 'Done ('
   grep -qE '^\[[0-9:]{8} INFO\]: Done \([0-9]+\.[0-9]{3}s\)! For help, type "help"$' $LOG || fail "Done line format"
