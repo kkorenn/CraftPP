@@ -20,10 +20,13 @@ ap.add_argument("--radius", type=int, default=2)
 ap.add_argument("--mode", choices=["full", "solid"], default="full")
 ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla world (also disables structures)")
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
+ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
+ap.add_argument("--run-dir", default=RUN, help="vanilla server directory (one per parallel compare run)")
 ap.add_argument("--examples", type=int, default=10)
 ap.add_argument("--timeout", type=float, default=300)
 args = ap.parse_args()
+RUN = os.path.abspath(args.run_dir)
 view = min(32, int(args.radius * 1.42) + 2)  # vanilla sends a circle; cover the square + spawn fuzz
 
 def wait_log(path, needle, proc, timeout):
@@ -55,7 +58,7 @@ def run_vanilla(n, center):
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures="false" if args.vanilla_datapack else "true", sync_chunk_writes="false")
+                 generate_structures="false" if args.vanilla_datapack or args.no_structures else "true", sync_chunk_writes="false")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
     p = subprocess.Popen([JAVA, "-Xmx2G", "-jar", f"{ROOT}/vanilla/server.jar", "nogui"], cwd=RUN,
@@ -69,7 +72,8 @@ def run_vanilla(n, center):
         except subprocess.TimeoutExpired: p.kill()
 
 def run_craftpp(center):
-    stage = "noise" if args.vanilla_datapack and os.path.basename(os.path.normpath(args.vanilla_datapack)).startswith("noise") else "surface"
+    pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
+    stage = next((s for s in ("noise", "surface", "carvers") if pack.startswith(s)), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
