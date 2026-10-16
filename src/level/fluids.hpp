@@ -47,7 +47,7 @@ inline float fluid_height(const FS& f, const Pos& p) {
 // ---------- containers ----------
 inline bool is_container(int s) {  // instanceof LiquidBlockContainer
     int b = block(s);
-    return has(s, "waterlogged") || b == ID.kelp || b == ID.kelp_plant || b == ID.seagrass || b == ID.tall_seagrass;
+    return has_waterlogged(s) || b == ID.kelp || b == ID.kelp_plant || b == ID.seagrass || b == ID.tall_seagrass;
 }
 inline bool can_place_liquid(int s, int fluid, bool creative_player = false) {  // LiquidBlockContainer.canPlaceLiquid
     int b = block(s);
@@ -107,14 +107,16 @@ inline bool can_pass_through_wall(int dir, int src_state, int tgt_state) {
     int sa = T.shape[size_t(src_state)], sb = T.shape[size_t(tgt_state)];
     if (is_full_block_shape(T.shapes[size_t(sb)]) || is_full_block_shape(T.shapes[size_t(sa)])) return false;
     if (T.shapes[size_t(sa)].empty() && T.shapes[size_t(sb)].empty()) return true;
-    static std::unordered_map<uint32_t, bool> cache;
-    uint32_t k = uint32_t(sa) << 16 | uint32_t(sb) << 3 | uint32_t(dir);
-    auto it = cache.find(k);
-    if (it != cache.end()) return it->second;
-    return cache[k] = !merged_face_occludes(T.shapes[size_t(sa)], T.shapes[size_t(sb)], dir);
+    static std::vector<int8_t> cache(T.shapes.size() * T.shapes.size() * 6, -1);  // (source, target, dir)
+    int8_t& c = cache[(size_t(sa) * T.shapes.size() + size_t(sb)) * 6 + size_t(dir)];
+    if (c < 0) c = !merged_face_occludes(T.shapes[size_t(sa)], T.shapes[size_t(sb)], dir);
+    return c;
 }
 
-inline bool can_hold_any_fluid(int s) { return is_container(s) || is(s, tag("washed_away_by_fluids")); }
+inline bool can_hold_any_fluid(int s) {
+    static const auto& washed = tag("washed_away_by_fluids");
+    return is_container(s) || is(s, washed);
+}
 inline bool can_hold_specific_fluid(int s, int fluid) { return is_container(s) ? can_place_liquid(s, fluid) : true; }
 inline bool can_hold_fluid(int s, int fluid) { return can_hold_any_fluid(s) && can_hold_specific_fluid(s, fluid); }
 
@@ -163,19 +165,24 @@ struct Flowing {  // one FlowingFluid (water or lava), evaluated at a tick
     }
     struct SpreadContext {
         Pos origin;
-        std::unordered_map<int, int> states;
-        std::unordered_map<int, bool> holes;
-        int key(const Pos& p) const { return ((p.x - origin.x + 128) & 0xFF) << 8 | ((p.z - origin.z + 128) & 0xFF); }
+        // Short2ObjectMap caches keyed by the xz offset; the slope search stays within 8 blocks: 17x17 arrays.
+        int states[17 * 17];
+        int8_t holes[17 * 17];
+        explicit SpreadContext(const Pos& o) : origin(o) {
+            std::fill(std::begin(states), std::end(states), -1);
+            std::fill(std::begin(holes), std::end(holes), int8_t(-1));
+        }
+        int key(const Pos& p) const { return (p.x - origin.x + 8) * 17 + (p.z - origin.z + 8); }
         int state(const Pos& p) {
-            auto [it, fresh] = states.try_emplace(key(p), 0);
-            if (fresh) it->second = get(p);
-            return it->second;
+            int& s = states[key(p)];
+            if (s < 0) s = get(p);
+            return s;
         }
     };
     bool is_hole(SpreadContext& ctx, const Pos& p) {
-        auto [it, fresh] = ctx.holes.try_emplace(ctx.key(p), false);
-        if (fresh) it->second = is_water_hole(ctx.state(p), get(p.below()));
-        return it->second;
+        int8_t& h = ctx.holes[ctx.key(p)];
+        if (h < 0) h = is_water_hole(ctx.state(p), get(p.below()));
+        return h;
     }
     int slope_distance(const Pos& p, int pass, int from, int state, SpreadContext& ctx) {  // getSlopeDistance
         int lowest = 1000;
@@ -204,7 +211,7 @@ struct Flowing {  // one FlowingFluid (water or lava), evaluated at a tick
             if (!can_maybe_pass_through(state, d, ts)) continue;
             FS nf = new_liquid(t, ts);
             if (!can_hold_specific_fluid(ts, nf.type)) continue;
-            if (!ctx) ctx = std::make_unique<SpreadContext>(SpreadContext{p, {}, {}});
+            if (!ctx) ctx = std::make_unique<SpreadContext>(p);
             int dist = is_hole(*ctx, t) ? 0 : slope_distance(t, 1, OPP[d], ts, *ctx);
             if (dist < lowest) mask = 0;
             if (dist <= lowest) {
@@ -372,7 +379,7 @@ inline void liquid_neighbor_changed(int state, const Pos& p) {
 }
 // Waterlogged blocks' updateShape: `if (state.getValue(WATERLOGGED)) ticks.scheduleTick(pos, Fluids.WATER, 5)`.
 inline void schedule_waterlogged(int state, const Pos& p) {
-    if (has(state, "waterlogged") && waterlogged(state)) schedule_fluid(p, WATER, tick_delay(WATER));
+    if (waterlogged(state)) schedule_fluid(p, WATER, tick_delay(WATER));
 }
 
 }  // namespace lvl

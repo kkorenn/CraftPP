@@ -114,8 +114,8 @@ inline bool concrete_touches_liquid(const Pos& p) {
 }
 
 // ---------- fire (FireBlock / SoulFireBlock / BaseFireBlock) ----------
-inline int burn_odds(int s) { return has(s, "waterlogged") && waterlogged(s) ? 0 : T.burn[size_t(block(s))]; }
-inline int ignite_odds(int s) { return has(s, "waterlogged") && waterlogged(s) ? 0 : T.ignite[size_t(block(s))]; }
+inline int burn_odds(int s) { return waterlogged(s) ? 0 : T.burn[size_t(block(s))]; }
+inline int ignite_odds(int s) { return waterlogged(s) ? 0 : T.ignite[size_t(block(s))]; }
 inline bool can_burn(int s) { return ignite_odds(s) > 0; }
 inline bool fire_valid_location(const Pos& p) {
     for (int d = 0; d < 6; d++)
@@ -651,7 +651,7 @@ inline void sponge_try_absorb(const Pos& p) {
             int s = get(cur.p);
             if (!is_water(s)) continue;
             if (kind(s) == K_LIQUID || kind(s) == K_BUBBLE_COLUMN) set(cur.p, blocks::air);
-            else if (has(s, "waterlogged") && waterlogged(s)) set(cur.p, with(s, "waterlogged", false));
+            else if (waterlogged(s)) set(cur.p, with(s, "waterlogged", false));
             else if (kind(s) == K_SEAGRASS || kind(s) == K_TALL_SEAGRASS || kind(s) == K_GROWING_HEAD || kind(s) == K_GROWING_BODY) {
                 drop_resources(s, cur.p);
                 set(cur.p, blocks::air);

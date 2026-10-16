@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <string_view>
+#include <unordered_map>
 
 namespace lvl {
 
@@ -97,9 +98,14 @@ inline bool has_class(int s, const char* c) {  // instanceof (simple name anywhe
     }
     return false;
 }
-inline const std::vector<bool>& tag(const char* name) {
-    auto it = T.tags.find(name);
-    return it == T.tags.end() ? T.empty_tag : it->second;
+inline const std::vector<bool>& tag(const char* name) {  // callers pass literals: cache by pointer
+    static std::unordered_map<const char*, const std::vector<bool>*> by_ptr;
+    auto [it, fresh] = by_ptr.try_emplace(name, nullptr);
+    if (fresh) {
+        auto t = T.tags.find(name);
+        it->second = t == T.tags.end() ? &T.empty_tag : &t->second;
+    }
+    return *it->second;
 }
 inline bool is(int s, const std::vector<bool>& t) { return !t.empty() && t[size_t(block(s))]; }
 
@@ -151,7 +157,10 @@ inline int with(int s, std::string_view prop, int v) { return with(s, prop, std:
 inline int with(int s, std::string_view prop, bool v) { return with(s, prop, std::string_view(v ? "true" : "false")); }
 inline int with(int s, std::string_view prop, const char* v) { return with(s, prop, std::string_view(v)); }
 inline int withdir(int s, std::string_view prop, int d) { return with(s, prop, std::string_view(DIR_NAME[d])); }
-inline bool waterlogged(int s) { return getb(s, "waterlogged"); }
+inline std::vector<int8_t> wl_table;  // per state: -1 no waterlogged property, else its value (hot in fluid code)
+inline std::vector<uint8_t> rail_table;  // per block: BaseRailBlock
+inline bool waterlogged(int s) { return wl_table[size_t(s)] == 1; }
+inline bool has_waterlogged(int s) { return wl_table[size_t(s)] >= 0; }
 
 inline int def(int b) { return default_states[size_t(b)]; }
 inline int def(const char* name) { return def(block_id(name)); }
@@ -215,6 +224,10 @@ inline bool load(const std::string& path = "data/level.json") {
     R(short_grass) R(tall_grass) R(fern) R(large_fern) R(dead_bush) R(moss_carpet) R(crimson_nylium) R(warped_nylium)
     R(light)
 #undef R
+    wl_table.resize(T.flags.size());
+    for (size_t s = 0; s < wl_table.size(); s++) wl_table[s] = has(int(s), "waterlogged") ? int8_t(getb(int(s), "waterlogged")) : -1;
+    rail_table.resize(block_info.size());
+    for (size_t b = 0; b < block_info.size(); b++) rail_table[b] = has_class(def(int(b)), "BaseRailBlock");
     return T.flags.size() == size_t(BLOCK_STATE_COUNT);
 }
 

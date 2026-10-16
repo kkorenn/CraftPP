@@ -477,7 +477,7 @@ inline bool use_bucket(Player& pl, ItemStack& slot) {
         if (kind(s) == K_LIQUID && fluid_source(s)) {
             got = item_by_name[is_water(s) ? "minecraft:water_bucket" : "minecraft:lava_bucket"];
             set(h.pos, blocks::air, UPDATE_ALL_IMMEDIATE);
-        } else if (has(s, "waterlogged") && waterlogged(s)) {
+        } else if (waterlogged(s)) {
             got = item_by_name["minecraft:water_bucket"];
             set(h.pos, with(s, "waterlogged", false), UPDATE_ALL);
         } else if (kind(s) == K_BUBBLE_COLUMN) {

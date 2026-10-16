@@ -66,6 +66,8 @@ inline std::mutex loaded_m;
 inline std::vector<ChunkPtr> loaded_q;  // World::on_load (any thread) -> adopt() on the tick thread
 inline std::vector<int64_t> post_pending;
 
+inline int64_t last_key = INT64_MIN;
+inline LChunk* last_chunk = nullptr;  // one-entry cache (reset by release)
 inline void adopt(const ChunkPtr& c) {
     int64_t k = chunk_key(c->cx, c->cz);
     if (chunks.count(k)) return;
@@ -109,6 +111,7 @@ inline void release(int64_t k) {
     block_ticks.remove_container(it->second.c->cx, it->second.c->cz);
     fluid_ticks.remove_container(it->second.c->cx, it->second.c->cz);
     chunks.erase(it);
+    last_key = INT64_MIN, last_chunk = nullptr;
 }
 inline void pack_all() {
     for (auto& [k, l] : chunks) pack(l);
@@ -116,8 +119,13 @@ inline void pack_all() {
 
 // The chunk at (cx, cz) if loaded (never loads or generates).
 inline LChunk* lchunk(int cx, int cz) {
-    auto it = chunks.find(chunk_key(cx, cz));
-    if (it != chunks.end()) return &it->second;
+    int64_t k0 = chunk_key(cx, cz);
+    if (k0 == last_key) return last_chunk;
+    auto it = chunks.find(k0);
+    if (it != chunks.end()) {
+        last_key = k0, last_chunk = &it->second;
+        return last_chunk;
+    }
     ChunkPtr c = world.find(cx, cz);
     if (!c) return nullptr;
     adopt(c);
@@ -311,7 +319,7 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
     }
     bool piston = flags & UPDATE_MOVE_BY_PISTON;
     bool changed_block = block(old) != block(state);
-    if ((changed_block || has_class(state, "BaseRailBlock")) && ((flags & UPDATE_NEIGHBORS) || piston)) after_removal(old, p, piston);
+    if ((changed_block || rail_table[size_t(block(state))]) && ((flags & UPDATE_NEIGHBORS) || piston)) after_removal(old, p, piston);
     if (block(get(p)) != block(state)) return false;
     if (!(flags & UPDATE_SKIP_ON_PLACE)) on_place(state, p, old, piston);
     // Level.setBlock
