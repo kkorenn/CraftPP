@@ -1,5 +1,5 @@
 #pragma once
-// World-level state owned by the command system: world clocks, game rules, difficulty, weather, spawn,
+// World-level state owned by the command system: world clocks, game rules, world_difficulty, weather, spawn,
 // world border, scoreboard/teams/tags, ops/bans/whitelist. Persisted to <world>/craftpp_level.snbt and
 // the vanilla-format JSON lists (ops.json, banned-players.json, banned-ips.json, whitelist.json).
 #include "../server.hpp"
@@ -119,11 +119,15 @@ inline void advance_weather() {
     }
 }
 
-// ---------- difficulty, spawn, border ----------
-inline int difficulty = 2;  // peaceful easy normal hard
+// ---------- world_difficulty, spawn, border ----------
+inline int props_difficulty() {  // server.properties "difficulty" (vanilla default easy)
+    std::string s = props.count("difficulty") ? props["difficulty"] : "easy";
+    return s == "peaceful" || s == "0" ? 0 : s == "normal" || s == "2" ? 2 : s == "hard" || s == "3" ? 3 : 1;
+}
+inline int world_difficulty = 1;  // peaceful easy normal hard; level.dat wins over server.properties
 inline bool difficulty_locked = false;
 inline const char* DIFFICULTY_NAMES[] = {"peaceful", "easy", "normal", "hard"};
-inline Writer difficulty_packet() { return std::move(pkt(play_cb::change_difficulty).varint(difficulty).boolean(difficulty_locked)); }
+inline Writer difficulty_packet() { return std::move(pkt(play_cb::change_difficulty).varint(world_difficulty).boolean(difficulty_locked)); }
 
 inline float spawn_yaw = 0, spawn_pitch = 0;  // position is server.hpp's world_spawn (level.dat spawn-x/y/z)
 inline uint64_t pack_pos(int x, int y, int z) {
@@ -319,7 +323,7 @@ inline Nbt level_to_nbt() {
     for (size_t i = 0; i < game_rule_values.size(); i++)
         gr.set(gen::GAME_RULES[i].id, Nbt::num(Nbt::Int, game_rule_values[i]));
     r.set("game_rules", gr);
-    r.set("difficulty", Nbt::num(Nbt::Byte, difficulty));
+    r.set("difficulty", Nbt::num(Nbt::Byte, world_difficulty));
     r.set("difficulty_locked", Nbt::num(Nbt::Byte, difficulty_locked));
     Nbt w = Nbt::compound();
     w.set("clear_time", Nbt::num(Nbt::Int, weather.clear_time));
@@ -419,7 +423,7 @@ inline void level_from_nbt(const Nbt& r) {
     if (auto* gr = r.get("game_rules"))
         for (auto& [k, v] : gr->comp)
             if (int i = game_rule_index(k); i >= 0) game_rule_values[size_t(i)] = int(v.i);
-    difficulty = int(I(r.get("difficulty"), 2));
+    world_difficulty = int(I(r.get("difficulty"), props_difficulty()));
     difficulty_locked = I(r.get("difficulty_locked"), 0);
     if (auto* w = r.get("weather")) {
         weather.clear_time = int(I(w->get("clear_time"), 0));
