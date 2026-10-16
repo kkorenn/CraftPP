@@ -147,6 +147,14 @@ if __name__ == "__main__":
     chat_with(a, b"commands.execute.conditional.fail")
     print("scoreboard + execute ok")
 
+    cmd(a, 'bossbar add test:bar "Boss"')
+    chat_with(a, b"commands.bossbar.create.success")
+    cmd(a, "bossbar set test:bar players @a")
+    wait(c, PLAY_CB["boss_event"])
+    cmd(a, "bossbar set test:bar value 50")
+    chat_with(a, b"commands.bossbar.set.value.success")
+    print("bossbar ok")
+
     cmd(a, "msg Carol hi there")
     assert b"hi there" in chat_with(c, b"commands.message.display.incoming")
     cmd(a, "give Alice diamond 3")

@@ -306,6 +306,8 @@ inline NumberFormat number_format_from(const Nbt* n) {
     return f;
 }
 
+inline Nbt bossbars_nbt();                 // bossbar.hpp
+inline void bossbars_from(const Nbt& l);
 inline Nbt level_to_nbt() {
     Nbt r = Nbt::compound();
     r.set("game_time", Nbt::num(Nbt::Long, game_time));
@@ -403,6 +405,7 @@ inline Nbt level_to_nbt() {
         tags.set(uuid, l);
     }
     r.set("entity_tags", tags);
+    r.set("bossbars", bossbars_nbt());
     return r;
 }
 
@@ -490,6 +493,7 @@ inline void level_from_nbt(const Nbt& r) {
             if (auto* m = e.get("members")) for (auto& x : m->list) t.members.push_back(x.s);
             teams[t.name] = t;
         }
+    if (auto* bb = r.get("bossbars")) bossbars_from(*bb);
     if (auto* tags = r.get("entity_tags"))
         for (auto& [uuid, l] : tags->comp)
             for (auto& t : l.list) entity_tags[uuid].insert(t.s);

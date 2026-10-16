@@ -1,5 +1,6 @@
 #pragma once
 // Command system glue: world tick (clocks, weather, border), suggestions, packet handlers, join/login hooks.
+#include "bossbar.hpp"
 #include "execute.hpp"
 
 // play.hpp's packet handler registry (defined after this header is included).
@@ -130,6 +131,7 @@ inline void init_commands() {
     whitelist.load();
     load_level();
     register_vanilla_commands();
+    register_bossbar();
     commands_packet = commands_packet_for(0);  // legacy global (level-0 tree)
 }
 // Join: commands tree for the player's permission level + world state (vanilla PlayerList.placeNewPlayer order).
@@ -137,4 +139,5 @@ inline void commands_on_join(Player& p) {
     send_commands(p);
     std::lock_guard lock(cmd_mtx);
     send_world_state(p);
+    bossbars_on_join(p);
 }
