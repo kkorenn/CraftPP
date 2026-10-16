@@ -162,13 +162,13 @@ struct Cmd {
         return v;
     }
     PlayerPtr player(const char* name) const { return players(name)[0]; }
-    std::vector<PlayerPtr> targets_or_self(const char* name) const {
+    // getPlayerOrException / getEntityOrException (entity=true) when the argument is omitted.
+    std::vector<PlayerPtr> targets_or_self(const char* name, bool entity = false) const {
         if (has(name)) return players(name);
-        if (!src.entity) throw err("permissions.requires.player");
-        return {src.entity};
+        return {self_player(entity)};
     }
-    PlayerPtr self_player() const {
-        if (!src.entity) throw err("permissions.requires.player");
+    PlayerPtr self_player(bool entity = false) const {
+        if (!src.entity) throw err(entity ? "permissions.requires.entity" : "permissions.requires.player");
         return src.entity;
     }
     Vec3 vec(const char* name) const { return get<Coords>(name).pos(src); }

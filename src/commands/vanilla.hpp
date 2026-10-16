@@ -143,7 +143,7 @@ inline void register_vanilla_commands() {
             p.yaw = float(std::atan2(dz, dx) * 180 / M_PI - 90);
             teleport(p, p.x, p.y, p.z);
         };
-        std::vector<PlayerPtr> targets = c.has("targets") ? c.players("targets") : std::vector<PlayerPtr>{c.self_player()};
+        std::vector<PlayerPtr> targets = c.has("targets") ? c.players("targets") : std::vector<PlayerPtr>{c.self_player(true)};
         if (c.has("destination")) {
             auto dest = c.player("destination");
             for (auto& t : targets) do_tp(*t, dest->x, dest->y, dest->z, std::make_pair(dest->yaw, dest->pitch));
@@ -258,7 +258,7 @@ inline void register_vanilla_commands() {
         return total;
     });
     reg("kill", [](Cmd& c) {
-        auto targets = c.targets_or_self("targets");
+        auto targets = c.targets_or_self("targets", true);
         for (auto& t : targets) kill(*t, "generic_kill");
         return respond(c, targets, true, [&](Text n) { return tr("commands.kill.success.single", {n}); },
                        [&](int k) { return tr("commands.kill.success.multiple", {k}); });
