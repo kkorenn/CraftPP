@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import login, wait, varint, string, Buf, PLAY_CB, PLAY_SB, ids, play_step
 
 ARG = ids("arg_types")
-STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "commands_test_state.txt")
+STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), os.environ.get("BUILD_DIR", "build"), "commands_test_state.txt")
 
 def varlong(b):
     n = s = 0
