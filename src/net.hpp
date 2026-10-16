@@ -4,6 +4,8 @@
 
 #include <sys/socket.h>
 
+#include <algorithm>
+
 inline bool read_exact(int fd, uint8_t* buf, size_t n) {
     while (n) {
         ssize_t r = recv(fd, buf, n, 0);
@@ -23,8 +25,15 @@ inline bool read_packet(int fd, std::vector<uint8_t>& out) {
         len |= uint32_t(b & 0x7F) << s;
         if (!(b & 0x80)) break;
     }
-    out.resize(len);
-    return read_exact(fd, out.data(), len);
+    // Grow with the data actually received: a bare 2 MiB length header must not cost 2 MiB of memory.
+    out.clear();
+    for (size_t got = 0; got < len;) {
+        size_t step = std::min<size_t>(len - got, 64u << 10);
+        out.resize(got + step);
+        if (!read_exact(fd, out.data() + got, step)) return false;
+        got += step;
+    }
+    return true;
 }
 
 inline void send_raw(int fd, const uint8_t* p, size_t n) {
