@@ -49,7 +49,7 @@ def main(host, port):
     cmd(c, "gamerule spawn_mobs false")
     cmd(c, "difficulty easy")
     cmd(c, "time set noon")
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
     time.sleep(0.5)
 
     # ---- summon every roster type: add_entity + entity data must parse ----
@@ -73,7 +73,7 @@ def main(host, port):
     missing = sorted(want[t] for t in want if t not in seen)
     assert not missing, f"not spawned: {missing}"
     print(f"summon ok: {len(seen)} roster mob types")
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
     time.sleep(0.5)
 
     # ---- breed two cows ----
@@ -92,7 +92,7 @@ def main(host, port):
     assert pump(c, 5, hearts), "cows didn't fall in love"
     calf = spawned(c, "cow", seconds=20, exclude=(a, b2))
     print(f"breeding ok: cows {a} + {b2} -> calf {calf}")
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
 
     # ---- tame a wolf (1/3 per bone) ----
     hold(c, ("bone", 64))
@@ -111,7 +111,7 @@ def main(host, port):
         if tamed["ok"]: break
     assert tamed["ok"], "wolf never tamed"
     print(f"taming ok: wolf tamed after {tries} bone(s)")
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
 
     # ---- villager claims a composter, becomes a farmer, trades ----
     vx, vz = int(sx) + 3, int(sz)
@@ -153,7 +153,7 @@ def main(host, port):
     assert pump(c, 5, on_cursor), "trade result not taken"
     print(f"trading ok: farmer offered {n} trade(s); paid {a_count}x item {a_item} for item {res}")
     c.send(PLAY_SB["container_close"], varint(screen["id"]))
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
     time.sleep(0.3)
     print("roster ok")
 

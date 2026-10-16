@@ -31,9 +31,9 @@ c, _ = login("Steve", host, port, decode=True, uid=UID)
 c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(STONE_ITEM) + varint(0) + varint(0))
 c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 2.5, -60, 0.5, 1))  # out of the way: placement checks the player box
 c.send(PLAY_SB["use_item_on"], varint(0) + pos(0, -61, 0) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(1))
-assert block_pos(wait(c, PLAY_CB["block_update"]).i64()) == (0, -60, 0)
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == (0, -60, 0), limit=100000)  # mob movement packets interleave
 c.send(PLAY_SB["player_action"], varint(0) + pos(2, -61, 2) + b"\x01" + varint(2))
-assert block_pos(wait(c, PLAY_CB["block_update"]).i64()) == (2, -61, 2)
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == (2, -61, 2), limit=100000)
 # Middle-click bedrock: slot 0 holds stone, so bedrock goes to hotbar slot 1 and it gets selected.
 c.send(PLAY_SB["pick_item_from_block"], pos(0, -64, 0) + b"\0")
 inv = wait(c, PLAY_CB["set_player_inventory"])
