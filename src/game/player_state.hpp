@@ -80,6 +80,11 @@ struct Outbox {
 struct Inbox {
     std::mutex m;
     std::vector<std::vector<uint8_t>> q;
+    size_t bytes = 0;  // payload bytes in q
+    size_t pending() {
+        std::lock_guard lock(m);
+        return bytes;
+    }
 };
 
 inline constexpr int MENU_SLOTS = 46;  // InventoryMenu and CraftingMenu both have 46 slots

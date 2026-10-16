@@ -37,7 +37,7 @@ inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
 inline World world;
-inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline std::atomic<int> shutdown_requested{0};  // lock-free: safe from signal handlers and any thread
 inline bool flat_world = false;
 struct SpawnPos { int x, y, z; };
 inline SpawnPos world_spawn{0, -60, 0};  // LevelData respawn position (flat: the old fixed spawn)
@@ -229,7 +229,7 @@ inline void broadcast_message(const std::string& text, const std::string& color 
     broadcast(w.boolean(false));
 }
 
-inline uint8_t angle(float deg) { return uint8_t(int(std::floor(deg * 256.0f / 360.0f))); }
+inline uint8_t angle(float deg) { return uint8_t(Mth::floor(deg * 256.0f / 360.0f)); }  // Mth.packDegrees
 
 // player_info_update with ADD_PLAYER | UPDATE_GAME_MODE | UPDATE_LISTED | UPDATE_LATENCY
 inline Writer info_add(const std::vector<PlayerPtr>& list) {

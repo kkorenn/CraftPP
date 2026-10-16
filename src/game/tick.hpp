@@ -123,13 +123,20 @@ inline void tick_once() {
         std::lock_guard lock(m);
         run.swap(tasks);
     }
-    for (auto& f : run) f();
+    for (auto& f : run) {
+        try {
+            f();
+        } catch (const std::exception& e) {  // one failing task (e.g. a save on a full disk) must not stop the server
+            log_error("Task failed: %s", e.what());
+        }
+    }
     run.clear();
     for (auto& pp : players) {  // tick thread is the only writer of `players`, so no lock or copy needed
         Player& p = *pp;
         {
             std::lock_guard lock(p.in.m);
             pkts.swap(p.in.q);
+            p.in.bytes = 0;
         }
         for (auto& pkt : pkts) {
             try {
@@ -148,7 +155,7 @@ inline void tick_once() {
         for (auto f : player_tick_hooks) f(*pp);
     for (auto& pp : players) {
         for (auto f : player_sync_hooks) f(*pp);
-        if (pp->out.pending() > (32u << 20)) kick(*pp);
+        if (pp->out.pending() > (32u << 20)) { pp->quit_reason = "Too far behind (32 MiB unsent)"; kick(*pp); }
         pp->out.flush();
     }
     server_tick++;
@@ -200,17 +207,29 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
     });
     std::vector<uint8_t> pkt;
     while (read_packet(pp->fd, pkt)) {
+        // Backpressure: a client sending faster than the tick thread handles waits (TCP pushes back on it)
+        // instead of growing the queue without bound; 30 s without progress drops the connection.
+        int waited = 0;
+        while (pp->in.pending() > (1u << 20) && waited++ < 600) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (waited > 600) break;
         std::lock_guard lock(pp->in.m);
+        pp->in.bytes += pkt.size();
         pp->in.q.push_back(std::move(pkt));
         pkt = {};
     }
     std::promise<void> done;
     run_on_tick([&] {
-        if (std::find(players.begin(), players.end(), pp) != players.end()) {
-            for (auto f : tick_detail::leave_hooks) f(*pp);
-            on_unregister(pp);
+        try {
+            if (std::find(players.begin(), players.end(), pp) != players.end()) {
+                for (auto f : tick_detail::leave_hooks) f(*pp);
+                on_unregister(pp);
+            }
+        } catch (const std::exception& e) {
+            log_error("%s: leave failed: %s", pp->name.c_str(), e.what());
+            std::lock_guard lock(players_mtx);
+            std::erase(players, pp);
         }
-        done.set_value();
+        done.set_value();  // always: the network thread waits for it
     });
     done.get_future().wait();
     pp->out.flush();  // best effort: last packets (e.g. a disconnect message)
