@@ -95,6 +95,12 @@ void Level::mark_post_processing(const P& p) {
   if (c && c->chunk) c->post_processing.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
+void Level::schedule_leaf_tick(const P& p) {
+  if (outside(p.y)) return;
+  ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
+  if (c && c->chunk) c->leaf_ticks.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
+}
+
 bool Level::should_freeze(int b, const P& p, bool checkNeighbors) const {
   if (temperature(b, p) >= 0.15F) return false;
   if (outside(p.y)) return false;  // block light is 0 in worldgen (< 10)
@@ -682,11 +688,22 @@ const Feature* Loader::feature(const Json& j) {
   if (j.isString()) {
     std::string id = j.str.find(':') == std::string::npos ? "minecraft:" + j.str : j.str;
     if (auto it = featureById.find(id); it != featureById.end()) return it->second;
-    return featureById[id] = feature(load("feature", id));
+    try {
+      return featureById[id] = feature(load("feature", id));
+    } catch (const std::exception& e) {
+      throw std::runtime_error(std::string(e.what()) + " in feature " + id);
+    }
   }
   std::string t = strip_ns(j["type"].asString());
   auto it = f.parsers.find(t);
-  if (it == f.parsers.end()) throw std::runtime_error("feature type " + t);
+  if (it == f.parsers.end()) {  // not ported yet: places nothing (reported once per type)
+    struct Missing : Feature {
+      bool place(Level&, RandomSource&, const P&) const override { return false; }
+    };
+    static std::set<std::string> warned;
+    if (warned.insert(t).second) fprintf(stderr, "worldgen: feature type %s not implemented\n", t.c_str());
+    return make<Missing>();
+  }
   return it->second(*this, j);
 }
 
@@ -950,6 +967,50 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
     for (size_t s = 0; s < lists[b].size(); s++) {
       auto& v = biomeSteps[b].emplace_back();
       for (auto* p : lists[b][s]) v.push_back(indexInStep[p]);
+    }
+  }
+}
+
+void Features::finish(Region& r) const {
+  using namespace feat;
+  Level level(r, *this);
+  ProtoChunk& c = r.center();
+  auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + MIN_Y, c.cz * 16 + (v >> 4 & 15)}; };
+  auto writable = [&](const P& p) {
+    ProtoChunk* n = r.chunk(p.x >> 4, p.z >> 4);
+    return n && n->chunk && !n->taken;
+  };
+  for (int32_t v : c.post_processing) {
+    P p = unpack(v);
+    int s = level.get(p);
+    if (R().has_fluid(s)) continue;  // ponytail: fluid ticks (flowing water / lava after generation) not simulated
+    int n = update_from_neighbour_shapes(level, s, p);
+    if (n != s && writable(p)) level.set(p, n);
+  }
+  c.post_processing.clear();
+  c.post_processing.shrink_to_fit();
+  // Leaf ticks: Bellman-Ford style relaxation, FIFO like same-tick scheduled ticks.
+  static const bs::Tag& noDecay = R().tag("minecraft:prevents_nearby_leaf_decay");
+  auto distAt = [&](int s) { return R().in(s, noDecay) ? 0 : R().has(s, "distance") ? R().int_value(s, "distance") : 7; };
+  std::vector<P> queue;
+  for (int32_t v : c.leaf_ticks) queue.push_back(unpack(v));
+  c.leaf_ticks.clear();
+  c.leaf_ticks.shrink_to_fit();
+  static const bs::Tag& leaves = R().tag("minecraft:leaves");
+  for (size_t i = 0; i < queue.size() && i < 1u << 16; i++) {
+    P p = queue[i];
+    int s = level.get(p);
+    if (!R().in(s, leaves) || !R().has(s, "distance")) continue;
+    int nd = 7;
+    for (bs::Dir d : ALL_DIRS) {
+      nd = std::min(nd, distAt(level.get(p.rel(d))) + 1);
+      if (nd == 1) break;
+    }
+    if (nd == R().int_value(s, "distance") || !writable(p)) continue;
+    level.set(p, R().with_int(s, "distance", nd));
+    for (bs::Dir d : ALL_DIRS) {  // neighbours' updateShape schedules their tick
+      P n = p.rel(d);
+      if (R().in(level.get(n), leaves)) queue.push_back(n);
     }
   }
 }

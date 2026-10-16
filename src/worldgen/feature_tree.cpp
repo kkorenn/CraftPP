@@ -16,12 +16,6 @@ const bs::Registry& R() { return bs::R(); }
 bool is(int s, int def) { return R().is(s, def); }
 bool in(int s, const char* tag) { return R().in(s, R().tag(tag)); }
 
-struct PHash {
-  int32_t operator()(const P& p) const { return (int32_t)(((uint32_t)p.y + (uint32_t)p.z * 31u) * 31u + (uint32_t)p.x); }
-};
-using PosSet = JavaHashSet<P, PHash>;
-
-int dist_manhattan(const P& a, const P& b) { return std::abs(a.x - b.x) + std::abs(a.y - b.y) + std::abs(a.z - b.z); }
 const char* axis_of(bs::Dir d) { return d <= bs::UP ? "y" : d <= bs::SOUTH ? "z" : "x"; }
 int with_axis(int s, const char* axis) {  // trySetValue(AXIS, ...)
   int t = R().with(s, "axis", axis);
@@ -561,11 +555,20 @@ struct Tree : Feature {
     }
     // StructureTemplate.updateShapeAtEdge(level, 3, shape, min): DiscreteVoxelShape.forAllFaces order.
     auto full = [&](int x, int y, int z) { return x >= 0 && y >= 0 && z >= 0 && x < sx && y < sy && z < sz && cell(x, y, z); };
+    static const bs::Tag& leavesTag = R().tag("minecraft:leaves");
+    auto distAt = [&](int st) { return R().in(st, noDecay) ? 0 : R().has(st, "distance") ? R().int_value(st, "distance") : 7; };
+    auto leafTick = [&](const P& p, int st, int neighbour) {  // LeavesBlock.updateShape
+      if (!R().in(st, leavesTag) || !R().has(st, "distance")) return;
+      int d = distAt(neighbour) + 1;
+      if (d != 1 || R().int_value(st, "distance") != d) l.schedule_leaf_tick(p);
+    };
     auto face = [&](bs::Dir d, int x, int y, int z) {
       P p = mn.offset(x, y, z), n = p.rel(d);
       int s = l.get(p), ns = l.get(n);
+      leafTick(p, s, ns);
       int s2 = update_shape(l, s, p, d, n, ns);
       if (s2 != s) l.set(p, s2);
+      leafTick(n, ns, s2);
       int n2 = update_shape(l, ns, n, bs::opposite(d), p, s2);
       if (n2 != ns) l.set(n, n2);
     };
@@ -1153,7 +1156,8 @@ const TrunkPlacer* parse_trunk(Loader& L, const Json& j) {
   } else if (t == "cherry_trunk_placer") {
     auto* ch = L.make<Cherry>();
     ch->count = IntProvider(j["branch_count"]), ch->hlen = IntProvider(j["branch_horizontal_length"]);
-    ch->start = IntProvider(j["branch_start_offset_from_top"]);
+    const Json& st = j["branch_start_offset_from_top"];  // UniformInt.MAP_CODEC: no "type"
+    ch->start.t = IntProvider::UNIFORM, ch->start.a = st["min_inclusive"].asInt(), ch->start.b = st["max_inclusive"].asInt();
     ch->start2 = ch->start, ch->start2.b -= 1;  // UniformInt.of(min, max - 1)
     ch->end = IntProvider(j["branch_end_offset_from_top"]);
     p = ch;

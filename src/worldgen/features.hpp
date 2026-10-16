@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "worldgen/block_state.hpp"
+#include "worldgen/java_hash.hpp"
 #include "worldgen/json.hpp"
 #include "worldgen/pipeline.hpp"
 #include "worldgen/providers.hpp"
@@ -48,6 +49,11 @@ struct P {
     return int64_t(uint64_t(int64_t(x) & 0x3FFFFFF) << 38 | uint64_t(int64_t(z) & 0x3FFFFFF) << 12 | uint64_t(int64_t(y) & 0xFFF));
   }
 };
+struct PHash {  // Vec3i.hashCode
+  int32_t operator()(const P& p) const { return (int32_t)(((uint32_t)p.y + (uint32_t)p.z * 31u) * 31u + (uint32_t)p.x); }
+};
+using PosSet = JavaHashSet<P, PHash>;  // java.util.HashSet<BlockPos> (iteration order matters)
+inline int dist_manhattan(const P& a, const P& b) { return std::abs(a.x - b.x) + std::abs(a.y - b.y) + std::abs(a.z - b.z); }
 inline double dist_sqr(const P& a, const P& b) {
   double dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
   return dx * dx + dy * dy + dz * dz;
@@ -89,6 +95,7 @@ class Level {
   bool should_freeze(int biome, const P& p, bool checkNeighbors) const;  // Biome.shouldFreeze
   bool should_snow(int biome, const P& p) const;                         // Biome.shouldSnow
   void mark_post_processing(const P& p);  // ChunkAccess.markPosForPostProcessing
+  void schedule_leaf_tick(const P& p);     // scheduleTick(pos, LeavesBlock, 1): run by Features::finish
   void mark_above_for_post_processing(const P& p) {  // Feature.markAboveForPostProcessing
     P q = p;
     for (int i = 0; i < 2; i++) {
@@ -228,6 +235,10 @@ class Features {
   Features(Overworld& ow, const std::string& dataRoot);
   ~Features();
   void decorate(Region& r) const;    // the FEATURES step
+  // The FULL step: LevelChunk.postProcessGeneration (marked non-fluid blocks: updateFromNeighbourShapes) and the
+  // leaf ticks worldgen scheduled (LeavesBlock.tick -> updateDistance, cascading to neighbours that change), which
+  // vanilla runs once the chunk ticks. Writes into neighbours already handed to the World are skipped.
+  void finish(Region& r) const;
   StructurePlacer structure_placer;  // structures hook (see top)
 
   // Internal (feat::Level and feature code).

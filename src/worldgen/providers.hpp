@@ -22,6 +22,11 @@ inline int randomBetweenInclusive(RandomSource& r, int min, int max) { return r.
 inline float randomBetween(RandomSource& r, float min, float max) { return r.nextFloat() * (max - min) + min; }
 inline int nextInt(RandomSource& r, int min, int max) { return min >= max ? min : r.nextInt(max - min + 1) + min; }
 inline float normal(RandomSource& r, float mean, float dev) { return mean + (float)r.nextGaussian() * dev; }
+template <class T>  // Mth.clampedMap (float and double overloads)
+T clampedMap(T v, T fromMin, T fromMax, T toMin, T toMax) {
+  T f = (v - fromMin) / (fromMax - fromMin);
+  return f < T(0) ? toMin : f > T(1) ? toMax : toMin + f * (toMax - toMin);
+}
 }  // namespace mth
 
 struct IntProvider {
