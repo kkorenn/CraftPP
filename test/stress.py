@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def frame(body): return varint(len(body)) + body
 def pkt(pid, body=b""): return frame(varint(pid) + body)
 def handshake(port, nxt, proto=PROTO): return pkt(0, varint(proto) + string("localhost") + struct.pack(">H", port) + varint(nxt))
-def pos(x, y, z): return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
+def pos(x, y, z): return struct.pack(">Q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
 
 def play_prefix(port, name):
     """Handshake + login + configuration, pipelined: the server reads them in order, so no round trips."""
@@ -167,6 +167,19 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
     assert flood_mib < 256 or grown < 128, f"RSS grew {grown} MiB during a packet flood"
     alive(host, port, "fuzz: flood" + (f" (RSS +{grown} MiB)" if pid else ""))
 
+    # 200 idle connections that each announce a 2 MiB packet and never send it.
+    before = rss_kib(pid) if pid else 0
+    held = []
+    for _ in range(200):
+        h = socket.create_connection((host, port), timeout=5)
+        h.sendall(b"\xff\xff\x7f" + bytes(10))
+        held.append(h)
+    time.sleep(0.5)
+    grown = (rss_kib(pid) - before) // 1024 if pid else 0
+    for h in held: h.close()
+    assert grown < 64, f"RSS grew {grown} MiB for 200 half-sent packets"
+    alive(host, port, "fuzz: half-sent packets" + (f" (RSS +{grown} MiB)" if pid else ""))
+
 # ---------- bots ----------
 def lock_send(c):
     lk, raw_send = threading.Lock(), c.send
@@ -189,17 +202,20 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
             if not stop.is_set(): errs.append(f"{name} read: {e!r}")
     rt = threading.Thread(target=drain, daemon=True)
     rt.start()
-    x, z, seq = 0.5, 0.5, 1
+    x0, y0, z0 = c.pos  # wherever the server put us (cmdfuzz may have moved the world spawn)
+    x, z, seq = x0, z0, 1
     end = time.time() + seconds
     try:
         while time.time() < end:
             k = r.randrange(10)
             if k < 3:  # wander far enough to cross chunk borders (chunk streaming on the tick thread)
-                x += r.uniform(-12, 12); z += r.uniform(-12, 12)
-                x, z = max(-120, min(120, x)), max(-120, min(120, z))
-                c.send(PLAY_SB["move_player_pos_rot"], struct.pack(">dddffB", x, -60, z, r.uniform(-180, 180), 0, 1))
-            elif k < 6:  # everyone edits the same chunk (0, 0)
-                bx, by, bz = r.randrange(16), r.randrange(-61, -50), r.randrange(16)
+                x += r.uniform(-5, 5); z += r.uniform(-5, 5)
+                x, z = max(x0 - 120, min(x0 + 120, x)), max(z0 - 120, min(z0 + 120, z))
+                c.send(PLAY_SB["move_player_pos_rot"], struct.pack(">dddffB", x, y0, z, r.uniform(-180, 180), 0, 1))
+            elif k < 6:  # edits within reach; bots crowd around spawn, so they hit the same chunks
+                if r.randrange(2): x, z = x0 + r.uniform(-2, 2), z0 + r.uniform(-2, 2)  # back to the spawn chunk
+                bx, by, bz = int(x) + r.randrange(-3, 4), int(y0) + r.randrange(-2, 3), int(z) + r.randrange(-3, 4)
+                c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x, y0, z, 1))
                 if r.randrange(2):
                     c.send(PLAY_SB["player_action"], varint(0) + pos(bx, by, bz) + b"\x01" + varint(seq))
                 else:
@@ -221,7 +237,7 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
             elif k == 9:
                 c.send(PLAY_SB["client_tick_end"])
             time.sleep(r.uniform(0.01, 0.08))
-    except OSError as e:
+    except Exception as e:  # includes a thread crashing on a bug in this script
         errs.append(f"{name}: {e!r}")
     stop.set()
     close(c)
@@ -359,7 +375,7 @@ def main():
     ap.add_argument("port", nargs="?", type=int)
     ap.add_argument("--server", help="spawn this binary with a temp world (stress dir beside it)")
     ap.add_argument("--world", default="flat", help="flat | normal (with --server)")
-    ap.add_argument("--view", type=int, default=4, help="view-distance (with --server)")
+    ap.add_argument("--view", type=int, default=3, help="view-distance (with --server)")
     ap.add_argument("--pid", type=int, help="server pid for RSS sampling")
     ap.add_argument("--quick", action="store_true", help="< 30 s: small fuzz + 12 bots + small storm")
     ap.add_argument("--phases", default="fuzz,cmdfuzz,bots,storm")
