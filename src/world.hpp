@@ -472,6 +472,13 @@ struct World {
     // happens in save_dirty(). Prefer get_ptr() off the tick thread.
     Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
 
+    // Already loaded chunk, or null (never loads or generates). Holding the pointer keeps it from unloading.
+    ChunkPtr get_if_loaded(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
