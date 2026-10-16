@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <typeinfo>
 
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
@@ -26,6 +27,21 @@ int main(int argc, char** argv) {
   worldgen::Overworld ow(seed, "structures");
   structure::StructureWorld sw(ow, false);
   auto& m = sw.manager();
+  if (getenv("BOXQ")) {  // BOXQ=x0,y0,z0,x1,y1,z1: pieces of nearby starts intersecting the box
+    int a[6];
+    sscanf(getenv("BOXQ"), "%d,%d,%d,%d,%d,%d", a, a + 1, a + 2, a + 3, a + 4, a + 5);
+    structure::BoundingBox q(a[0], a[1], a[2], a[3], a[4], a[5]);
+    for (int cx = (a[0] >> 4) - 9; cx <= (a[3] >> 4) + 9; cx++)
+      for (int cz = (a[2] >> 4) - 9; cz <= (a[5] >> 4) + 9; cz++)
+        for (auto& st : m.starts(cx, cz))
+          for (auto& p : st->pieces)
+            if (p->boundingBox.intersects(q)) {
+              auto& b = p->boundingBox;
+              printf("%s@%d,%d %s %d %d %d .. %d %d %d\n", st->structure->id.c_str(), cx, cz, typeid(*p).name(), b.minX, b.minY, b.minZ,
+                     b.maxX, b.maxY, b.maxZ);
+            }
+    return 0;
+  }
   if (getenv("PIECES")) {  // PIECES=cx,cz: dump the starts of that chunk
     int cx, cz;
     sscanf(getenv("PIECES"), "%d,%d", &cx, &cz);
