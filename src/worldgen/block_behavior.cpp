@@ -483,6 +483,12 @@ int connection_update(Level& l, int state, const P& p, bs::Dir dir, int ns) {
 }  // namespace
 
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& np, int ns) {
+  static const bs::Tag& leavesTag = R().tag("minecraft:leaves");
+  if (R().in(state, leavesTag) && R().has(state, "distance")) {  // LeavesBlock.updateShape: scheduleTick(pos, this, 1)
+    static const bs::Tag& noDecay = R().tag("minecraft:prevents_nearby_leaf_decay");
+    int d = (R().in(ns, noDecay) ? 0 : R().has(ns, "distance") ? R().int_value(ns, "distance") : 7) + 1;
+    if (d != 1 || R().int_value(state, "distance") != d) l.schedule_leaf_tick(p);
+  }
   int b = R().block_of(state);
   Kind k = kind_of(b);
   auto air_or_water = [&] { return R().has(state, "waterlogged") && R().bool_value(state, "waterlogged") ? int(blocks::water) : int(blocks::air); };
@@ -519,21 +525,11 @@ int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& np, int 
 }
 
 void update_shape_at_edge(Level& l, const P& mn, int sx, int sy, int sz, const std::function<bool(int, int, int)>& full) {
-  static const bs::Tag& leavesTag = R().tag("minecraft:leaves");
-  static const bs::Tag& noDecay = R().tag("minecraft:prevents_nearby_leaf_decay");
-  auto distAt = [&](int st) { return R().in(st, noDecay) ? 0 : R().has(st, "distance") ? R().int_value(st, "distance") : 7; };
-  auto leafTick = [&](const P& p, int st, int neighbour) {  // LeavesBlock.updateShape
-    if (!R().in(st, leavesTag) || !R().has(st, "distance")) return;
-    int d = distAt(neighbour) + 1;
-    if (d != 1 || R().int_value(st, "distance") != d) l.schedule_leaf_tick(p);
-  };
   auto face = [&](bs::Dir d, int x, int y, int z) {
     P p = mn.offset(x, y, z), n = p.rel(d);
     int s = l.get(p), ns = l.get(n);
-    leafTick(p, s, ns);
     int s2 = update_shape(l, s, p, d, n, ns);
     if (s2 != s) l.set(p, s2);
-    leafTick(n, ns, s2);
     int n2 = update_shape(l, ns, n, bs::opposite(d), p, s2);
     if (n2 != ns) l.set(n, n2);
   };
