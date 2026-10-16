@@ -7,12 +7,13 @@
 // once written; only the packet's "empty" mask can differ: an all-zero section is sent as empty, not zeros).
 //
 // One engine, one mutex: vanilla runs light on its own thread; here every call happens under mutex(), and
-// block reads go straight to the chunks (all chunk writes after generation also take mutex(), see set_block).
+// block reads go straight to the chunks (World::set_block writes under mutex() too). Lock order: light, then
+// Chunk::m. World chunks are held by ChunkPtr and released when only the World holds them (unloading).
 //
-// Persisting vs recomputing: light is recomputed when a chunk is first sent after a restart. Lighting (init +
-// propagation + compaction) measured 0.14-0.26 ms/chunk on an M-series Mac (expect a few times that on a Pi),
-// two orders of magnitude below generation, while persisting would add up to 26 x 2 x 2 KB per chunk to the
-// uncompressed chunk files. Memory: ~7 KB per lit chunk (1.4 KB column + ~2.5 nibble arrays after compaction).
+// Persisted: light is saved with the chunk (light::save, ~5-10 KB before zlib) and restored on load like
+// vanilla's "lighted" chunks. Recomputing instead would force the pipeline to regenerate every cached chunk's
+// proto version through LIGHT, which defeats the chunk cache. Lighting costs ~0.25 ms/chunk (M4 Pro);
+// memory ~5 KB per column (1.4 KB header + ~2 nibble arrays after compaction).
 #include "light.hpp"
 
 #include "../gen/light_data.hpp"
