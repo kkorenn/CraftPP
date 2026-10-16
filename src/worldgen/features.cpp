@@ -1027,6 +1027,13 @@ void Features::finish(Region& r) const {
   }
 }
 
+const feat::Placed* Features::load_placed(const std::string& id) {
+  Json j;
+  j.type = Json::String;
+  j.str = id;
+  return loader->placed(j);
+}
+
 void Features::decorate(Region& r) const {
   using namespace feat;
   Level level(r, *this);

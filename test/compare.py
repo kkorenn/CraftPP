@@ -21,6 +21,7 @@ ap.add_argument("--radius", type=int, default=2)
 ap.add_argument("--mode", choices=["full", "solid"], default="full")
 ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla world (also disables structures)")
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
+ap.add_argument("--center", nargs=2, type=int, help="block x z to compare around instead of the world spawn")
 ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
 ap.add_argument("--threads", type=int, default=0, help="craftpp worker-threads (0 = auto)")
@@ -59,7 +60,9 @@ def collect(port, center, proc, edited=False):
     center = center or c.spawn
     ccx, ccz = center[0] >> 4, center[2] >> 4
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
-    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
+    if args.center and proc and not edited and proc.args[0].endswith("java"):  # vanilla rejects long moves: console tp
+        proc.stdin.write(f"tp {'Cmp2' if edited else 'Cmp'} {center[0]} {center[1]} {center[2]}\n".encode()); proc.stdin.flush()
+    else: c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
     if args.light: settle(c)  # neighbours may still be lighting: take their light_update packets too
     if args.edits and not edited:
@@ -87,7 +90,7 @@ def run_vanilla(n, center):
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures="false" if args.vanilla_datapack or args.no_structures else "true", sync_chunk_writes="false")
+                 generate_structures="false" if (args.vanilla_datapack and not os.path.basename(os.path.normpath(args.vanilla_datapack)).startswith("structures")) or args.no_structures else "true", sync_chunk_writes="false")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
     p = subprocess.Popen([JAVA, "-Xmx2G", "-jar", f"{ROOT}/vanilla/server.jar", "nogui"], cwd=RUN,
@@ -102,7 +105,7 @@ def run_vanilla(n, center):
 
 def run_craftpp(center):
     pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
-    stage = next((s for s in ("noise", "surface", "carvers") if pack.startswith(s + "_")), "features")
+    stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s + "_")), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
@@ -130,7 +133,7 @@ CLASS = {i: 0 if n.split("[")[0] in AIR else 1 if n.split("[")[0] in FLUID else 
 CLASS_NAME = ["air", "fluid", "solid"]
 
 import pickle
-key = f"{args.seed}_{args.radius}_{os.path.basename(os.path.normpath(args.vanilla_datapack or 'none'))}_{args.no_structures}"
+key = f"{args.seed}_{args.radius}_{args.center}_{os.path.basename(os.path.normpath(args.vanilla_datapack or 'none'))}_{args.no_structures}"
 cache = args.cache and os.path.join(args.cache, key + ".pickle")
 A2 = None
 if cache and os.path.exists(cache):
@@ -138,7 +141,7 @@ if cache and os.path.exists(cache):
     print(f"vanilla run from {cache}", flush=True)
 else:
     print(f"vanilla run (seed {args.seed}, radius {args.radius}, view {view}) ...", flush=True)
-    A, bioA, center = run_vanilla(1, None)
+    A, bioA, center = run_vanilla(1, (args.center[0], 120, args.center[1]) if args.center else None)
 if args.stable and A2 is None:
     print("second vanilla run (noise floor) ...", flush=True)
     A2 = run_vanilla(2, center)[0]
