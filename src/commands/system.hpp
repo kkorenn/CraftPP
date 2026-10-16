@@ -67,6 +67,18 @@ inline std::vector<std::string> custom_suggestions(const Segment& seg, int node,
 
 // ---------- packet handlers ----------
 inline void register_command_handlers() {
+    // F3+F4 game mode switcher (ServerGamePacketListenerImpl.handleChangeGameMode): needs gamemaster (level 2).
+    on(play_sb::change_game_mode, [](Player& p, Reader& in, int) {
+        static const char* names[] = {"survival", "creative", "adventure", "spectator"};
+        int mode = in.varint();
+        if (mode < 0 || mode > 3) return;
+        if (perm_level(p) < 2) {
+            printf("Player %s tried to change game mode to %s without required permissions\n", p.name.c_str(), names[mode]);
+            fflush(stdout);
+            return;
+        }
+        if (auto pp = find_player(p.name)) perform(source_for(pp), std::string("gamemode ") + names[mode]);
+    });
     on(play_sb::command_suggestion, [](Player& p, Reader& in, int) {
         int id = in.varint();
         std::string text = in.str(32500);
