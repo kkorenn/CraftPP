@@ -6,7 +6,7 @@
 #include "world.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
-#include "worldgen/terrain.hpp"
+#include "worldgen/overworld.hpp"
 
 #include <array>
 #include <atomic>
@@ -31,7 +31,7 @@ inline std::map<std::string, std::string> props = {
     {"level-name", "world"},
     {"level-seed", ""},
     {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
-    {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
+    {"worldgen-stages", "features"},  // noise | surface | carvers | features (debug: stop after a vanilla stage)
 };
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
@@ -201,8 +201,10 @@ inline void setup_world() {
     flat_world = type == "flat";
     if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
-    auto gen = std::make_shared<worldgen::TerrainGenerator>(seed, "vanilla/src/data", props["worldgen-stages"] != "noise");
-    world.generator = [gen](Chunk& c) { gen->generate(c); };
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
+    auto gen = ow->terrain;
+    world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -330,7 +332,10 @@ inline int menu_to_inv(int slot) {
 
 inline int view_distance() { return std::stoi(props["view-distance"]); }
 
-inline void push_chunk(Player& p, Chunk& c) { p.out.push_framed(*chunk_frame(c)); }
+inline void push_chunk(Player& p, Chunk& c) {
+    light::ensure_lit(world, c);  // 3x3 lit: the light in the frame is final
+    p.out.push_framed(*chunk_frame(c));
+}
 inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *world.get_ptr(cx, cz)); }
 
 // Tick thread (on_player_sync): send queued chunks whose generation finished, nearest first, a bounded batch per tick.
@@ -358,6 +363,24 @@ inline void deliver_chunks(Player& p) {
     }
     q.resize(keep);
     if (sent) p.send(Writer().varint(play_cb::chunk_batch_finished).varint(sent));
+}
+
+// Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
+// (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
+inline void broadcast_light() {
+    auto changes = light::take_changes();
+    if (changes.empty()) return;
+    int v = view_distance();
+    auto ps = snapshot();
+    for (auto& ch : changes) {
+        Writer w;
+        for (auto& p : ps) {
+            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
+            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
+            p->send(w);
+        }
+    }
 }
 
 // Send chunks entering the view square, forget ones leaving it. Chunks are generated on the worker pool and

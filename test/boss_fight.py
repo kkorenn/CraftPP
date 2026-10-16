@@ -63,7 +63,7 @@ try:
             elif pid == PLAY_CB["block_update"]:
                 p = block_pos(b.i64()); s = b.varint(); blocks_seen[p] = s; set_block(c, *p, s)
             elif pid == PLAY_CB["level_chunk_with_light"]:
-                cx, cz, secs = parse_chunk(b, True); c.chunks[cx, cz] = secs
+                cx, cz, secs = parse_chunk(b, True)[:3]; c.chunks[cx, cz] = secs
             elif pid == PLAY_CB["player_position"]:
                 tid, pos = b.varint(), b.take(24); b.take(24)
                 c.pos = struct.unpack(">ddd", pos)

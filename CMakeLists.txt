@@ -19,7 +19,7 @@ if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp)
-add_executable(craftpp src/main.cpp ${CRAFTPP_MOB_SOURCES})
+add_executable(craftpp src/main.cpp src/light/light.cpp ${CRAFTPP_MOB_SOURCES})
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
 find_package(ZLIB QUIET)
@@ -33,7 +33,8 @@ target_include_directories(worldgen_tests PRIVATE src)
 target_compile_options(worldgen_tests PRIVATE -Wall -Wextra)
 # Worldgen foundation: RNG, noise, JSON (bit-exact with vanilla; never use -ffast-math here).
 add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_source.cpp
-  src/worldgen/density.cpp src/worldgen/terrain.cpp)
+  src/worldgen/density.cpp src/worldgen/terrain.cpp src/worldgen/block_state.cpp src/worldgen/pipeline.cpp
+  src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
 find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
