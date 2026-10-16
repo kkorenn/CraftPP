@@ -434,7 +434,6 @@ struct JigsawStructure : Structure {
     RandomSource& random = ctx.random;
     Rotation centerRotation = getRandomRotation(random);
     const Pool* centerPool = Pool::get(alias(startPool));
-    if (getenv("JDBG")) fprintf(stderr, "jigsaw %s at %d %d pool=%p\n", id.c_str(), ctx.cx, ctx.cz, (void*)centerPool);
     if (!centerPool) return std::nullopt;
     const PoolElement* centerElement =
         centerPool->templates.empty() ? emptyElement() : centerPool->templates[random.nextInt((int)centerPool->templates.size())];
@@ -460,10 +459,7 @@ struct JigsawStructure : Structure {
     if (!projectStart) {
       bottomY = adjusted.y;
     } else {
-      if (!ctx.couldStructureExistInColumn(centerX, centerZ, MIN_Y, MAX_Y)) {
-        if (getenv("JDBG")) fprintf(stderr, "  no biome in column\n");
-        return std::nullopt;
-      }
+      if (!ctx.couldStructureExistInColumn(centerX, centerZ, MIN_Y, MAX_Y)) return std::nullopt;
       bottomY = position.y + ctx.gen.baseHeight(centerX, centerZ, *projectStart);
     }
     int oldGround = box.minY + center->groundLevelDelta;

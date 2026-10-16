@@ -313,10 +313,11 @@ namespace {
 int stateFromJson(const Json& j) {
   const Blocks& b = Blocks::get();
   if (j.isString()) return b.parse(j.asString());
-  std::vector<std::pair<std::string, std::string>> props;
-  if (auto* p = j.find("Properties"))
+  std::vector<std::pair<std::string, std::string>> props;  // {id, properties} (26.x) or {Name, Properties}
+  const Json* p = j.find("properties") ? j.find("properties") : j.find("Properties");
+  if (p)
     for (auto& [k, v] : p->obj) props.push_back({k, v.asString()});
-  return b.state(j["Name"].asString(), props);
+  return b.state(j.find("id") ? j["id"].asString() : j["Name"].asString(), props);
 }
 
 struct RuleTest {
