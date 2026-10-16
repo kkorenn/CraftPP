@@ -27,6 +27,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | bug-hunt | ASan/UBSan/TSan, fuzzing, bot stress, soaks |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
+| startup-perf | parallel spawn-region generation, fast restart (worldgen data cache), startup log hygiene |
 
 ## Left
 - Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
