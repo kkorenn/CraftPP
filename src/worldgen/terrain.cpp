@@ -4,6 +4,8 @@
 #include <cmath>
 
 #include "world.hpp"
+#include "worldgen/block_state.hpp"
+#include "worldgen/carver.hpp"
 #include "worldgen/material.hpp"
 
 namespace worldgen {
@@ -219,7 +221,7 @@ Aquifer::FluidStatus Aquifer::computeFluid(int x, int y, int z) {
 // ---------------------------------------------------------------- TerrainGenerator
 TerrainGenerator::~TerrainGenerator() = default;
 
-TerrainGenerator::TerrainGenerator(int64_t seed, const std::string& dataRoot, bool surface) : dfs(seed, dataRoot) {
+TerrainGenerator::TerrainGenerator(int64_t seed, const std::string& dataRoot, bool surface) : seed(seed), dfs(seed, dataRoot) {
   Json s = Json::parseFile(dataRoot + "/minecraft/worldgen/noise_settings/overworld.json");
   const Json& r = s["noise_router"];
   const Json& a = s["aquifers"];
@@ -249,8 +251,9 @@ std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::createNoiseChunk
   return nc;
 }
 
-std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c) {
+std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c, const df::Sampler* beardifier) {
   auto nc = createNoiseChunk({16, HEIGHT, 16, c.cx * 16, MIN_Y, c.cz * 16});
+  nc->ctx.beardifier = beardifier;  // NoiseChunk user field Beardifier.CONTEXT_KEY
   const DensityVolume& v = nc->volume;
   DensityBuffer density(v.size());
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, v);
@@ -319,6 +322,7 @@ struct SurfaceContext : material::MaterialContext {
   Chunk& chunk;
   std::map<std::string, df::Bound> bound;
   std::map<std::pair<int, int>, std::shared_ptr<const std::vector<uint8_t>>> neighbours;
+  const std::function<int(int, int, int)>* regionBiome = nullptr;
   SurfaceContext(TerrainGenerator& g, TerrainGenerator::NoiseChunk& nc, Chunk& c) : g(g), nc(nc), chunk(c) {}
   const df::Bound& get(const std::string& id) {
     auto it = bound.find(id);
@@ -333,6 +337,7 @@ struct SurfaceContext : material::MaterialContext {
     int y = std::clamp(qy - (TerrainGenerator::MIN_Y >> 2), 0, TerrainGenerator::HEIGHT / 4 - 1);
     int cx = qx >> 2, cz = qz >> 2;
     if (cx == chunk.cx && cz == chunk.cz) return chunk.get_biome(qx & 3, y, qz & 3);
+    if (regionBiome) return (*regionBiome)(qx, y, qz);
     auto& q = neighbours[{cx, cz}];
     if (!q && !(q = g.cachedBiomes(cx, cz))) {
       std::vector<uint16_t> v;
@@ -351,6 +356,52 @@ void TerrainGenerator::generate(Chunk& c) {
     SurfaceContext ctx(*this, *nc, c);
     materials->buildSurface(c, ctx);
   }
+}
+
+std::unique_ptr<TerrainGenerator::ClimateSampler> TerrainGenerator::climateSampler() {
+  auto s = std::make_unique<ClimateSampler>();
+  for (auto* f : {&temperature, &vegetation, &continents, &erosion, &depth, &ridges}) s->f.push_back(dfs.bind(*f, s->ctx));
+  return s;
+}
+
+int TerrainGenerator::uncachedBiome(ClimateSampler& s, int qx, int qy, int qz) {
+  int x = qx << 2, y = qy << 2, z = qz << 2;
+  float v[6];
+  for (int i = 0; i < 6; i++) v[i] = s.f[size_t(i)].sampleValue(x, y, z);
+  return biomeSource.find(target(v[0], v[1], v[2], v[3], v[4], v[5]));
+}
+
+void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
+                                    const std::function<int(int, int)>& carverBiome, const df::Sampler* beardifier) {
+  auto nc = fillFromNoise(c, beardifier);
+  if (!materials) return;
+  SurfaceContext ctx(*this, *nc, c);
+  ctx.regionBiome = &noiseBiome;
+  materials->buildSurface(c, ctx);
+  if (!carvers) return;
+  // generateCarvers: mask over y minGenY + 1 .. top - 1 - 7 protected blocks.
+  CarvingMask mask(MIN_Y + 1, MIN_Y + HEIGHT - 1 - 7);
+  carvers->carve(seed, c.cx, c.cz, carverBiome, mask);
+  if (mask.empty()) return;
+  // applyCarvingMask (no blending filter).
+  const auto& R = bs::R();
+  static const bs::Tag& uncarvable = R.tag("minecraft:uncarvable");
+  int bx = c.cx * 16, bz = c.cz * 16;
+  mask.visit([&](int x, int z, int bottom, int top) {
+    bool hasGrass = false;
+    for (int y = top; y >= bottom; y--) {
+      int state = c.get(x, y, z);
+      if (R.in(state, uncarvable)) continue;
+      if (R.is(state, blocks::grass_block) || R.is(state, blocks::mycelium)) hasGrass = true;
+      int s = nc->aquifer->computeSubstance(bx + x, y, bz + z, 0.0);
+      if (s < 0) continue;
+      c.set(x, y, z, (uint16_t)s);
+      if (hasGrass && c.get(x, y - 1, z) == blocks::dirt) {
+        int tm = materials->topMaterial(c, ctx, bx + x, y - 1, bz + z, R.has_fluid(s));
+        if (tm >= 0) c.set(x, y - 1, z, (uint16_t)tm);
+      }
+    }
+  });
 }
 
 // NoiseBasedChunkGenerator.getOrigin -> NoiseSpawnFinder.findSpawnPosition (block x, z; y is 0).
@@ -395,16 +446,27 @@ std::pair<int, int> TerrainGenerator::findSpawnPosition() {
   return {rx, rz};
 }
 
-int TerrainGenerator::baseHeight(int x, int z) {
+int TerrainGenerator::baseHeight(int x, int z, bool oceanFloor) {
   auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
   DensityBuffer density(HEIGHT);
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
   for (int y = HEIGHT - 1; y >= 0; y--) {
     int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
     if (state < 0) state = blocks::stone;
-    if (state != blocks::air) return MIN_Y + y + 1;
+    if (oceanFloor ? state == blocks::stone : state != blocks::air) return MIN_Y + y + 1;
   }
   return MIN_Y;
+}
+
+void TerrainGenerator::baseColumn(int x, int z, std::vector<int>& out) {
+  auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
+  DensityBuffer density(HEIGHT);
+  dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
+  out.assign(HEIGHT, blocks::air);
+  for (int y = HEIGHT - 1; y >= 0; y--) {
+    int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
+    out[y] = state < 0 ? blocks::stone : state;
+  }
 }
 
 }  // namespace worldgen
