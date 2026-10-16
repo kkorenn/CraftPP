@@ -288,7 +288,7 @@ reg = {
 }
 
 block_tag_out = {t: block_set("#minecraft:" + t) for t in ("climbable", "fall_damage_resetting", "dragon_immune",
-                                                               "dragon_transparent", "wither_immune")}
+                                                               "dragon_transparent", "wither_immune", "wither_summon_base_blocks")}
 out = {"block_tags": block_tag_out, "blocks": out_blocks, "items": out_items, "loot": loot, "recipes": recipes, "registries": reg}
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
 with open(os.path.join(ROOT, "data", "game.json"), "w") as fp:

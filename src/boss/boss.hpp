@@ -3,7 +3,7 @@
 // wrap them). The End fight lives on the level whose dimension is the End.
 // ponytail: until the dimensions branch lands, `debug-end-fight=true` in server.properties runs the fight in
 // the only level (the overworld), which is how the bot tests drive it.
-#include "fight.hpp"
+#include "wither.hpp"
 
 namespace boss {
 
@@ -141,12 +141,15 @@ inline std::unique_ptr<::Entity> make_crystal() { return std::make_unique<EndCry
 inline std::unique_ptr<::Entity> make_fireball() { return std::make_unique<DragonFireball>(); }
 inline std::unique_ptr<::Entity> make_cloud() { return std::make_unique<AreaEffectCloud>(); }
 inline std::unique_ptr<::Entity> make_orb() { return std::make_unique<ExperienceOrb>(); }
+inline std::unique_ptr<::Entity> make_wither() { return std::make_unique<WitherBoss>(); }
+inline std::unique_ptr<::Entity> make_wither_skull() { return std::make_unique<WitherSkull>(); }
 
 // ponytail: until mobs-core's summon_entity covers these types, /summon spawns them here.
 inline ::Entity* summon(const std::string& id, double x, double y, double z) {
     int t = entity_type_id(id);
     if (t != entity_types::ender_dragon && t != entity_types::end_crystal && t != entity_types::dragon_fireball &&
-        t != entity_types::area_effect_cloud && t != entity_types::experience_orb)
+        t != entity_types::area_effect_cloud && t != entity_types::experience_orb && t != entity_types::wither &&
+        t != entity_types::wither_skull)
         return nullptr;
     auto e = create_entity(t);
     if (!e) return nullptr;
@@ -229,6 +232,8 @@ inline void init() {
     register_entity_factory(entity_types::ender_dragon, make_dragon);
     register_entity_factory(entity_types::end_crystal, make_crystal);
     register_entity_factory(entity_types::dragon_fireball, make_fireball);
+    register_entity_factory(entity_types::wither, make_wither);
+    register_entity_factory(entity_types::wither_skull, make_wither_skull);
     if (!create_entity(entity_types::area_effect_cloud)) register_entity_factory(entity_types::area_effect_cloud, make_cloud);
     if (!create_entity(entity_types::experience_orb)) register_entity_factory(entity_types::experience_orb, make_orb);
     auto kv = read_level_data();
@@ -270,7 +275,11 @@ inline void init() {
             p.send(Writer().varint(play_cb::block_changed_ack).varint(in.varint()));
             return;
         }
+        int face = in.varint();
         if (prev) prev(p, copy, id);
+        static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
+        if (!wither_check_spawn(x, y, z) && face >= 0 && face < 6)  // the skull went into the clicked or the next cell
+            wither_check_spawn(x + off[face][0], y + off[face][1], z + off[face][2]);
     });
     on(play_sb::client_command, [prev = chain(play_sb::client_command)](Player& p, Reader& in, int id) {
         Reader copy = in;

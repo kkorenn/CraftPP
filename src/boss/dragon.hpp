@@ -825,7 +825,7 @@ inline void EnderDragon::ai_step() {
         float ss = emth::sin(rot), cc = emth::cos(rot), dd = (i + 1) * 2.0F;
         tick_part(TAIL1 + i, -(s1 * 1.5F + ss * dd) * ct, p0.y - p1.y - (dd + 1.5F) * st + 1.5, (c1 * 1.5F + cc * dd) * ct);
     }
-    in_wall = check_walls(part_box(HEAD)) | check_walls(part_box(NECK)) | check_walls(part_box(BODY));
+    in_wall = bool(int(check_walls(part_box(HEAD))) | int(check_walls(part_box(NECK))) | int(check_walls(part_box(BODY))));  // all three run
     fight_update_dragon(*this);
 }
 

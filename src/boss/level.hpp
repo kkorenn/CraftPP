@@ -167,6 +167,54 @@ inline void play_sound(const std::string& id, int source, double x, double y, do
 inline int particle_id(const char* name) { return registry_index(*registry("minecraft:particle_type"), std::string("minecraft:") + name); }
 inline int sound_source_hostile = 5, sound_source_blocks = 4;
 
+// ---------- ServerBossEvent (boss bars owned by a boss; /bossbar's are in commands/bossbar.hpp) ----------
+struct BossEvent {
+    int64_t uh = int64_t(game_rng()), ul = int64_t(game_rng());
+    Text name;
+    float progress = 1.0f;
+    int color = 0, overlay = 0, flags = 0;  // BossBarColor ordinal, overlay ordinal, darken 1 | music 2 | fog 4
+    bool visible = true;
+    std::vector<int> players;  // eids
+    Writer packet(int op) const {
+        Writer w;
+        w.varint(play_cb::boss_event).i64(uh).i64(ul).varint(op);
+        if (op == 0) {
+            write_nbt(w, name);
+            w.f32(progress).varint(color).varint(overlay).u8(uint8_t(flags));
+        } else if (op == 2) w.f32(progress);
+        return w;
+    }
+    void send(int op) const {
+        if (!visible) return;
+        for (auto& p : ::players)
+            if (std::find(players.begin(), players.end(), p->eid) != players.end()) p->send(packet(op));
+    }
+    void add(Player& p) {
+        if (std::find(players.begin(), players.end(), p.eid) != players.end()) return;
+        players.push_back(p.eid);
+        if (visible) p.send(packet(0));
+    }
+    void remove(Player& p) {
+        if (!std::erase(players, p.eid)) return;
+        if (visible) p.send(packet(1));
+    }
+    void remove_all() {
+        send(1);
+        players.clear();
+    }
+    void set_visible(bool v) {
+        if (v == visible) return;
+        if (!v) send(1);
+        visible = v;
+        if (v) send(0);
+    }
+    void set_progress(float f) {
+        if (f == progress) return;
+        progress = f;
+        send(2);
+    }
+};
+
 // ---------- explosions (ServerExplosion) ----------
 // Non-player entities (entities.hpp): hurt/knock every entity near the blast; `source_eid` is skipped.
 inline void (*explosion_entities)(const Vec3& center, float radius, int source_eid, int attacker_player_eid) = nullptr;
@@ -174,7 +222,7 @@ inline void (*explosion_entities)(const Vec3& center, float radius, int source_e
 // Level.explode(source, x, y, z, r, interaction): interaction 0 NONE (keep blocks), 1 BLOCK, 2 MOB (mob_griefing).
 // `fire`: createFire. attacker_player_eid: player credited for the explosion (-1 none).
 inline void explode(double x, double y, double z, float radius, int interaction, bool fire = false, int source_eid = -1,
-                    int attacker_player_eid = -1, bool silent = false) {
+                    int attacker_player_eid = -1, bool silent = false, bool wither_skull = false) {
     bool destroy = interaction == 1 || (interaction == 2 && rule("mob_griefing"));
     Vec3 c{x, y, z};
     std::vector<std::tuple<int, int, int>> blow;
@@ -192,7 +240,12 @@ inline void explode(double x, double y, double z, float radius, int interaction,
                     int bx = int(std::floor(xp)), by = int(std::floor(yp)), bz = int(std::floor(zp));
                     if (by < MIN_Y || by >= MIN_Y + HEIGHT) break;
                     int s = get_block(bx, by, bz);
-                    if (!is_air(s)) power -= (block_of(s).resistance + 0.3F) * 0.3F;
+                    if (!is_air(s)) {
+                        float res = block_of(s).resistance;
+                        // WitherSkull.getBlockExplosionResistance for dangerous (blue) skulls
+                        if (wither_skull && !has_tag(tag_wither_immune, s)) res = std::min(0.8F, res);
+                        power -= (res + 0.3F) * 0.3F;
+                    }
                     if (power > 0.0F && !is_air(s) && seen.insert({bx, by, bz}).second) blow.push_back({bx, by, bz});
                     xp += xd * 0.3F, yp += yd * 0.3F, zp += zd * 0.3F;
                 }

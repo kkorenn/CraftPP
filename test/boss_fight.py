@@ -73,7 +73,7 @@ try:
             elif pid == PLAY_CB["respawn"]:
                 c.respawned = True
             if until(): return True
-        raise AssertionError("timed out")
+        raise AssertionError(f"timed out; phases {phases} bar {bar}")
 
     crystals = lambda: sorted(p for t, p in types.values() if t == ENT["end_crystal"])
     pump(lambda: dragon is not None and len(crystals()) == 10 and 0 in bar, 20)
@@ -109,8 +109,34 @@ try:
     pump(lambda: getattr(c, "respawned", False), 5)
     print("credits ok: win_game, then respawn")
 
+    # Wither: soul sand T + three skulls (the last one placed by the player) -> invulnerable charge-up -> blast
+    ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+    for cmd in ["difficulty normal", "setblock 6 -60 6 soul_sand", "setblock 5 -59 6 soul_sand", "setblock 6 -59 6 soul_sand",
+                "setblock 7 -59 6 soul_sand", "setblock 5 -58 6 wither_skeleton_skull", "setblock 6 -58 6 wither_skeleton_skull",
+                "give @s wither_skeleton_skull 1", "tp @s 6.5 -60 3.5"]:
+        c.send(PLAY_SB["chat_command"], string(cmd))
+    time.sleep(0.5)
+    c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
+    c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (7 & 0x3FFFFFF) << 38 | (6 & 0x3FFFFFF) << 12 | (-59 & 0xFFF))
+           + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(99))
+    withers = lambda: [e for e, (t, p) in types.items() if t == ENT["wither"]]
+    pump(lambda: withers() and bar.count(0) >= 2, 10)
+    w = withers()[0]
+    assert abs(types[w][1][0] - 6.5) < 1e-6 and abs(types[w][1][1] - (-59.45)) < 1e-6, types[w]
+    exploded = []
+    end = time.time() + 20
+    while time.time() < end and not exploded:
+        pid, b = c.recv()
+        if pid == PLAY_CB["explode"]: exploded.append(struct.unpack(">dddf", b.take(28)))
+        elif pid == PLAY_CB["player_position"]:
+            tid, pos = b.varint(), b.take(24); b.take(24)
+            c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
+    assert exploded and exploded[0][3] == 7.0, exploded
+    c.send(PLAY_SB["chat_command"], string("kill @e[type=wither]"))
+    pump(lambda: w not in types and any(t == ENT["item"] for t, _ in types.values()), 10)
+    print(f"wither ok: summoned from the T, 7.0 blast after the charge-up, /kill drops the nether star")
+
     if "--respawn" in sys.argv:  # 4 crystals on the exit portal rim -> respawn sequence -> new dragon
-        ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
         c.send(PLAY_SB["chat_command"], string("give @s end_crystal 4"))
         c.send(PLAY_SB["chat_command"], string("tp @s 0.5 64 6.5"))
         pump(lambda: abs(c.pos[2] - 6.5) < 0.01, 10)

@@ -60,7 +60,7 @@ inline std::vector<uint16_t> state_block;  // block state -> block index
 inline std::map<std::string, int> item_by_name, block_by_name;
 inline std::map<std::string, DamageType> damage_types;
 inline std::map<std::string, int> menu_ids, component_ids;
-inline std::vector<uint16_t> tag_climbable, tag_fall_reset, tag_dragon_immune, tag_dragon_transparent, tag_wither_immune;
+inline std::vector<uint16_t> tag_climbable, tag_fall_reset, tag_dragon_immune, tag_dragon_transparent, tag_wither_immune, tag_wither_summon_base;
 
 inline const BlockInfo& block_of(int state) { return block_info[state_block[size_t(state)]]; }
 inline int block_index(int state) { return state_block[size_t(state)]; }
@@ -192,6 +192,7 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
     tag_dragon_immune = u16list(j["block_tags"]["dragon_immune"]);
     tag_dragon_transparent = u16list(j["block_tags"]["dragon_transparent"]);
     tag_wither_immune = u16list(j["block_tags"]["wither_immune"]);
+    tag_wither_summon_base = u16list(j["block_tags"]["wither_summon_base_blocks"]);
     load_loot_tables(j["loot"]);
     load_recipes(j["recipes"]);
     return true;

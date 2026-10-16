@@ -2,6 +2,7 @@
 // (SingleThreadedRandomSource is the same LCG), plus podium/gateway shapes.
 #include "boss/end_features.hpp"
 #include "boss/emth.hpp"
+#include "boss/pattern.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -59,6 +60,23 @@ int main() {
     assert(emth::sin(0.0) == 0.0f && emth::cos(0.0) == 1.0f);
     assert(std::abs(emth::atan2(1.0, 1.0) - M_PI / 4) < 1e-6 && std::abs(emth::atan2(-1.0, -1.0) + 3 * M_PI / 4) < 1e-6);
     assert(emth::wrapDegrees(370.0f) == 10.0f && emth::wrapDegrees(-190.0f) == 170.0f);
+    // Wither summoning pattern: skulls on a soul sand T, found from any skull, spawn cell (1, 2, 0) = T foot
+    {
+        enum { AIR, SAND, SKULL, STONE };
+        std::map<std::tuple<int, int, int>, int> t;
+        for (int x = -1; x <= 1; x++) t[{x, 62, 5}] = SKULL, t[{x, 61, 5}] = SAND;
+        t[{0, 60, 5}] = SAND;
+        auto get = [&](int x, int y, int z) { auto it = t.find({x, y, z}); return it == t.end() ? int(AIR) : it->second; };
+        boss::BlockPattern wither{{{"^^^", "###", "~#~"}}, [](char c, int s) {
+            return c == '^' ? s == SKULL : c == '#' ? s == SAND : c == '~' ? s == AIR : true;
+        }};
+        for (int sx = -1; sx <= 1; sx++) {
+            auto m = wither.find(sx, 62, 5, get);
+            assert(m && m->at(1, 2, 0) == (std::array<int, 3>{0, 60, 5}) && m->forwards_x() == false);
+        }
+        t[{1, 60, 5}] = STONE;  // '~' must be air
+        assert(!wither.find(0, 62, 5, get));
+    }
     printf("boss_test ok\n");
     return 0;
 }
