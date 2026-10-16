@@ -5,13 +5,16 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <typeinfo>
 
 #include "world.hpp"
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
 #include "worldgen/structure/jigsaw.hpp"
+#include "worldgen/structure/legacy.hpp"
 #include "worldgen/structure/nbt_io.hpp"
+#include "worldgen/structure/pieces.hpp"
 #include "worldgen/structure/template.hpp"
 
 namespace {
@@ -57,6 +60,68 @@ void persistCheck(worldgen::Overworld& ow) {
   assert(before == after);
   std::filesystem::remove_all(dir);
   printf("persist ok (%zu ints)\n", before.size());
+}
+// Re-places pieces chunk by chunk over the vanilla blocks they were generated into: every write that changes a
+// block is a difference (fence/bars connections are compared by block only: vanilla post-processed them).
+void checkAgainstVanilla(const char* file, const std::vector<structure::PieceP>& pieces) {
+  FILE* f = fopen(file, "rb");
+  assert(f);
+  int32_t h[5];
+  assert(fread(h, 4, 5, f) == 5);
+  int cx0 = h[0], cz0 = h[1], n = h[2], minY = h[3], height = h[4];
+  std::vector<uint16_t> blocks(size_t(n) * n * height * 256);
+  assert(fread(blocks.data(), 2, blocks.size(), f) == blocks.size());
+  fclose(f);
+  struct VanillaLevel : FakeLevel {
+    std::vector<uint16_t>& b;
+    int cx0, cz0, n, minY, height;
+    std::map<std::pair<std::string, std::string>, int> diffs;
+    int examples = 0;
+    VanillaLevel(std::vector<uint16_t>& b, int cx0, int cz0, int n, int minY, int height)
+        : FakeLevel(0), b(b), cx0(cx0), cz0(cz0), n(n), minY(minY), height(height) {}
+    uint16_t* at(int x, int y, int z) {
+      int dx = (x >> 4) - cx0, dz = (z >> 4) - cz0;
+      if (dx < 0 || dz < 0 || dx >= n || dz >= n || y < minY || y >= minY + height) return nullptr;
+      return &b[((size_t(dz) * n + dx) * height + (y - minY)) * 256 + (z & 15) * 16 + (x & 15)];
+    }
+    int getBlock(int x, int y, int z) override { auto* p = at(x, y, z); return p ? *p : blocks::air; }
+    std::vector<uint8_t> touched = std::vector<uint8_t>(b.size());
+    void setBlock(int x, int y, int z, int state) override {
+      if (auto* p = at(x, y, z)) *p = uint16_t(state), touched[size_t(p - b.data())] = 1;
+    }
+  };
+  std::vector<uint16_t> placed = blocks;
+  VanillaLevel level(placed, cx0, cz0, n, minY, height);
+  LegacyRandomSource r(1);
+  for (int cz = cz0; cz < cz0 + n; cz++)
+    for (int cx = cx0; cx < cx0 + n; cx++) {
+      structure::BoundingBox chunkBB(cx * 16, minY, cz * 16, cx * 16 + 15, minY + height - 1, cz * 16 + 15);
+      for (auto& p : pieces)
+        if (p->boundingBox.intersects(chunkBB)) p->postProcess(level, r, chunkBB, cx, cz, {cx * 16, 0, cz * 16});
+    }
+  // Vanilla's later feature step decorates over the fortress (nether vegetation, ...): those are not differences.
+  const auto& R = bs::R();
+  std::map<std::pair<std::string, std::string>, int> diffs;
+  int total = 0, examples = 0;
+  for (size_t i = 0; i < blocks.size(); i++) {
+    if (!level.touched[i] || placed[i] == blocks[i]) continue;
+    int v = blocks[i], o = placed[i];
+    if (R.block(R.block_of(o)).is_a("CrossCollisionBlock") && R.block_of(o) == R.block_of(v)) continue;  // post-processed
+    std::string vn = R.name(v);
+    if (vn.find("wart_block") != std::string::npos || vn.find("_stem") != std::string::npos || vn.find("shroomlight") != std::string::npos ||
+        vn.find("vines") != std::string::npos || vn.find("lava") != std::string::npos || vn.find("fungus") != std::string::npos ||
+        vn.find("roots") != std::string::npos)
+      continue;
+    total++;
+    diffs[{vn, R.name(o)}]++;
+    if (examples++ < 10) {
+      size_t col = i / (size_t(height) * 256), rem = i % (size_t(height) * 256);
+      int x = (cx0 + int(col % size_t(n))) * 16 + int(rem % 16), z = (cz0 + int(col / size_t(n))) * 16 + int(rem / 16 % 16);
+      printf("  (%d, %d, %d): vanilla %s ours %s\n", x, minY + int(rem / 256), z, vn.c_str(), R.name(o).c_str());
+    }
+  }
+  printf("%d differing writes\n", total);
+  for (auto& [k, v] : diffs) printf("  %s -> %s: %d\n", k.first.c_str(), k.second.c_str(), v);
 }
 }  // namespace
 
@@ -107,6 +172,47 @@ int main(int argc, char** argv) {
               printf("%s@%d,%d %s %d %d %d .. %d %d %d\n", st->structure->id.c_str(), cx, cz, typeid(*p).name(), b.minX, b.minY, b.minZ,
                      b.maxX, b.maxY, b.maxZ);
             }
+    return 0;
+  }
+  if (getenv("ENDCITY")) {  // ENDCITY=cx,cz,y: end city pieces of a start in that chunk at height y (vanilla's start y)
+    int cx, cz, y;
+    sscanf(getenv("ENDCITY"), "%d,%d,%d", &cx, &cz, &y);
+    WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
+    r.setLargeFeatureSeed(seed, cx, cz);
+    structure::Rotation rot = structure::getRandomRotation(r);
+    structure::Builder b;
+    structure::generateEndCity({cx * 16 + 7, y, cz * 16 + 7}, rot, b, r);
+    if (const char* f = getenv("CHECK")) {
+      checkAgainstVanilla(f, b.pieces);
+      return 0;
+    }
+    printf("pieces %zu\n", b.pieces.size());
+    for (auto& p : b.pieces) {
+      auto& bb = p->boundingBox;
+      auto* t = static_cast<structure::TemplatePiece*>(p.get());
+      printf("%d %d %d %d %d %d %s %d %d %d %d\n", bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ, t->templateName.c_str(),
+             t->templatePosition.x, t->templatePosition.y, t->templatePosition.z, int(t->settings.rotation));
+    }
+    return 0;
+  }
+  if (getenv("FORTRESS")) {  // FORTRESS=cx,cz: fortress pieces of a start in that chunk (test/structure_pieces_vanilla.py)
+    int cx, cz;
+    sscanf(getenv("FORTRESS"), "%d,%d", &cx, &cz);
+    WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
+    r.setLargeFeatureSeed(seed, cx, cz);
+    structure::Builder b;
+    structure::generateFortress(b, r, cx * 16 + 2, cz * 16 + 2);
+    b.moveInsideHeights(r, 48, 70);
+    if (const char* f = getenv("CHECK")) {  // CHECK=blocks.bin (structure_pieces_vanilla.py --blocks-out): re-place on vanilla's blocks
+      checkAgainstVanilla(f, b.pieces);
+      return 0;
+    }
+    printf("pieces %zu\n", b.pieces.size());
+    for (auto& p : b.pieces) {
+      auto& bb = p->boundingBox;
+      printf("%s %d %d %d %d %d %d %d\n", typeid(*p).name(), bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ,
+             p->orientation() ? structure::data2d(*p->orientation()) : -1);
+    }
     return 0;
   }
   if (getenv("PIECES")) {  // PIECES=cx,cz: dump the starts of that chunk
