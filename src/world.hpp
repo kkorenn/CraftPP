@@ -133,6 +133,15 @@ struct Section {
     Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
+// Level tick state that travels with the chunk (src/level/): worldgen post-processing marks (vanilla
+// ProtoChunk.postProcessing, packed x | z << 4 | (y - MIN_Y) << 8) and the tick lists in the level's own
+// encoding. Owned by the tick thread once the chunk is loaded; save_chunk reads it under Chunk::m.
+struct ChunkLevelData {
+    bool post_processed = true;  // generated chunks start false; LevelChunk.postProcessGeneration ran
+    std::vector<uint32_t> post;
+    std::vector<uint8_t> ticks;
+};
+
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
 // network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
 struct BlockEntity {
@@ -144,6 +153,8 @@ struct BlockEntity {
 
 struct Chunk {
     int cx, cz;
+    ChunkLevelData level;
+    uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::array<Section, SECTIONS> sections;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
@@ -159,6 +170,7 @@ struct Chunk {
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
+        edits++;
         if (!block_entities.empty())
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
@@ -398,6 +410,13 @@ inline bool load_chunk(Chunk& c) {
         if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
         r.i += len;
     }
+    if (r.i < r.n && r.u8() == 1) {  // level data, after light (absent in older files: processed, no ticks)
+        c.level.post_processed = r.u8();
+        c.level.post.resize(size_t(r.varint()));
+        for (auto& v : c.level.post) v = uint32_t(r.i32());
+        c.level.ticks.resize(size_t(r.varint()));
+        for (auto& b : c.level.ticks) b = r.u8();
+    }
     if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
     return c.on_disk = true;
 }
@@ -415,6 +434,10 @@ inline void save_chunk(Chunk& c) {
         for (auto& e : c.block_entities)
             w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
         w.varint(int32_t(light.size())).bytes(light);
+        w.u8(1).u8(c.level.post_processed).varint(int32_t(c.level.post.size()));
+        for (uint32_t v : c.level.post) w.i32(int32_t(v));
+        w.varint(int32_t(c.level.ticks.size()));
+        w.bytes(c.level.ticks.data(), c.level.ticks.size());
         if (chunk_save_extra) chunk_save_extra(c, w);
         c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
@@ -444,6 +467,18 @@ struct World {
     bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
+    std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
+
+    // The chunk if loaded, else null (never loads or generates).
+    ChunkPtr find(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+    bool is_viewed(int cx, int cz) {
+        std::lock_guard lock(m);
+        return viewed({cx, cz});
+    }
 
     void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }
 
@@ -604,6 +639,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         c->cx = cx, c->cz = cz;
         bool loaded = load_chunk(*c);
         if (!loaded) {
+            c->level.post_processed = false;
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
@@ -614,6 +650,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             chunks[{cx, cz}] = c;
             inflight.erase({cx, cz});
         }
+        if (on_load) on_load(c);
         job.set_value(c);
     } catch (...) {
         {

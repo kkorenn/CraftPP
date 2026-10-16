@@ -4,6 +4,7 @@
 set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
+[ -f data/level.json ] || python3 tools/gen_level_data.py
 [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
 TEST=; SAN=; B=build
 for a in "$@"; do
@@ -55,6 +56,8 @@ if [ -n "$TEST" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/level_test.py 127.0.0.1 $PORT
+  python3 -u test/placement_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT

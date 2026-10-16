@@ -3,6 +3,7 @@
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
+#include "../level/glue.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -46,6 +47,7 @@ inline void unregister_player(const PlayerPtr& pp) {
 // Called once from main() after register_core_handlers().
 inline void start_game() {
     game_init();
+    lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     boss::init();  // after the game handlers: it wraps some of them

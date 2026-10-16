@@ -38,7 +38,7 @@ namespace tick_detail {
 inline std::mutex m;
 inline std::condition_variable cv;
 inline std::vector<std::function<void()>> tasks;
-inline std::vector<void (*)()> tick_hooks;
+inline std::vector<void (*)()> tick_hooks, tick_end_hooks;
 inline std::vector<void (*)(Player&)> player_tick_hooks, player_sync_hooks, join_hooks, leave_hooks;
 }  // namespace tick_detail
 
@@ -57,6 +57,7 @@ inline void on_player_tick(void (*f)(Player&)) { tick_detail::player_tick_hooks.
 inline void on_player_sync(void (*f)(Player&)) { tick_detail::player_sync_hooks.push_back(f); } // end of tick, before flush
 inline void on_player_join(void (*f)(Player&)) { tick_detail::join_hooks.push_back(f); }       // after the player is visible
 inline void on_player_leave(void (*f)(Player&)) { tick_detail::leave_hooks.push_back(f); }     // before removal
+inline void on_tick_end(void (*f)()) { tick_detail::tick_end_hooks.push_back(f); }             // after player ticks, before sync
 
 // Disconnects a player: its network thread sees EOF and the normal leave path runs.
 inline void kick(Player& p) { shutdown(p.fd, SHUT_RDWR); }
@@ -154,6 +155,7 @@ inline void tick_once() {
     for (auto f : tick_hooks) f();
     for (auto& pp : players)
         for (auto f : player_tick_hooks) f(*pp);
+    for (auto f : tick_end_hooks) f();
     for (auto& pp : players) {
         for (auto f : player_sync_hooks) f(*pp);
         if (pp->out.pending() > (32u << 20)) { pp->quit_reason = "Too far behind (32 MiB unsent)"; kick(*pp); }
