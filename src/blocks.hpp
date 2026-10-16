@@ -25,8 +25,7 @@ inline void change_block(int x, int y, int z, int state) {
 }
 // /setblock, /fill: BlockInput.place(2 | 256) + updateNeighboursOnBlockSet (level sends the client updates).
 inline bool (*level_command_place)(int x, int y, int z, int state) = nullptr;
-// ServerGamePacketListenerImpl.ackBlockChangesUpTo: sent after this tick's block updates.
-inline void ack_block_changes(Player& p, int seq) { p.g.ack_seq = std::max(p.g.ack_seq, seq); }
+
 
 inline int pick_item(int state) {
     auto it = std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state);
