@@ -22,6 +22,8 @@
 #include "worldgen/random.hpp"
 #include "worldgen/structure/blocks.hpp"
 
+namespace df { struct Sampler; }
+
 namespace structure {
 
 // ------------------------------------------------------------------------------------------- geometry
@@ -113,6 +115,7 @@ struct Generator {
   int firstOccupiedHeight(int x, int z, Heightmap t) { return baseHeight(x, z, t) - 1; }
   virtual void baseColumn(int x, int z, std::vector<int>& out) = 0;  // getBaseColumn: states MIN_Y..MAX_Y
   virtual int noiseBiome(int qx, int qy, int qz) = 0;                // biome source at quart coords (point path)
+  virtual float biomeTemperature(int biome, BlockPos p) = 0;         // Biome.getTemperature(pos, seaLevel)
   virtual int64_t seed() const = 0;
 };
 
@@ -142,6 +145,11 @@ struct Level {
 // ------------------------------------------------------------------------------------------- pieces
 struct Builder;
 struct Piece {
+  struct BlockSelector {  // StructurePiece.BlockSelector
+    int next = 0;  // air
+    virtual ~BlockSelector() = default;
+    virtual void select(RandomSource& random, int x, int y, int z, bool isEdge) = 0;
+  };
   BoundingBox boundingBox;
   int genDepth = 0;
   virtual ~Piece() = default;
@@ -188,11 +196,6 @@ struct Piece {
   void generateBox(Level& level, const BoundingBox& bb, const BoundingBox& box, int edge, int fill, bool skipAir) {
     generateBox(level, bb, box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ, edge, fill, skipAir);
   }
-  struct BlockSelector {
-    int next = 0;  // air
-    virtual ~BlockSelector() = default;
-    virtual void select(RandomSource& random, int x, int y, int z, bool isEdge) = 0;
-  };
   void generateBox(Level& level, const BoundingBox& bb, int x0, int y0, int z0, int x1, int y1, int z1, bool skipAir,
                    RandomSource& random, BlockSelector& selector);
   void generateBox(Level& level, const BoundingBox& bb, const BoundingBox& box, bool skipAir, RandomSource& random, BlockSelector& sel) {
@@ -337,7 +340,7 @@ class StructureManager {
   // Whole structure part of the features stage for a chunk, for callers without the feature interleaving.
   void placeAll(Level& level, int cx, int cz);
   // Beardifier.forStructuresInChunk -> density value source for that chunk (nullptr when empty).
-  std::shared_ptr<const struct BeardifierData> beardifier(int cx, int cz);
+  std::shared_ptr<const df::Sampler> beardifier(int cx, int cz);
 
   // /locate: findNearestMapStructure over the given structures (radius in placement cells, vanilla 100).
   struct Found { BlockPos pos; const Structure* structure; };

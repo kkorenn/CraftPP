@@ -41,7 +41,7 @@ namespace {
 
 struct SwampHutPiece : ScatteredPiece {
   explicit SwampHutPiece(RandomSource& random, int west, int north) : ScatteredPiece(west, 64, north, 7, 7, 9, randomHorizontal(random)) {}
-   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos referencePos) override {
+   void postProcess(Level& level, RandomSource&, const BoundingBox& chunkBB, int, int, BlockPos) override {
       if (updateAverageGroundHeight(level, chunkBB, 0)) {
          generateBox(level, chunkBB, 1, 1, 1, 5, 1, 7, BS(blocks::spruce_planks), BS(blocks::spruce_planks), false);
          generateBox(level, chunkBB, 1, 4, 2, 5, 4, 7, BS(blocks::spruce_planks), BS(blocks::spruce_planks), false);
@@ -106,7 +106,7 @@ struct JungleTemplePiece : ScatteredPiece {
     placedMainChest = p[0], placedHiddenChest = p[1], placedTrap1 = p[2], placedTrap2 = p[3];
     p += 4;
   }
-   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos referencePos) override {
+   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos) override {
       MossStoneSelector stoneSelector;
       if (updateAverageGroundHeight(level, chunkBB, 0)) {
          generateBox(level, chunkBB, 0, -4, 0, width - 1, 0, depth - 1, false, random, stoneSelector);
@@ -242,8 +242,7 @@ struct JungleTemplePiece : ScatteredPiece {
             8,
             chunkBB
          );
-         BS redstoneWireNS = Blocks.REDSTONE_WIRE
-            .defaultBlockState()
+         BS redstoneWireNS = BS(blocks::redstone_wire)
             .with("north", "side")
             .with("south", "side");
          placeBlock(level, redstoneWireNS, 5, -3, 7, chunkBB);
@@ -375,8 +374,7 @@ struct JungleTemplePiece : ScatteredPiece {
          placeBlock(level, redstoneWireNS, 8, -2, 10, chunkBB);
          placeBlock(
             level,
-            Blocks.REDSTONE_WIRE
-               .defaultBlockState()
+            BS(blocks::redstone_wire)
                .with("north", "side")
                .with("south", "side")
                .with("east", "side")
@@ -413,7 +411,7 @@ struct DesertPyramidPiece : ScatteredPiece {
     for (int i = 0; i < 4; i++) hasPlacedChest[i] = p[i];
     p += 4;
   }
-   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos referencePos) override {
+   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos) override {
       if (updateHeightPositionToLowestGroundHeight(level, -random.nextInt(3))) {
          generateBox(
             level, chunkBB, 0, -4, 0, width - 1, 0, depth - 1, BS(blocks::sandstone), BS(blocks::sandstone), false
@@ -450,7 +448,7 @@ struct DesertPyramidPiece : ScatteredPiece {
 
          for (int x = 0; x < width; x++) {
             for (int z = 0; z < depth; z++) {
-               int startY = -5;
+
                fillColumnDown(level, BS(blocks::sandstone), x, -5, z, chunkBB);
             }
          }
@@ -744,8 +742,7 @@ struct DesertPyramidPiece : ScatteredPiece {
    }
 
    void placeSand(int x, int y, int z) {
-      BlockPos worldPos = worldPos(x, y, z);
-      potentialSuspiciousSandWorldPositions.push_back(worldPos);
+      potentialSuspiciousSandWorldPositions.push_back(worldPos(x, y, z));
    }
 
    void placeSandBox(int x0, int y0, int z0, int x1, int y1, int z1) {
@@ -784,7 +781,7 @@ struct DesertPyramidPiece : ScatteredPiece {
 
 struct BuriedTreasurePiece : Piece {
   explicit BuriedTreasurePiece(BlockPos offset) : Piece(0, BoundingBox(offset)) {}
-      void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos referencePos) override {
+      void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int, int, BlockPos) override {
          int y = level.getHeight(Heightmap::OCEAN_FLOOR_WG, boundingBox.minX, boundingBox.minZ);
          BlockPos pos = BlockPos{boundingBox.minX, y, boundingBox.minZ};
 

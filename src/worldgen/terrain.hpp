@@ -72,7 +72,7 @@ class TerrainGenerator {
   // carvers (if given) + applyCarvingMask. noiseBiome(qx, qy, qz): stored biome of the region's chunks
   // (WorldGenRegion.getNoiseBiome, qy clamped by the caller); carverBiome(cx, cz): see Carvers::carve.
   void buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
-                    const std::function<int(int, int)>& carverBiome);
+                    const std::function<int(int, int)>& carverBiome, const df::Sampler* beardifier = nullptr);
   // Uncached multi-noise biome at a quart (BiomeSource.createUncachedResolver: point path).
   struct ClimateSampler {
     df::SamplerContext ctx{false};
@@ -83,7 +83,7 @@ class TerrainGenerator {
   int64_t seed;
   void createBiomes(Chunk& c);
   void chunkBiomes(int cx, int cz, const BiomeSource& source, std::vector<uint16_t>& out);
-  std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c);
+  std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c, const df::Sampler* beardifier = nullptr);
   std::unique_ptr<NoiseChunk> createNoiseChunk(const DensityVolume& volume);
   // getBaseHeight(x, z, WORLD_SURFACE_WG): y above the top non-air noise-stage block, or MIN_Y.
   // oceanFloor: OCEAN_FLOOR_WG instead (blocks_motion: only the default block in a noise column).

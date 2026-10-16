@@ -294,11 +294,11 @@ PlaceSettings portalSettings(Mirror m, Rotation r, RuinedPortal::Placement vp, B
   std::string j = R"([{"processor_type":"minecraft:rule","rules":[)";
   for (size_t i = 0; i < rules.size(); i++) j += (i ? "," : "") + rules[i];
   j += "]},{\"processor_type\":\"minecraft:protected_blocks\",\"value\":\"#minecraft:features_cannot_replace\"}]";
-  static std::mutex m;
+  static std::mutex cacheLock;
   static std::map<std::string, const ProcessorList*> cache;  // 3 distinct rule sets
   const ProcessorList* listp;
   {
-    std::lock_guard lock(m);
+    std::lock_guard lock(cacheLock);
     auto& slot = cache[j];
     if (!slot) slot = &processorList(Json::parse(j));
     listp = slot;

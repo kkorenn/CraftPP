@@ -18,12 +18,6 @@ std::string fullId(std::string_view id) {
   return id.find(':') == std::string_view::npos ? "minecraft:" + std::string(id) : std::string(id);
 }
 
-static std::vector<std::string> split(const std::string& s, char c) {
-  std::vector<std::string> out;
-  std::stringstream ss(s);
-  for (std::string t; std::getline(ss, t, c);) out.push_back(t);
-  return out;
-}
 
 const Blocks& Blocks::get() {
   static const Blocks b;
@@ -31,29 +25,12 @@ const Blocks& Blocks::get() {
 }
 
 Blocks::Blocks() {
-  std::ifstream f("java/src/main/resources/block-states-26.3.txt");
-  if (!f) throw std::runtime_error("blocks: missing java/src/main/resources/block-states-26.3.txt");
-  for (std::string line; std::getline(f, line);) {
-    if (line.empty()) continue;
-    auto parts = split(line, ' ');
-    Block b{parts[0], std::stoi(parts[1]), std::stoi(parts[2]), {}};
-    if (parts.size() > 3)
-      for (auto& p : split(parts[3], ';')) {
-        auto eq = p.find('=');
-        b.props.push_back({p.substr(0, eq), split(p.substr(eq + 1), ',')});
-      }
-    blocks_.push_back(std::move(b));
-  }
-  std::sort(blocks_.begin(), blocks_.end(), [](const Block& a, const Block& b) { return a.first < b.first; });
-  for (size_t i = 0; i < blocks_.size(); i++) {
-    firstStates_.push_back(blocks_[i].first);
-    byName_[blocks_[i].name] = (int)i;
-  }
   std::ifstream d("data/block_states.bin", std::ios::binary);
   uint32_t n = 0;
   if (!d.read((char*)&n, 4)) throw std::runtime_error("blocks: missing data/block_states.bin (tools/gen_block_dump.py)");
   std::vector<uint16_t> raw((size_t)n * 7);  // 5 x u16 transforms + u32 flags, little-endian
   d.read((char*)raw.data(), (std::streamsize)(raw.size() * 2));
+  if (!d) throw std::runtime_error("blocks: truncated data/block_states.bin");
   transforms_.resize((size_t)n * 5);
   flags_.resize(n);
   for (uint32_t i = 0; i < n; i++) {
@@ -62,53 +39,20 @@ Blocks::Blocks() {
   }
 }
 
-int Blocks::blockOf(int state) const {
-  return (int)(std::upper_bound(firstStates_.begin(), firstStates_.end(), state) - firstStates_.begin()) - 1;
-}
-
-int Blocks::blockIndex(std::string_view name) const {
-  auto it = byName_.find(fullId(name));
-  return it == byName_.end() ? -1 : it->second;
-}
-
 int Blocks::defaultState(std::string_view name) const {
   int b = blockIndex(name);
-  return b < 0 ? -1 : blocks_[b].def;
-}
-
-namespace {
-// Stride of property i (mixed radix, last property fastest).
-int stride(const Blocks::Block& b, size_t i) {
-  int s = 1;
-  for (size_t k = i + 1; k < b.props.size(); k++) s *= (int)b.props[k].second.size();
-  return s;
-}
-}  // namespace
-
-std::string Blocks::prop(int state, std::string_view key) const {
-  const Block& b = block(state);
-  for (size_t i = 0; i < b.props.size(); i++)
-    if (b.props[i].first == key) return b.props[i].second[(state - b.first) / stride(b, i) % b.props[i].second.size()];
-  return "";
-}
-
-bool Blocks::hasProp(int state, std::string_view key) const {
-  for (auto& p : block(state).props)
-    if (p.first == key) return true;
-  return false;
+  return b < 0 ? -1 : bs::R().default_state(b);
 }
 
 int Blocks::with(int state, std::string_view key, std::string_view value) const {
-  const Block& b = block(state);
-  for (size_t i = 0; i < b.props.size(); i++) {
-    if (b.props[i].first != key) continue;
-    auto& vals = b.props[i].second;
-    auto it = std::find(vals.begin(), vals.end(), value);
-    if (it == vals.end()) return state;
-    int st = stride(b, i), cur = (state - b.first) / st % (int)vals.size();
-    return state + ((int)(it - vals.begin()) - cur) * st;
-  }
-  return state;
+  int r = bs::R().with(state, key, value);
+  return r < 0 ? state : r;
+}
+
+std::vector<std::string> Blocks::propNames(int state) const {
+  std::vector<std::string> out;
+  for (auto& p : bs::R().block(blockOf(state)).props) out.push_back(p.name);
+  return out;
 }
 
 int Blocks::state(std::string_view name, const std::vector<std::pair<std::string, std::string>>& props) const {
@@ -119,19 +63,8 @@ int Blocks::state(std::string_view name, const std::vector<std::pair<std::string
 }
 
 int Blocks::parse(std::string_view s) const {
-  size_t br = s.find('[');
   size_t nb = s.find('{');
-  std::string_view name = s.substr(0, std::min(br, nb));
-  int st = defaultState(name);
-  if (st < 0 || br == std::string_view::npos || (nb != std::string_view::npos && nb < br)) return st;
-  size_t end = s.find(']', br);
-  if (end == std::string_view::npos) return -1;
-  for (auto& kv : split(std::string(s.substr(br + 1, end - br - 1)), ',')) {
-    auto eq = kv.find('=');
-    if (eq == std::string::npos) continue;
-    st = with(st, kv.substr(0, eq), kv.substr(eq + 1));
-  }
-  return st;
+  return bs::R().parse(nb == std::string_view::npos ? s : s.substr(0, nb));
 }
 
 int Blocks::rotate(int state, Rotation r) const {
@@ -161,21 +94,6 @@ std::vector<std::string> resolveTag(const std::string& kind, std::string_view ta
   add(fullId(t));
   return out;
 }
-
-const std::vector<uint8_t>& Blocks::tagMask(std::string_view tag) const {
-  std::string key = fullId(tag[0] == '#' ? tag.substr(1) : tag);
-  std::lock_guard lock(tagLock_);
-  auto it = tags_.find(key);
-  if (it != tags_.end()) return it->second;
-  std::vector<uint8_t> mask(blocks_.size(), 0);
-  for (auto& n : resolveTag("block", key)) {
-    int b = blockIndex(n);
-    if (b >= 0) mask[b] = 1;
-  }
-  return tags_.emplace(key, std::move(mask)).first->second;
-}
-
-bool Blocks::inTag(int state, std::string_view tag) const { return tagMask(tag)[blockOf(state)]; }
 
 const std::vector<std::string>& biomeNames() {
   static const std::vector<std::string> names = [] {

@@ -1,16 +1,14 @@
-// Block state registry for structure generation: name/property <-> state id (from the committed
-// java/src/main/resources/block-states-26.3.txt table), BlockState.rotate/mirror and per-state flags extracted
-// from the vanilla jar at build time (data/block_states.bin, tools/gen_block_dump.py), and block/biome tags
-// read from vanilla/src/data/minecraft/tags. No per-state heap data: properties are decoded arithmetically.
+// Block states for structure generation: BlockState.rotate/mirror and per-state flags extracted from the
+// vanilla jar at build time (data/block_states.bin, tools/gen_block_dump.py) on top of bs::Registry, plus
+// biome tags/ids read from vanilla/src/data/minecraft.
 #pragma once
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "worldgen/block_state.hpp"
 #include "worldgen/json.hpp"
 
 namespace structure {
@@ -37,24 +35,21 @@ enum : uint32_t {
   BS_SHAPE_FULL = 1u << 22,      // Block.isShapeFullBlock(getShape)
 };
 
+// Names, properties and tags come from the shared bs::Registry (worldgen/block_state.hpp); this adds
+// BlockState.rotate/mirror and the extra flags above.
 class Blocks {
  public:
   static const Blocks& get();  // loaded once, thread-safe
 
-  struct Block {
-    std::string name;  // "minecraft:oak_stairs"
-    int first, def;
-    std::vector<std::pair<std::string, std::vector<std::string>>> props;  // sorted by name; last varies fastest
-  };
-  int blockOf(int state) const;  // index into blocks()
-  const Block& block(int state) const { return blocks_[blockOf(state)]; }
-  int blockIndex(std::string_view name) const;  // -1 if unknown ("minecraft:" optional)
-  int defaultState(std::string_view name) const;  // -1 if unknown
+  int blockOf(int state) const { return bs::R().block_of(state); }
+  int blockIndex(std::string_view name) const { return bs::R().block_index(name); }  // -1 if unknown
+  int defaultState(std::string_view name) const;                                     // -1 if unknown
   bool is(int state, std::string_view name) const { return blockOf(state) == blockIndex(name); }
   // Property access; "" / unchanged state when the block lacks the property or value.
-  std::string prop(int state, std::string_view key) const;
+  std::string prop(int state, std::string_view key) const { return std::string(bs::R().value(state, key)); }
   int with(int state, std::string_view key, std::string_view value) const;
-  bool hasProp(int state, std::string_view key) const;
+  bool hasProp(int state, std::string_view key) const { return bs::R().has(state, key); }
+  std::vector<std::string> propNames(int state) const;
   // BlockState.CODEC style {Name, Properties} with defaults for missing properties.
   int state(std::string_view name, const std::vector<std::pair<std::string, std::string>>& props) const;
   // BlockStateParser.parseForBlock: "minecraft:foo[a=b,c=d]" (NBT suffix ignored). -1 on error.
@@ -66,19 +61,13 @@ class Blocks {
   bool faceFull(int state, int dirOrdinal) const { return flags_[state] >> (16 + dirOrdinal) & 1; }
   bool isAir(int state) const { return flags_[state] & BS_AIR; }
 
-  // Block tag membership ("minecraft:logs" or "#minecraft:logs"); unknown tag -> false.
-  bool inTag(int state, std::string_view tag) const;
-  const std::vector<uint8_t>& tagMask(std::string_view tag) const;  // per block index
+  const bs::Tag& tag(std::string_view tag) const { return bs::R().tag(tag); }  // "minecraft:logs" / "#logs"
+  bool inTag(int state, std::string_view t) const { return tag(t).has(blockOf(state)); }
 
  private:
   Blocks();
-  std::vector<Block> blocks_;
-  std::vector<int> firstStates_;  // sorted first state per block (blocks_ is sorted by first)
-  std::unordered_map<std::string, int> byName_;
   std::vector<uint16_t> transforms_;  // 5 per state
   std::vector<uint32_t> flags_;
-  mutable std::unordered_map<std::string, std::vector<uint8_t>> tags_;
-  mutable std::mutex tagLock_;
 };
 
 // Generic tag resolver for data/minecraft/tags/<kind>/... ("worldgen/biome", "block"): names in the tag.

@@ -1,6 +1,7 @@
 // Jigsaw structures: template pools, pool elements, PoolElementStructurePiece, JigsawPlacement and
 // JigsawStructure (villages, outposts, ancient cities, trail ruins, trial chambers, bastions, abandoned camps).
 #include <algorithm>
+#include <filesystem>
 #include <climits>
 #include <deque>
 #include <map>
@@ -60,8 +61,11 @@ PoolElement* parseElement(const Json& j, bool terrainMatching) {
     e->location = fullId(j["feature"].asString());
   } else if (t == "minecraft:list_pool_element") {
     e->kind = PoolElement::LIST;
-    for (auto& x : j["elements"].arr) e->list.push_back(parseElement(x, terrainMatching));
-    for (auto* x : e->list) x->terrainMatching = terrainMatching;  // setProjectionOnEachElement
+    for (auto& x : j["elements"].arr) {
+      PoolElement* el = parseElement(x, terrainMatching);
+      el->terrainMatching = terrainMatching;  // setProjectionOnEachElement
+      e->list.push_back(el);
+    }
   }
   elementStore.push_back(std::move(e));
   return elementStore.back().get();
@@ -85,7 +89,8 @@ const Pool* Pool::get(const std::string& id) {
       const PoolElement* el = parseElement(e["element"], false);
       for (int i = 0; i < e["weight"].asInt(); i++) p->templates.push_back(el);
     }
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    if (std::filesystem::exists(path)) fprintf(stderr, "structure: bad template pool %s: %s\n", key.c_str(), e.what());
     p = nullptr;  // missing pool
   }
   return (pools[key] = std::move(p)).get();
@@ -429,6 +434,7 @@ struct JigsawStructure : Structure {
     RandomSource& random = ctx.random;
     Rotation centerRotation = getRandomRotation(random);
     const Pool* centerPool = Pool::get(alias(startPool));
+    if (getenv("JDBG")) fprintf(stderr, "jigsaw %s at %d %d pool=%p\n", id.c_str(), ctx.cx, ctx.cz, (void*)centerPool);
     if (!centerPool) return std::nullopt;
     const PoolElement* centerElement =
         centerPool->templates.empty() ? emptyElement() : centerPool->templates[random.nextInt((int)centerPool->templates.size())];
@@ -454,7 +460,10 @@ struct JigsawStructure : Structure {
     if (!projectStart) {
       bottomY = adjusted.y;
     } else {
-      if (!ctx.couldStructureExistInColumn(centerX, centerZ, MIN_Y, MAX_Y)) return std::nullopt;
+      if (!ctx.couldStructureExistInColumn(centerX, centerZ, MIN_Y, MAX_Y)) {
+        if (getenv("JDBG")) fprintf(stderr, "  no biome in column\n");
+        return std::nullopt;
+      }
       bottomY = position.y + ctx.gen.baseHeight(centerX, centerZ, *projectStart);
     }
     int oldGround = box.minY + center->groundLevelDelta;
