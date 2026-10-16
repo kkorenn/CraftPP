@@ -6,6 +6,7 @@
   carvers: no features; carvers and material rules kept
   full:    no overrides (pack is a no-op)
   structures: like surface (no features, no carvers) but structures stay on
+--keep a,b (with --stage full): only those placed features remain (carvers kept).
 Structures are off via generate-structures=false, which test/compare.py sets for every pack but structures_*.
 Usage: python3 tools/make_noise_only_datapack.py [--stage noise|surface|carvers|structures|full] [--out DIR]"""
 import argparse, glob, json, os, shutil
@@ -15,6 +16,7 @@ SRC = f"{ROOT}/vanilla/src/data/minecraft/worldgen"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--stage", choices=["noise", "surface", "carvers", "structures", "full"], default="noise")
+ap.add_argument("--keep", help="comma-separated placed features to keep (stage full only): everything else is removed")
 ap.add_argument("--out", help="pack directory (default vanilla/compare_run/datapacks/<stage>_only)")
 a = ap.parse_args()
 out = a.out or f"{ROOT}/vanilla/compare_run/datapacks/{a.stage}_only"
@@ -32,6 +34,12 @@ if a.stage != "full":
         b = json.load(open(f))
         b["features"] = [[] for _ in b["features"]]
         if a.stage != "carvers": b["carvers"] = []
+        put(f"data/minecraft/worldgen/biome/{os.path.basename(f)}", b)
+if a.keep:
+    keep = {k if ":" in k else "minecraft:" + k for k in a.keep.split(",")}
+    for f in glob.glob(f"{SRC}/biome/*.json"):
+        b = json.load(open(f))
+        b["features"] = [[x for x in step if x in keep] for step in b["features"]]
         put(f"data/minecraft/worldgen/biome/{os.path.basename(f)}", b)
 if a.stage == "noise":
     # SequenceRule's codec accepts an empty list; it compiles to "no match" -> default block stays.

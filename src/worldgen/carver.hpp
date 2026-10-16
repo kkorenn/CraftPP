@@ -30,7 +30,7 @@ struct CarvingMask {  // net.minecraft.world.level.chunk.CarvingMask
 
 class Carvers {
  public:
-  explicit Carvers(const std::string& dataRoot = "vanilla/src/data");
+  explicit Carvers(const std::string& dataRoot = "vanilla/src/data", const std::string& pack = "");
   // generateCarvers for chunk (cx, cz): biomeAt(sx, sz) = biome id (biomes::) of source chunk (sx, sz) at quart
   // (minBlockX >> 2, 0, minBlockZ >> 2) (getBiomeGenerationSettingsForCarver).
   void carve(int64_t seed, int cx, int cz, const std::function<int(int, int)>& biomeAt, CarvingMask& mask) const;

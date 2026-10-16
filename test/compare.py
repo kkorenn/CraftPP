@@ -22,10 +22,13 @@ ap.add_argument("--mode", choices=["full", "solid"], default="full")
 ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla world (also disables structures)")
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
 ap.add_argument("--center", nargs=2, type=int, help="block x z to compare around instead of the world spawn")
-ap.add_argument("--vanilla-cache", help="pickle of the vanilla run: loaded if it exists, else written (iterate on craftpp only)")
 ap.add_argument("--dump", help="pickle (A, B) chunk data for offline analysis")
 ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
+ap.add_argument("--stable", action="store_true", help="run vanilla twice; compare only blocks both vanilla runs agree on")
+ap.add_argument("--cache", help="directory to cache vanilla runs in (keyed by seed/radius/pack/structures)")
+ap.add_argument("--pairs", type=int, default=8)
+ap.add_argument("--dump", help="pickle (vanilla, vanilla2, other, center) chunk data to this file for analysis")
 ap.add_argument("--run-dir", default=RUN, help="vanilla server directory (one per parallel compare run)")
 ap.add_argument("--examples", type=int, default=10)
 ap.add_argument("--timeout", type=float, default=300)
@@ -102,12 +105,12 @@ def run_vanilla(n, center):
 
 def run_craftpp(center):
     pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
-    stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s)), "features")
+    stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s + "_")), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
-                           f"worldgen-stages={stage}\n")
+                           f"worldgen-stages={stage}\n" + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
     p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
@@ -129,21 +132,39 @@ FLUID = {"minecraft:water", "minecraft:lava", "minecraft:bubble_column"}
 CLASS = {i: 0 if n.split("[")[0] in AIR else 1 if n.split("[")[0] in FLUID else 2 for i, n in NAMES.items()}
 CLASS_NAME = ["air", "fluid", "solid"]
 
-print(f"vanilla run (seed {args.seed}, radius {args.radius}, view {view}) ...", flush=True)
 import pickle
-if args.vanilla_cache and os.path.exists(args.vanilla_cache):
-    A, bioA, center = pickle.load(open(args.vanilla_cache, "rb"))
+key = f"{args.seed}_{args.radius}_{args.center}_{os.path.basename(os.path.normpath(args.vanilla_datapack or 'none'))}_{args.no_structures}"
+cache = args.cache and os.path.join(args.cache, key + ".pickle")
+A2 = None
+if cache and os.path.exists(cache):
+    A, bioA, center, A2 = pickle.load(open(cache, "rb"))
+    print(f"vanilla run from {cache}", flush=True)
 else:
+    print(f"vanilla run (seed {args.seed}, radius {args.radius}, view {view}) ...", flush=True)
     A, bioA, center = run_vanilla(1, (args.center[0], 120, args.center[1]) if args.center else None)
-    if args.vanilla_cache: pickle.dump((A, bioA, center), open(args.vanilla_cache, "wb"))
+if args.stable and A2 is None:
+    print("second vanilla run (noise floor) ...", flush=True)
+    A2 = run_vanilla(2, center)[0]
+if cache:
+    os.makedirs(args.cache, exist_ok=True)
+    pickle.dump((A, bioA, center, A2), open(cache, "wb"))
 print(f"spawn {center}, chunk {center[0] >> 4},{center[2] >> 4}; {args.against} run ...", flush=True)
 B, bioB, _ = run_vanilla(2, center) if args.against == "vanilla" else run_craftpp(center)
+if args.dump: pickle.dump((A, A2, B, center), open(args.dump, "wb"))
+noise = 0
+if args.stable:  # vanilla's own run-to-run differences (feature order between chunks) are masked out
+    for k in A:
+        for (ba, _), (b2, _) in zip(A[k], A2[k]):
+            noise += sum(x != y for x, y in zip(ba, b2))
 
 if args.dump: pickle.dump((A, B, center), open(args.dump, "wb"))
 per_section, per_chunk, examples, block_pairs = collections.Counter(), collections.Counter(), [], collections.Counter()
 bio_pairs, bio_examples, total = collections.Counter(), [], 0
 for (cx, cz) in sorted(A):
     for si, ((ba, ga), (bb, gb)) in enumerate(zip(A[cx, cz], B[cx, cz])):
+        if args.stable:  # unstable vanilla blocks compare equal
+            b2 = A2[cx, cz][si][0]
+            bb = [y if x == z else x for x, y, z in zip(ba, bb, b2)]
         if args.mode == "solid": ba, bb = [CLASS[x] for x in ba], [CLASS[x] for x in bb]
         total += 4096
         if ba != bb:
@@ -165,11 +186,12 @@ for (cx, cz) in sorted(A):
 
 bad = sum(per_section.values())
 print(f"\n{len(A)} chunks, {total} blocks compared ({args.mode} mode): {bad} block mismatches ({100 * bad / total:.2f}%)")
+if args.stable: print(f"vanilla run-to-run differences masked: {noise} ({100 * noise / total:.2f}%)")
 if bad:
     print("per section (y range: mismatches):")
     for si in sorted(per_section): print(f"  y {MIN_Y + si * 16:4}..{MIN_Y + si * 16 + 15:4}: {per_section[si]}")
     print("per chunk:", ", ".join(f"{k[0]},{k[1]}={v}" for k, v in sorted(per_chunk.items())))
-    print("top pairs:", *(f"  vanilla {a} -> {args.against} {b}: {n}" for (a, b), n in block_pairs.most_common(8)), sep="\n")
+    print("top pairs:", *(f"  vanilla {a} -> {args.against} {b}: {n}" for (a, b), n in block_pairs.most_common(args.pairs)), sep="\n")
     print("first mismatches:", *examples, sep="\n")
 nb = sum(bio_pairs.values())
 print(f"{nb} biome mismatches of {len(A) * 24 * 64} cells")
