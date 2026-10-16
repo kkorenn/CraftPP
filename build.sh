@@ -20,6 +20,9 @@ if [ "$1" = "test" ]; then
     fail "no '$1' in $LOG"
   }
 
+  # Structures: template loading, persistence round trip, /locate of 8 structure types (asserts inside).
+  ./build/structure_test > build/structure_test.log 2>&1 || { tail -5 build/structure_test.log; echo "FAIL: structure_test"; exit 1; }
+
   # EULA gate: a fresh directory gets eula.txt (eula=false) and a full server.properties, then refuses to start.
   rm -rf build/eula-test && mkdir -p build/eula-test
   printf 'server-port=%s\nlevel-name=build/eula-test/world\n' "$PORT" > build/eula-test/server.properties

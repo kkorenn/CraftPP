@@ -400,7 +400,7 @@ void StructureStart::placeInChunk(Level& level, RandomSource& random, const Boun
   structure->afterPlace(level, random, chunkBB, ccx, ccz, pieces);
   if (owner) {
     std::lock_guard l(owner->persistLock_);
-    owner->dirty_.insert(this);  // starts stay cached (never freed), so the raw pointer is stable
+    owner->dirty_.insert(shared_from_this());
   }
 }
 
@@ -666,13 +666,46 @@ std::vector<StartP> StructureManager::starts(int cx, int cz) {
   {
     std::lock_guard lock(m_);
     auto it = cache_.find(key);
-    if (it != cache_.end()) return it->second;
+    if (it != cache_.end()) {
+      it->second.used = ++useClock_;
+      return it->second.starts;
+    }
   }
   auto v = compute(cx, cz);  // outside the lock: generation can be slow (jigsaw)
-  std::lock_guard lock(m_);
-  // ponytail: unbounded start cache (empty vectors for most chunks); evict with chunk unloading when that lands.
-  auto [it, inserted] = cache_.emplace(key, std::move(v));
-  return it->second;
+  std::vector<StartP> dropped;
+  std::vector<StartP> out;
+  {
+    std::lock_guard lock(m_);
+    auto [it, inserted] = cache_.try_emplace(key, CacheEntry{std::move(v), 0});
+    it->second.used = ++useClock_;
+    out = it->second.starts;
+    if (cache_.size() > kCacheCap) {  // drop the least recently used half
+      std::vector<std::pair<uint64_t, int64_t>> byUse;
+      byUse.reserve(cache_.size());
+      for (auto& [k, e] : cache_) byUse.emplace_back(e.used, k);
+      std::nth_element(byUse.begin(), byUse.begin() + long(byUse.size() / 2), byUse.end());
+      for (size_t i = 0; i < byUse.size() / 2; i++) {
+        auto e = cache_.find(byUse[i].second);
+        for (auto& st : e->second.starts) dropped.push_back(std::move(st));
+        cache_.erase(e);
+      }
+    }
+  }
+  if (!dropped.empty()) evicted(std::move(dropped));
+  return out;
+}
+
+// ponytail: a start dropped while another thread still places it keeps changing after its snapshot, and a
+// recompute meanwhile starts from the older state. The LRU cap is far above the generation working set (~1.5k
+// chunks at view distance 10), so only starts unused for thousands of chunk lookups are dropped.
+void StructureManager::evicted(std::vector<StartP> starts) {
+  std::vector<StartP> dirty;
+  {
+    std::lock_guard l(persistLock_);
+    for (auto& s : starts)
+      if (dirty_.erase(s)) dirty.push_back(s);
+  }
+  snapshot(dirty);
 }
 
 // ------------------------------------------------------------------------------------------- persistence
@@ -725,29 +758,33 @@ void StructureManager::restore(StructureStart& s) {
   s.references = it->second.references;
 }
 
-void StructureManager::saveDirty() {
-  std::set<StructureStart*> todo;
-  {
-    std::lock_guard l(persistLock_);
-    if (persistDir_.empty()) return;
-    todo.swap(dirty_);
-  }
-  if (todo.empty()) return;
+void StructureManager::snapshot(const std::vector<StartP>& starts) {
   std::vector<std::pair<StructureStart*, Saved>> states;  // placeLock before persistLock (placeInChunk's order)
-  for (StructureStart* s : todo) {
+  for (auto& s : starts) {
     std::lock_guard pl(s->placeLock);
     Saved sv{s->references, {}};
     for (auto& p : s->pieces) p->saveState(sv.state);
-    states.emplace_back(s, std::move(sv));
+    states.emplace_back(s.get(), std::move(sv));
   }
   std::lock_guard l(persistLock_);
-  std::set<std::pair<int, int>> touched;
   for (auto& [s, sv] : states) {
     region(s->cx >> 5, s->cz >> 5)[{chunkKey(s->cx, s->cz), s->structure->registryIndex}] = std::move(sv);
-    touched.insert({s->cx >> 5, s->cz >> 5});
+    unwritten_.insert({s->cx >> 5, s->cz >> 5});
   }
+}
+
+void StructureManager::saveDirty() {
+  std::vector<StartP> todo;
+  {
+    std::lock_guard l(persistLock_);
+    todo.assign(dirty_.begin(), dirty_.end());
+    dirty_.clear();
+  }
+  snapshot(todo);
+  std::lock_guard l(persistLock_);
+  if (persistDir_.empty() || unwritten_.empty()) return;  // no world dir: regions_ is the only store
   std::filesystem::create_directories(persistDir_);
-  for (auto [rx, rz] : touched) {
+  for (auto [rx, rz] : unwritten_) {
     std::vector<uint8_t> out;
     RegionMap& m = regions_[{rx, rz}];
     putInt(out, (int)m.size());
@@ -762,6 +799,8 @@ void StructureManager::saveDirty() {
     }
     std::filesystem::rename(path + ".tmp", path);
   }
+  unwritten_.clear();
+  if (regions_.size() > kRegionCap) regions_.clear();  // all on disk now; reloaded lazily by restore()
 }
 
 // Chunk data (vanilla ChunkSerializer "structures"): starts {id, references} of this chunk + References.

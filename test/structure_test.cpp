@@ -7,6 +7,9 @@
 #include <filesystem>
 #include <map>
 #include <typeinfo>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 #include "world.hpp"
 #include "worldgen/overworld.hpp"
@@ -29,6 +32,36 @@ struct FakeLevel : structure::Level {  // flat world at y = height, everything e
   RandomSource& random() override { return r; }
   LegacyRandomSource r{1};
 };
+
+double rssMiB() {
+#ifdef __APPLE__
+  mach_task_basic_info info;
+  mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS) return 0;
+  return info.resident_size / 1048576.0;
+#else
+  long pages = 0, resident = 0;
+  if (FILE* f = fopen("/proc/self/statm", "r")) {
+    if (fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+    fclose(f);
+  }
+  return resident * 4096 / 1048576.0;
+#endif
+}
+
+// Starts built the way StructureManager does (start chunk random), for comparing piece lists with vanilla.
+void fortressPieces(int64_t seed, int cx, int cz, structure::Builder& b) {
+  WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
+  r.setLargeFeatureSeed(seed, cx, cz);
+  structure::generateFortress(b, r, cx * 16 + 2, cz * 16 + 2);
+  b.moveInsideHeights(r, 48, 70);
+}
+void endCityPieces(int64_t seed, int cx, int cz, int y, structure::Builder& b) {  // y: vanilla's start height
+  WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
+  r.setLargeFeatureSeed(seed, cx, cz);
+  structure::Rotation rot = structure::getRandomRotation(r);
+  structure::generateEndCity({cx * 16 + 7, y, cz * 16 + 7}, rot, b, r);
+}
 
 // Piece state written by one manager is restored by a fresh one (restart), not recomputed.
 void persistCheck(worldgen::Overworld& ow) {
@@ -136,6 +169,13 @@ int main(int argc, char** argv) {
     const auto& t = structure::Template::get("minecraft:igloo/top");
     assert(t.size.x == 7 && t.size.y == 5 && t.size.z == 8 && !t.palettes.empty());
     persistCheck(*std::make_unique<worldgen::Overworld>(seed, "structures"));
+    if (seed == 12345) {  // piece counts of starts checked block by block against vanilla (test/structure_pieces_vanilla.py)
+      structure::Builder f, e;
+      fortressPieces(seed, 7, 42, f);
+      endCityPieces(seed, -158, 81, 61, e);
+      assert(f.pieces.size() == 142 && f.pieces[0]->boundingBox == structure::BoundingBox(114, 55, 674, 132, 64, 692));
+      assert(e.pieces.size() == 66);
+    }
     ids = {"minecraft:village_plains", "minecraft:stronghold", "minecraft:desert_pyramid", "minecraft:monument",
            "minecraft:mineshaft", "minecraft:ruined_portal", "minecraft:shipwreck", "minecraft:ancient_city"};
   }
@@ -160,6 +200,25 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
+  if (getenv("EXPLORE")) {  // EXPLORE=n: generate a 11-chunk wide strip n chunks long eastward; RSS + start cache size
+    int n = atoi(getenv("EXPLORE"));
+    worldgen::Overworld o(seed, "structures");
+    structure::StructureWorld w(o, true);
+    auto t0 = std::chrono::steady_clock::now();
+    for (int cx = 0; cx < n; cx++) {
+      for (int cz = -5; cz <= 5; cz++) {
+        Chunk c;
+        c.cx = cx, c.cz = cz;
+        o.pipeline.take(c.cx, c.cz, c);
+      }
+      if (cx % 250 == 249 || cx == n - 1) {
+        double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        printf("%5d chunks east: rss %.1f MiB, cached start chunks %zu, %.0fs\n", cx + 1, rssMiB(), w.manager().cachedChunks(), s);
+        fflush(stdout);
+      }
+    }
+    return 0;
+  }
   if (getenv("BOXQ")) {  // BOXQ=x0,y0,z0,x1,y1,z1: pieces of nearby starts intersecting the box
     int a[6];
     sscanf(getenv("BOXQ"), "%d,%d,%d,%d,%d,%d", a, a + 1, a + 2, a + 3, a + 4, a + 5);
@@ -170,7 +229,7 @@ int main(int argc, char** argv) {
           for (auto& p : st->pieces)
             if (p->boundingBox.intersects(q)) {
               auto& b = p->boundingBox;
-              printf("%s@%d,%d %s %d %d %d .. %d %d %d\n", st->structure->id.c_str(), cx, cz, typeid(*p).name(), b.minX, b.minY, b.minZ,
+              printf("%s@%d,%d %s %d %d %d .. %d %d %d\n", st->structure->id.c_str(), cx, cz, typeid(*p.get()).name(), b.minX, b.minY, b.minZ,
                      b.maxX, b.maxY, b.maxZ);
             }
     return 0;
@@ -211,11 +270,8 @@ int main(int argc, char** argv) {
   if (getenv("ENDCITY")) {  // ENDCITY=cx,cz,y: end city pieces of a start in that chunk at height y (vanilla's start y)
     int cx, cz, y;
     sscanf(getenv("ENDCITY"), "%d,%d,%d", &cx, &cz, &y);
-    WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
-    r.setLargeFeatureSeed(seed, cx, cz);
-    structure::Rotation rot = structure::getRandomRotation(r);
     structure::Builder b;
-    structure::generateEndCity({cx * 16 + 7, y, cz * 16 + 7}, rot, b, r);
+    endCityPieces(seed, cx, cz, y, b);
     if (const char* f = getenv("CHECK")) {
       checkAgainstVanilla(f, b.pieces);
       return 0;
@@ -232,11 +288,8 @@ int main(int argc, char** argv) {
   if (getenv("FORTRESS")) {  // FORTRESS=cx,cz: fortress pieces of a start in that chunk (test/structure_pieces_vanilla.py)
     int cx, cz;
     sscanf(getenv("FORTRESS"), "%d,%d", &cx, &cz);
-    WorldgenRandom r(std::make_unique<LegacyRandomSource>(0));
-    r.setLargeFeatureSeed(seed, cx, cz);
     structure::Builder b;
-    structure::generateFortress(b, r, cx * 16 + 2, cz * 16 + 2);
-    b.moveInsideHeights(r, 48, 70);
+    fortressPieces(seed, cx, cz, b);
     if (const char* f = getenv("CHECK")) {  // CHECK=blocks.bin (structure_pieces_vanilla.py --blocks-out): re-place on vanilla's blocks
       checkAgainstVanilla(f, b.pieces);
       return 0;
@@ -244,7 +297,7 @@ int main(int argc, char** argv) {
     printf("pieces %zu\n", b.pieces.size());
     for (auto& p : b.pieces) {
       auto& bb = p->boundingBox;
-      printf("%s %d %d %d %d %d %d %d\n", typeid(*p).name(), bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ,
+      printf("%s %d %d %d %d %d %d %d\n", typeid(*p.get()).name(), bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ,
              p->orientation() ? structure::data2d(*p->orientation()) : -1);
     }
     return 0;
