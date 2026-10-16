@@ -4,6 +4,8 @@
 #include <climits>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 
@@ -47,24 +49,35 @@ struct MaterialSystem::Loader {
   std::map<std::string, const Node*> rules, conds;
   std::map<std::pair<std::string, bool>, int> noiseSlot;
 
-  Loader(MaterialSystem& s, const std::string& report) : s(s) {
-    Json j = Json::parseFile(report);
-    for (auto& [name, b] : j.obj) {
-      BlockInfo& info = blocks[name];
-      for (auto& st : b["states"].arr) {
-        State x{st["id"].asInt(), {}};
-        if (auto* p = st.find("properties"))
-          for (auto& [k, v] : p->obj) x.props.push_back({k, v.asString()});
-        if (st.find("default")) info.def = (int)info.states.size();
-        info.states.push_back(std::move(x));
-      }
-    }
+  std::string report;  // blocks.json text; only the blocks the rules name get parsed (a full DOM costs ~40 MB)
+
+  Loader(MaterialSystem& s, const std::string& path) : s(s) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("material: cannot read " + path);
+    report.assign(std::istreambuf_iterator<char>(f), {});
   }
 
   const BlockInfo& block(const std::string& name) {
-    auto it = blocks.find(fullId(name));
-    if (it == blocks.end()) throw std::runtime_error("material: unknown block " + name);
-    return it->second;
+    std::string id = fullId(name);
+    auto it = blocks.find(id);
+    if (it != blocks.end()) return it->second;
+    size_t at = report.find("\"" + id + "\":");  // top-level keys: values are never followed by ':'
+    if (at == std::string::npos) throw std::runtime_error("material: unknown block " + name);
+    size_t begin = report.find('{', at), end = begin;
+    for (int depth = 0; end < report.size(); end++) {  // matching brace (no braces inside block report strings)
+      if (report[end] == '{') depth++;
+      else if (report[end] == '}' && --depth == 0) break;
+    }
+    Json b = Json::parse(std::string_view(report).substr(begin, end + 1 - begin));
+    BlockInfo& info = blocks[id];
+    for (auto& st : b["states"].arr) {
+      State x{st["id"].asInt(), {}};
+      if (auto* p = st.find("properties"))
+        for (auto& [k, v] : p->obj) x.props.push_back({k, v.asString()});
+      if (st.find("default")) info.def = (int)info.states.size();
+      info.states.push_back(std::move(x));
+    }
+    return info;
   }
 
   // BlockState.CODEC: block name (default state) or {Name, Properties}.
@@ -216,8 +229,12 @@ struct MaterialSystem::Loader {
 };
 
 int MaterialSystem::stateId(const std::string& name) const {
-  auto it = loader->blocks.find(fullId(name));
-  return it == loader->blocks.end() ? -1 : it->second.states[it->second.def].id;
+  try {
+    auto& b = loader->block(name);
+    return b.states[b.def].id;
+  } catch (const std::runtime_error&) {
+    return -1;
+  }
 }
 
 int MaterialSystem::biomeId(const std::string& name) const {
