@@ -560,7 +560,7 @@ std::string api(const std::string& m, const Json& a) {
         run_command(sender.get(), line);
         return "true";
     }
-    if (m == "server.shutdown") { shutdown_requested = 1; return "null"; }
+    if (m == "server.shutdown") { request_shutdown_async(); return "null"; }
     if (m == "server.ops") {
         std::lock_guard lock(ops_mtx);
         std::string s = "[";

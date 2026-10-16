@@ -7,6 +7,7 @@ logs/
 compile_commands.json
 tools/vineflower.jar
 .DS_Store
+build-*/
 ops.json
 banned-players.json
 banned-ips.json
@@ -31,3 +32,4 @@ java/.gradle/
 /banned-ips.json
 /whitelist.json
 /.console_history
+.cache/

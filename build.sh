@@ -38,7 +38,7 @@ if [ "$1" = "test" ]; then
   rm -f build/console.fifo && mkfifo build/console.fifo
   ./build/craftpp build/test.properties < build/console.fifo > $LOG 2>&1 &
   PID=$!
-  trap 'kill $PID 2>/dev/null || true; rm -f build/console.fifo' EXIT  # || true: set -e would turn a gone PID into exit 1
+  trap 'kill $PID 2>/dev/null || true; rm -f build/console.fifo' EXIT
   exec 3> build/console.fifo
   wait_log 'Done ('
   grep -qE '^\[[0-9:]{8} INFO\]: Done \([0-9]+\.[0-9]{3}s\)! For help, type "help"$' $LOG || fail "Done line format"
@@ -47,6 +47,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
+  python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
@@ -82,6 +83,7 @@ if [ "$1" = "test" ]; then
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
-  python3 -u test/plugin_test.py 25597  # Bukkit plugins; prints SKIP without a Java 25+ JDK
+  PLUGIN_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")
+  python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"
 fi
