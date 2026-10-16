@@ -110,11 +110,15 @@ block_tags_all = load_tags("block")
 item_tags_all = load_tags("item")
 WANT_BLOCK_TAGS = ["prevent_mob_spawning_inside", "animals_spawnable_on", "fences", "walls", "leaves", "logs", "climbable",
                    "infiniburn_overworld", "fire", "campfires", "trapdoors", "doors", "wool", "sheep_food",
-                   "enderman_holdable", "bamboo_plantable_on", "suppresses_bounce", "dirt", "sand", "blocks_fluid_flow", "ice", "speleothems", "beds"]
+                   "enderman_holdable", "bamboo_plantable_on", "suppresses_bounce", "dirt", "sand", "blocks_fluid_flow", "ice", "speleothems", "beds", "edible_for_sheep", "fall_damage_resetting"]
 block_tags = {t: sorted(block_index[short(v)] for v in block_tags_all.get("minecraft:" + t, []) if short(v) in block_index)
               for t in WANT_BLOCK_TAGS}
 item_tags = {short(t): sorted(item_id[short(v)] for v in vs if short(v) in item_id) for t, vs in item_tags_all.items()
              if short(t).endswith("_food") or short(t) in ("arrows", "swords", "axes", "creeper_igniters", "skeleton_preferred_weapons")}
+
+biome_index = {short(b): i for i, b in enumerate(biome_ids)}
+biome_tags_all = load_tags("worldgen/biome")
+biome_tags = {short(t): sorted(biome_index[short(v)] for v in vs if short(v) in biome_index) for t, vs in biome_tags_all.items()}
 
 # ---------- spawn placements (decompiled SpawnPlacements.java) ----------
 sp_java = open(os.path.join(SRC, "world", "entity", "SpawnPlacements.java")).read()
@@ -307,7 +311,9 @@ out = {
     "shapes": dump["shapes"], "state_shape": dump["state_shape"], "state_flags": dump["state_flags"],
     "state_path": dump["state_path"], "state_fluid": dump["state_fluid"], "path_types": dump["path_types"],
     "block_phys": block_phys, "attributes": attributes, "entity_types": types, "categories": categories,
-    "biome_spawns": biome_spawns, "entity_tags": entity_tags, "damage_tags": damage_tags, "damage_scaling": [damage_scaling[n] for n in damage_type_names], "block_tags": block_tags,
+    "biome_spawns": biome_spawns, "entity_tags": entity_tags, "damage_tags": damage_tags, "damage_scaling": [damage_scaling[n] for n in damage_type_names], "block_tags": block_tags, "biome_tags": biome_tags,
+    "registry_ids": {r.split(":")[1]: {short(k): v["protocol_id"] for k, v in registries[r]["entries"].items()}
+                     for r in ("minecraft:particle_type", "minecraft:sound_event")},
     "item_tags": item_tags, "loot": loot, "item_mods": sorted([k, v["m"], v["w"]] for k, v in item_mods.items()), "smelt": sorted([k, v] for k, v in smelt.items()),
 }
 with open(os.path.join(ROOT, "data", "mobs.json"), "w") as fp:

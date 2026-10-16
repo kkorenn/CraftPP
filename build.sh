@@ -49,6 +49,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
+  python3 -u test/mobs_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
   grep -q 'Alice lost connection: Disconnected' $LOG || fail "lost connection line"
