@@ -125,11 +125,8 @@ inline void respawn(Player& p) {
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // client dropped its entities
-    broadcast(remove_entities_packet({p.eid}), &p);
-    broadcast(spawn_entity(p), &p);
-    for (auto& q : players)
-        if (q.get() != &p) p.send(spawn_entity(*q));
+    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // client dropped its entities (p.g reset: players too)
+    untrack_player(p);  // others re-spawn it at the new position (track_players)
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).

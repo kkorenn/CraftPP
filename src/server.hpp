@@ -77,11 +77,9 @@ struct Player {
     std::string quit_reason;   // logged as "<name> lost connection: <reason>" (empty = "Disconnected")
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
-    void send(const Writer& body) {
-        thread_local std::vector<uint8_t> f;
-        f.clear();
-        frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);  // net.hpp
-        out.push_framed(f);
+    void send(const Writer& body) {  // framed straight into the outbox (net.hpp)
+        std::lock_guard lock(out.m);
+        if (!out.closed) frame_packet(out.buf, body.b.data(), body.b.size(), compression_threshold >= 0);
     }
     void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
@@ -229,9 +227,12 @@ inline PlayerPtr find_player(const std::string& name) {
 }
 
 inline void broadcast(const Writer& body, const Player* except = nullptr) {
-    std::lock_guard lock(players_mtx);  // no copy: send() only appends to the player's outbox
+    thread_local std::vector<uint8_t> f;  // framed (and compressed) once for everyone
+    f.clear();
+    frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);
+    std::lock_guard lock(players_mtx);  // no copy: push_framed only appends to the player's outbox
     for (auto& p : players)
-        if (p.get() != except) p->send(body);
+        if (p.get() != except) p->out.push_framed(f);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
@@ -266,17 +267,21 @@ inline Writer spawn_entity(const Player& p) {
                          .varint(0));
 }
 
-inline void broadcast_position(const Player& p) {
-    broadcast(Writer()
-                  .varint(play_cb::teleport_entity)
-                  .varint(p.eid)
-                  .f64(p.x).f64(p.y).f64(p.z)
-                  .f64(0).f64(0).f64(0)
-                  .f32(p.yaw).f32(p.pitch)
-                  .i32(0)
-                  .boolean(p.on_ground),
-              &p);
-    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
+// Position + head rotation as seen by other clients; sent at the end of the tick to the players tracking p
+// (game/entity.hpp track_players), at most once per tick however many move packets p sent.
+inline void broadcast_position(Player& p) { p.g.moved = true; }
+inline void write_position(std::vector<uint8_t>& out, const Player& p) {
+    Writer t = std::move(Writer()
+                             .varint(play_cb::teleport_entity)
+                             .varint(p.eid)
+                             .f64(p.x).f64(p.y).f64(p.z)
+                             .f64(0).f64(0).f64(0)
+                             .f32(p.yaw).f32(p.pitch)
+                             .i32(0)
+                             .boolean(p.on_ground));
+    Writer h = std::move(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)));
+    frame_packet(out, t.b.data(), t.b.size(), compression_threshold >= 0);
+    frame_packet(out, h.b.data(), h.b.size(), compression_threshold >= 0);
 }
 
 // ---------- player data ----------
