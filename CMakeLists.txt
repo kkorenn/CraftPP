@@ -60,3 +60,7 @@ if(EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
 else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
+# Boss fights (src/boss): pure parts (End spikes, podium, gateways, Mth tables).
+add_executable(boss_test test/boss_test.cpp)
+target_link_libraries(boss_test PRIVATE craftpp_worldgen)
+target_compile_options(boss_test PRIVATE -Wall -Wextra -UNDEBUG)
