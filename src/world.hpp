@@ -218,6 +218,13 @@ struct World {
         return *slot;
     }
 
+    // Already loaded or generated chunk, or null (never generates).
+    Chunk* find(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second.get();
+    }
+
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
         Chunk& c = get(x >> 4, z >> 4);
