@@ -132,6 +132,9 @@ class Pipeline {
   void set_step(Status s, StepFn fn, int lock_radius = -1);  // lock_radius -1: max(write radius, 0)
   // Called by ProtoChunk::set for chunks at >= INITIALIZE_LIGHT (lighting hook). May be empty.
   std::function<void(ProtoChunk&, int x, int y, int z, uint16_t old_state, uint16_t new_state)> on_block_changed;
+  // Called by take() under the chunk's mutex after copying into `out`, before the proto storage may be freed
+  // (lighting hook: stop reading the proto blocks). May be empty.
+  std::function<void(ProtoChunk&, Chunk& out)> on_take;
 
   // Brings (cx, cz) to at least `target` (and its dependencies), on the calling thread.
   ProtoPtr ensure(int cx, int cz, Status target);

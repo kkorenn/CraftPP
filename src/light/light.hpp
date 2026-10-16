@@ -2,13 +2,16 @@
 // Sky + block light: a port of vanilla world/level/lighting (LightEngine, SkyLightEngine, BlockLightEngine,
 // LayerLightSectionStorage, ChunkSkyLightSources, DataLayer). Implementation and design notes: light.cpp.
 //
-// Lifecycle (vanilla ChunkStatus INITIALIZE_LIGHT -> LIGHT, done lazily):
-//  * ensure_lit(cx, cz) before a chunk is sent: generates the 5x5 around it (outside the light lock), then
-//    initializes (section status + sky sources) and lights (propagateLightSources) the 3x3 around it. Light
-//    reaches at most 15 blocks, so once the 3x3 is lit the chunk's light is final until a block changes.
+// Lifecycle (vanilla ChunkStatus INITIALIZE_LIGHT -> LIGHT):
+//  * Generated worlds: attach(world, pipeline) sets the pipeline's INITIALIZE_LIGHT / LIGHT steps and its
+//    on_block_changed / on_take hooks, so a chunk is lit when it reaches LIGHT, from the proto chunks, as in
+//    vanilla. Light of a chunk whose neighbours light later changes; take_changes() reports it.
+//  * Without a pipeline (flat worlds) ensure_lit lights lazily: it generates the 5x5 around the chunk, then
+//    initializes and lights the 3x3 (light reaches < 16 blocks, so the chunk's light is then final).
+//  * ensure_lit(cx, cz) before a chunk is sent. With a pipeline it also covers chunks loaded from disk: it
+//    lights the generated version and applies the saved edits as block changes (light is not persisted).
 //  * World::set_block calls block_changed() with mutex() held; the work is queued (checkBlock) and runs on
 //    the next take_changes() (once per tick) or write().
-// Light is recomputed when chunks load (not persisted); see light.cpp for the measurement behind that.
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -16,8 +19,10 @@
 struct Chunk;
 struct World;
 struct Writer;
+namespace worldgen { class Pipeline; }
 
 namespace light {
+void attach(World& world, worldgen::Pipeline& pipeline);  // before the first chunk is generated
 std::mutex& mutex();  // guards the engine and every block write to a chunk the engine may read
 void ensure_lit(World& world, int cx, int cz);  // any thread; call without mutex() held
 void write(Writer& w, int cx, int cz);          // light half of level_chunk_with_light (ensure_lit first)

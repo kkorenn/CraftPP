@@ -17,6 +17,7 @@
 
 #include "../gen/light_data.hpp"
 #include "../world.hpp"
+#include "../worldgen/pipeline.hpp"
 
 #include <chrono>
 #include <climits>
@@ -112,7 +113,9 @@ struct Column {
     int top = 0;
     Status status = NEW;
     uint32_t affected_sky = 0, affected_block = 0;
-    Chunk* chunk = nullptr;
+    Chunk* chunk = nullptr;  // blocks read by the engine: the proto chunk until taken, then the World's
+    bool adopted = false;    // chunk is the World's (or the copy being handed to it)
+    bool resolve = false;    // chunk is take()'s copy: switch to the World's map entry once it is there
     int16_t sources[256];  // ChunkSkyLightSources (raw value, SRC_MIN_Y = none)
 };
 
@@ -120,6 +123,7 @@ struct Node { int x, y, z; uint32_t data; };
 
 struct Engine {
     World* world = nullptr;
+    worldgen::Pipeline* pipeline = nullptr;  // set: light is computed by the pipeline's light steps
     std::unordered_map<int64_t, std::unique_ptr<Column>> columns;
     int lowest = INT_MAX;  // SkyDataLayerStorageMap.currentLowestY
     std::vector<std::tuple<int, int, int>> to_check;  // blockNodesToCheck (both engines)
@@ -186,8 +190,10 @@ struct Engine {
 
     uint16_t state(int x, int y, int z) {
         Column* c = col(x >> 4, z >> 4);
+        if (c && c->resolve)
+            if (Chunk* w = find_chunk(x >> 4, z >> 4)) c->chunk = w, c->resolve = false;
         Chunk* ch = c ? c->chunk : nullptr;
-        if (!ch && (ch = find_chunk(x >> 4, z >> 4))) col_create(x >> 4, z >> 4).chunk = ch;
+        if (!ch && !pipeline && (ch = find_chunk(x >> 4, z >> 4))) col_create(x >> 4, z >> 4).chunk = ch;
         if (!ch) return blocks::bedrock;  // LightEngine.getState: chunk not loaded
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
         return ch->get(x & 15, y, z & 15);
@@ -572,10 +578,10 @@ struct Engine {
     }
 
     // ---------- chunk lifecycle ----------
-    void initialize(int cx, int cz) {  // ChunkStatusTasks.initializeLight
+    void initialize(int cx, int cz, Chunk* blocks = nullptr) {  // ChunkStatusTasks.initializeLight
         Column& c = col_create(cx, cz);
         if (c.status != NEW) return;
-        c.chunk = find_chunk(cx, cz);
+        c.chunk = blocks ? blocks : find_chunk(cx, cz);
         fill_sources(c, cx, cz);
         c.status = INITIALIZED;
         for (int si = 0; si < SECTIONS; si++)
@@ -586,6 +592,33 @@ struct Engine {
 Engine& engine() {
     static Engine e;
     return e;
+}
+
+// ponytail: runs here (pipeline light steps, tick) read proto blocks that another thread's FEATURES step may be
+// writing outside this lock (vanilla's light thread races the same way); the write reports itself through
+// on_block_changed, so the light converges. Take the light lock in ProtoChunk::set if storage gets resizable.
+void light_column(Engine& e, int cx, int cz) {  // LevelLightEngine.propagateLightSources: block, then sky
+    e.sky = false, e.block_propagate_sources(cx, cz);
+    e.sky = true, e.sky_propagate_sources(cx, cz);
+    e.col(cx, cz)->status = LIT;
+}
+
+void print_stats(Engine& e, size_t just_lit) {  // CRAFTPP_LIGHT_STATS=1: every 64 chunks lit
+    static const bool on = getenv("CRAFTPP_LIGHT_STATS");
+    if (!on || e.lit % 64 >= just_lit) return;
+    size_t layers = 0, arrays = 0;
+    for (auto& [k, c] : e.columns)
+        for (int si = 0; si < NSEC; si++)
+            if (c->present[si]) layers += 2, arrays += !!c->sky[si].data + !!c->block[si].data;
+    printf("light: %zu chunks lit, %.3f ms/chunk, %zu columns, %zu layers, %zu arrays (%.1f MB)\n", e.lit,
+           e.ms / double(e.lit), e.columns.size(), layers, arrays,
+           double(arrays * 2048 + e.columns.size() * sizeof(Column)) / 1048576.0);
+    fflush(stdout);
+}
+
+void compact(Column& c) {
+    for (auto& l : c.sky) l.compact();
+    for (auto& l : c.block) l.compact();
 }
 
 using Saved = std::vector<std::tuple<int64_t, uint32_t, uint32_t>>;
@@ -631,7 +664,72 @@ std::mutex& mutex() {
     return m;
 }
 
+void attach(World& world, worldgen::Pipeline& p) {
+    engine().world = &world;
+    engine().pipeline = &p;
+    using worldgen::Status;
+    p.set_step(Status::INITIALIZE_LIGHT, [](worldgen::Region& r) {
+        std::lock_guard lock(mutex());
+        engine().initialize(r.cx, r.cz, r.center().chunk.get());
+    });
+    p.set_step(Status::LIGHT, [](worldgen::Region& r) {  // reads the 3x3: lock it like vanilla's radius 1
+        std::lock_guard lock(mutex());
+        Engine& e = engine();
+        auto t0 = std::chrono::steady_clock::now();
+        light_column(e, r.cx, r.cz);
+        e.run();
+        for (int dx = -1; dx <= 1; dx++)  // the 3x3 is what this step wrote
+            for (int dz = -1; dz <= 1; dz++)
+                if (Column* c = e.col(r.cx + dx, r.cz + dz)) compact(*c);
+        e.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        e.lit++;
+        print_stats(e, 1);
+    }, 1);
+    p.on_block_changed = [](worldgen::ProtoChunk& c, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
+        std::lock_guard lock(mutex());
+        block_changed(c.cx * 16 + x, y, c.cz * 16 + z, old_state, new_state);
+    };
+    p.on_take = [](worldgen::ProtoChunk& c, Chunk& out) {
+        std::lock_guard lock(mutex());
+        if (Column* col = engine().col(c.cx, c.cz)) col->chunk = &out, col->adopted = col->resolve = true;
+    };
+}
+
+// A chunk the World loaded from disk while the pipeline lit its generated version: read the World's blocks
+// from now on and relight what differs, as if the saved edits had just been made.
+void adopt_loaded(Engine& e, Column& c, Chunk& w) {
+    Chunk& proto = *c.chunk;
+    c.chunk = &w, c.adopted = true;
+    for (int si = 0; si < SECTIONS; si++) {
+        bool has = Engine::section_empty(w, si) == false;
+        if (has != bool(c.state[si + (MIN_Y >> 4) - MIN_SEC] & 32)) e.update_section_status(w.cx, si + (MIN_Y >> 4), w.cz, !has);
+    }
+    e.fill_sources(c, w.cx, w.cz);
+    for (int si = 0; si < SECTIONS; si++) {
+        const auto &a = proto.sections[size_t(si)].blocks, &b = w.sections[size_t(si)].blocks;
+        if (a == b) continue;
+        for (int i = 0; i < 4096; i++) {
+            uint16_t o = a[size_t(i)], n = b[size_t(i)];
+            if (o != n && (dampening(o) != dampening(n) || emission(o) != emission(n) || !empty_shape(o) || !empty_shape(n)))
+                e.to_check.push_back({w.cx * 16 + (i & 15), MIN_Y + si * 16 + (i >> 8), w.cz * 16 + (i >> 4 & 15)});
+        }
+    }
+    e.run();
+}
+
 void ensure_lit(World& world, int cx, int cz) {
+    if (Engine& e = engine(); e.pipeline) {
+        {
+            std::lock_guard lock(mutex());
+            if (Column* c = e.col(cx, cz); c && c->adopted && c->status == LIT) return;
+        }
+        e.pipeline->ensure(cx, cz, worldgen::Status::LIGHT);  // a loaded chunk: light its generated version
+        Chunk& w = world.get(cx, cz);
+        std::lock_guard lock(mutex());
+        Column& c = *e.col(cx, cz);
+        if (!c.adopted) adopt_loaded(e, c, w);
+        return;
+    }
     auto lit_3x3 = [&](Engine& e) {
         for (int dx = -1; dx <= 1; dx++)
             for (int dz = -1; dz <= 1; dz++)
@@ -658,11 +756,7 @@ void ensure_lit(World& world, int cx, int cz) {
     for (auto [x, z] : todo)  // LIGHT needs INITIALIZE_LIGHT in a radius of 1
         for (int dx = -1; dx <= 1; dx++)
             for (int dz = -1; dz <= 1; dz++) e.initialize(x + dx, z + dz);
-    for (auto [x, z] : todo) {  // LevelLightEngine.propagateLightSources: block, then sky
-        e.sky = false, e.block_propagate_sources(x, z);
-        e.sky = true, e.sky_propagate_sources(x, z);
-        e.col(x, z)->status = LIT;
-    }
+    for (auto [x, z] : todo) light_column(e, x, z);
     e.run();
     // Lighting never changes an already-sent chunk (its 3x3 was lit before it was sent; light travels < 16
     // blocks), so the sections it touched need no light_update.
@@ -672,22 +766,10 @@ void ensure_lit(World& world, int cx, int cz) {
         c.affected_sky |= sky, c.affected_block |= block;
         e.dirty.insert(k);
     }
-    for (auto [x, z] : todo)
-        for (auto& l : e.col(x, z)->sky) l.compact();
-    for (auto [x, z] : todo)
-        for (auto& l : e.col(x, z)->block) l.compact();
+    for (auto [x, z] : todo) compact(*e.col(x, z));
     e.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     e.lit += todo.size();
-    if (getenv("CRAFTPP_LIGHT_STATS") && e.lit % 64 < todo.size()) {
-        size_t layers = 0, arrays = 0;
-        for (auto& [k, c] : e.columns)
-            for (int si = 0; si < NSEC; si++)
-                if (c->present[si]) layers += 2, arrays += !!c->sky[si].data + !!c->block[si].data;
-        printf("light: %zu chunks lit, %.3f ms/chunk, %zu columns, %zu layers, %zu arrays (%.1f MB)\n", e.lit,
-               e.ms / double(e.lit), e.columns.size(), layers, arrays,
-               double(arrays * 2048 + e.columns.size() * sizeof(Column)) / 1048576.0);
-        fflush(stdout);
-    }
+    print_stats(e, todo.size());
 }
 
 void write(Writer& w, int cx, int cz) {
