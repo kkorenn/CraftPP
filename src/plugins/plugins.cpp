@@ -102,8 +102,7 @@ void send_legacy(Player& p, const std::string& text, bool action_bar = false) {
 }
 
 void broadcast_legacy(const std::string& text) {
-    printf("[chat] %s\n", strip_codes(text).c_str());
-    fflush(stdout);
+    log_info("%s", text.c_str());
     Writer w;
     w.varint(play_cb::system_chat);
     legacy_component(w, text);
@@ -115,8 +114,7 @@ void kick_player(Player& p, const std::string& reason) {
     w.varint(play_cb::disconnect);
     legacy_component(w, reason);
     try { p.send(w); p.out.flush(); } catch (...) {}
-    printf("%s was kicked: %s\n", p.name.c_str(), strip_codes(reason).c_str());
-    fflush(stdout);
+    p.quit_reason = strip_codes(reason);
     shutdown(p.fd, SHUT_RDWR);  // the connection thread sees EOF and runs the normal leave path
 }
 
@@ -338,13 +336,9 @@ bool is_label(const std::string& line) {
 }
 
 void log_line(const std::string& level, const std::string& logger, const std::string& msg) {
-    std::istringstream in(strip_codes(msg));
-    for (std::string line; std::getline(in, line);) {
-        std::string prefix = level == "INFO" ? "" : level + ": ";
-        if (!logger.empty()) prefix += "[" + logger + "] ";
-        fputs((prefix + line + "\n").c_str(), level == "ERROR" ? stderr : stdout);
-    }
-    fflush(stdout);
+    std::istringstream in(msg);
+    LogLevel lv = level == "ERROR" || level == "SEVERE" ? LogLevel::ERROR : level == "WARN" || level == "WARNING" ? LogLevel::WARN : LogLevel::INFO;
+    for (std::string line; std::getline(in, line);) log_msg(lv, (logger.empty() ? "" : "[" + logger + "] ") + line);
 }
 
 // ---------- JVM ----------
@@ -508,8 +502,7 @@ void player_command(Player& p, std::string line, const std::function<void(const 
         if (auto* l = r.find("line"); l && l->isString()) line = l->asString()[0] == '/' ? l->asString().substr(1) : l->asString();
     }
     if (server_command(&p, line) || dispatch(&p, line)) {
-        printf("%s issued server command: /%s\n", p.name.c_str(), line.c_str());
-        fflush(stdout);
+        log_info("%s issued server command: /%s", p.name.c_str(), line.c_str());
         return;
     }
     fallback(line);
