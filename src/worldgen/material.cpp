@@ -4,7 +4,10 @@
 #include <climits>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
+#include <unordered_map>
 #include <stdexcept>
 
 #include "world.hpp"
@@ -47,24 +50,41 @@ struct MaterialSystem::Loader {
   std::map<std::string, const Node*> rules, conds;
   std::map<std::pair<std::string, bool>, int> noiseSlot;
 
-  Loader(MaterialSystem& s, const std::string& report) : s(s) {
-    Json j = Json::parseFile(report);
-    for (auto& [name, b] : j.obj) {
-      BlockInfo& info = blocks[name];
-      for (auto& st : b["states"].arr) {
-        State x{st["id"].asInt(), {}};
-        if (auto* p = st.find("properties"))
-          for (auto& [k, v] : p->obj) x.props.push_back({k, v.asString()});
-        if (st.find("default")) info.def = (int)info.states.size();
-        info.states.push_back(std::move(x));
-      }
+  std::string report;  // blocks.json text; only the blocks the rules name get parsed (a full DOM costs ~40 MB)
+
+  Loader(MaterialSystem& s, const std::string& path) : s(s) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("material: cannot read " + path);
+    report.assign(std::istreambuf_iterator<char>(f), {});
+    for (size_t at = report.find("\n  \""); at != std::string::npos; at = report.find("\n  \"", at + 1)) {
+      size_t q = report.find('"', at + 4);  // top-level keys are the only lines indented by exactly 2
+      offsets.emplace(report.substr(at + 4, q - at - 4), q);
     }
   }
+  std::unordered_map<std::string, size_t> offsets;  // block name -> position in report
 
   const BlockInfo& block(const std::string& name) {
-    auto it = blocks.find(fullId(name));
-    if (it == blocks.end()) throw std::runtime_error("material: unknown block " + name);
-    return it->second;
+    std::string id = fullId(name);
+    auto it = blocks.find(id);
+    if (it != blocks.end()) return it->second;
+    auto off = offsets.find(id);
+    if (off == offsets.end()) throw std::runtime_error("material: unknown block " + name);
+    size_t at = off->second;
+    size_t begin = report.find('{', at), end = begin;
+    for (int depth = 0; end < report.size(); end++) {  // matching brace (no braces inside block report strings)
+      if (report[end] == '{') depth++;
+      else if (report[end] == '}' && --depth == 0) break;
+    }
+    Json b = Json::parse(std::string_view(report).substr(begin, end + 1 - begin));
+    BlockInfo& info = blocks[id];
+    for (auto& st : b["states"].arr) {
+      State x{st["id"].asInt(), {}};
+      if (auto* p = st.find("properties"))
+        for (auto& [k, v] : p->obj) x.props.push_back({k, v.asString()});
+      if (st.find("default")) info.def = (int)info.states.size();
+      info.states.push_back(std::move(x));
+    }
+    return info;
   }
 
   // BlockState.CODEC: block name (default state) or {Name, Properties}.
@@ -216,8 +236,12 @@ struct MaterialSystem::Loader {
 };
 
 int MaterialSystem::stateId(const std::string& name) const {
-  auto it = loader->blocks.find(fullId(name));
-  return it == loader->blocks.end() ? -1 : it->second.states[it->second.def].id;
+  try {
+    auto& b = loader->block(name);
+    return b.states[b.def].id;
+  } catch (const std::runtime_error&) {
+    return -1;
+  }
 }
 
 int MaterialSystem::biomeId(const std::string& name) const {
@@ -357,30 +381,38 @@ int MaterialSystem::getBand(int x, int y, int z) const {
   return clayBands[(y + offset + n) % n];
 }
 
-int MaterialSystem::zoomedBiome(MaterialContext& ctx, int x, int y, int z, bool clampY) const {
-  int absX = x - 2, absY = y - 2, absZ = z - 2;
-  int parentX = absX >> 2, parentY = absY >> 2, parentZ = absZ >> 2;
-  double fractX = (absX & 3) / 4.0, fractY = (absY & 3) / 4.0, fractZ = (absZ & 3) / 4.0;
-  int minI = 0;
-  double minFiddledDistance = INFINITY;
+// BiomeManager.getFiddledDistance's per-corner offsets: depend only on the quart corner (memoized per chunk by Eval).
+MaterialSystem::Fiddle MaterialSystem::fiddles(int cx, int cy, int cz) const {
   auto fiddle = [](int64_t r) { return ((double)(((r >> 24) % 1024 + 1024) % 1024) / 1024.0 - 0.5) * 0.9; };
   auto lcg = [](int64_t r, int64_t c) {
     uint64_t u = (uint64_t)r;
     u *= u * 6364136223846793005ull + 1442695040888963407ull;
     return (int64_t)(u + (uint64_t)c);
   };
+  int64_t r = lcg(biomeZoomSeed, cx);
+  r = lcg(r, cy), r = lcg(r, cz), r = lcg(r, cx), r = lcg(r, cy), r = lcg(r, cz);
+  Fiddle f;
+  f.x = fiddle(r);
+  r = lcg(r, biomeZoomSeed);
+  f.y = fiddle(r);
+  r = lcg(r, biomeZoomSeed);
+  f.z = fiddle(r);
+  return f;
+}
+
+template <class FiddleAt>
+int MaterialSystem::zoomed(MaterialContext& ctx, int x, int y, int z, bool clampY, FiddleAt&& at) const {
+  int absX = x - 2, absY = y - 2, absZ = z - 2;
+  int parentX = absX >> 2, parentY = absY >> 2, parentZ = absZ >> 2;
+  double fractX = (absX & 3) / 4.0, fractY = (absY & 3) / 4.0, fractZ = (absZ & 3) / 4.0;
+  int minI = 0;
+  double minFiddledDistance = INFINITY;
   for (int i = 0; i < 8; i++) {
     bool xEven = (i & 4) == 0, yEven = (i & 2) == 0, zEven = (i & 1) == 0;
     int cx = xEven ? parentX : parentX + 1, cy = yEven ? parentY : parentY + 1, cz = zEven ? parentZ : parentZ + 1;
     double dx = xEven ? fractX : fractX - 1.0, dy = yEven ? fractY : fractY - 1.0, dz = zEven ? fractZ : fractZ - 1.0;
-    int64_t r = lcg(biomeZoomSeed, cx);
-    r = lcg(r, cy), r = lcg(r, cz), r = lcg(r, cx), r = lcg(r, cy), r = lcg(r, cz);
-    double fx = fiddle(r);
-    r = lcg(r, biomeZoomSeed);
-    double fy = fiddle(r);
-    r = lcg(r, biomeZoomSeed);
-    double fz = fiddle(r);
-    double next = Mth::square(dz + fz) + Mth::square(dy + fy) + Mth::square(dx + fx);
+    const Fiddle& f = at(cx, cy, cz);
+    double next = Mth::square(dz + f.z) + Mth::square(dy + f.y) + Mth::square(dx + f.x);
     if (minFiddledDistance > next) minI = i, minFiddledDistance = next;
   }
   int bx = (minI & 4) == 0 ? parentX : parentX + 1;
@@ -388,6 +420,11 @@ int MaterialSystem::zoomedBiome(MaterialContext& ctx, int x, int y, int z, bool 
   int bz = (minI & 1) == 0 ? parentZ : parentZ + 1;
   if (clampY) by = std::clamp(by, minY >> 2, (minY >> 2) + (height >> 2) - 1);  // ChunkAccess.getNoiseBiome
   return ctx.noiseBiome(bx, by, bz);
+}
+
+int MaterialSystem::zoomedBiome(MaterialContext& ctx, int x, int y, int z, bool clampY) const {
+  Fiddle tmp;
+  return zoomed(ctx, x, y, z, clampY, [&](int cx, int cy, int cz) -> const Fiddle& { return tmp = fiddles(cx, cy, cz); });
 }
 
 float MaterialSystem::biomeTemperature(int biome, int x, int y, int z) const {
@@ -526,8 +563,24 @@ struct Eval {
     return secondary;
   }
   int getBiome() {
-    if (biomeAt != lastY) biomeAt = lastY, biome = s.zoomedBiome(ctx, blockX, blockY, blockZ, clampBiomeY);
+    if (biomeAt != lastY) biomeAt = lastY, biome = zoomedBiome(blockX, blockY, blockZ, clampBiomeY);
     return biome;
+  }
+  // MaterialSystem::zoomedBiome with the corner offsets memoized over this chunk's quart corners.
+  static constexpr int FX = 6, FY = 100;
+  std::vector<MaterialSystem::Fiddle> fid;
+  std::vector<uint8_t> fidSet;
+  MaterialSystem::Fiddle fidTmp;
+  int zoomedBiome(int x, int y, int z, bool clampY) {
+    if (fid.empty()) fid.resize(FX * FX * FY), fidSet.assign(FX * FX * FY, 0);
+    int qx0 = (minX - 2) >> 2, qz0 = (minZ - 2) >> 2, qy0 = (s.minY - 2) >> 2;
+    return s.zoomed(ctx, x, y, z, clampY, [&](int cx, int cy, int cz) -> const MaterialSystem::Fiddle& {
+      unsigned ix = unsigned(cx - qx0), iy = unsigned(cy - qy0), iz = unsigned(cz - qz0);
+      if (ix >= FX || iz >= FX || iy >= FY) return fidTmp = s.fiddles(cx, cy, cz);
+      size_t i = (iy * FX + iz) * FX + ix;
+      if (!fidSet[i]) fid[i] = s.fiddles(cx, cy, cz), fidSet[i] = 1;
+      return fid[i];
+    });
   }
   int getMinSurfaceLevel() {
     if (minSurfaceAt != lastXZ) {
@@ -650,7 +703,7 @@ void MaterialSystem::buildSurface(Chunk& chunk, MaterialContext& ctx, const std:
       int blockX = ev.minX + x, blockZ = ev.minZ + z;
       ev.col = x + z * 16;
       int startingHeight = ev.height(x, z) + 1;
-      int surfaceBiome = zoomedBiome(ctx, blockX, startingHeight, blockZ, true);
+      int surfaceBiome = ev.zoomedBiome(blockX, startingHeight, blockZ, true);
       if (surfaceBiome == erodedBadlands) erodedBadlandsExtension(ev, blockX, blockZ, startingHeight);
 
       int h = ev.height(x, z) + 1;
