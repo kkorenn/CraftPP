@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
 ENTITY = ids("entity_types")
+REG_ITEMS = __import__("json").load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
 HOSTILE = {ENTITY[n] for n in ("zombie", "skeleton", "creeper", "spider")}
 
 def cmd(c, line): c.send(PLAY_SB["chat_command"], string(line))
@@ -161,6 +162,44 @@ def main(host, port):
     assert wool["n"] >= 1, "shearing dropped no wool"
     print(f"shearing ok: {wool['n']} wool item(s)")
     cmd(c, "kill @e[type=!player]")
+
+    # ---- PvP: Sam kills Alice; the death message names the killer; pvp=false stops damage ----
+    a, _ = login("Alice", host, port)
+    a.send(PLAY_SB["client_command"], varint(0))
+    cmd(a, "gamemode survival")
+    cmd(a, f"tp Alice {sx + 1.5} {sy} {sz}")
+    alice = {}
+    pump(c, 3, lambda pid, b: pid == PLAY_CB["add_entity"] and (lambda e: e[1] == ENTITY["player"] and alice.update(id=e[0]) is None)(add_entity(b)))
+    assert "id" in alice, "Sam doesn't see Alice"
+    cmd(c, "clear Sam")
+    cmd(c, "give Sam minecraft:diamond_sword")
+    cmd(c, "gamerule pvp false")
+    pump(c, 0.8, lambda pid, b: False)
+    c.send(PLAY_SB["attack"], varint(alice["id"]))
+    assert not pump(c, 1.0, lambda pid, b: pid == PLAY_CB["damage_event"] and b.varint() == alice["id"]), "pvp=false still hurt"
+    cmd(c, "gamerule pvp true")
+    msg = {}
+    for _ in range(12):
+        c.send(PLAY_SB["attack"], varint(alice["id"]))
+        if pump(c, 0.6, lambda pid, b: pid == PLAY_CB["system_chat"] and b"death.attack.player" in b.d and msg.update(d=b.d) is None): break
+    assert "d" in msg and b"Sam" in msg["d"], f"no killer death message: {msg}"
+    print("pvp ok: pvp=false blocks damage, death.attack.player names Sam")
+    a.send(PLAY_SB["client_command"], varint(0))
+    a.s.close()
+
+    # ---- pick block on an entity (creative): spawn egg ----
+    cmd(c, f"summon pig {sx + 1.5} {sy} {sz} {{NoAI:1b}}")
+    pig = {}
+    pump(c, 3, lambda pid, b: pid == PLAY_CB["add_entity"] and (lambda e: e[1] == ENTITY["pig"] and pig.update(id=e[0]) is None)(add_entity(b)))
+    c.send(PLAY_SB["pick_item_from_entity"], varint(pig["id"]) + b"\0")
+    egg = REG_ITEMS["minecraft:pig_spawn_egg"]["protocol_id"]
+    def on_slot(pid, b):
+        if pid != PLAY_CB["set_player_inventory"]: return False
+        b.varint()
+        return b.varint() > 0 and b.varint() == egg
+    assert pump(c, 3, on_slot), "pick block on pig gave no spawn egg"
+    print("pick entity ok: pig spawn egg")
+    cmd(c, "kill @e[type=pig]")
 
     # ---- natural spawning at night ----
     cmd(c, "difficulty normal")
