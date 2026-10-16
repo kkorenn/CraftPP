@@ -81,5 +81,6 @@ if [ "$1" = "test" ]; then
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
+  python3 -u test/plugin_test.py 25597  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"
 fi

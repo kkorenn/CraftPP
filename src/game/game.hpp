@@ -53,6 +53,7 @@ inline void keepalive_tick(Player& p) {
 inline void start_game() {
     game_init();
     register_game_handlers();
+    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }
