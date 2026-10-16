@@ -83,3 +83,15 @@ move(c, 4.5, -60, 4.5, True)
 h = wait(c, PLAY_CB["set_health"], lambda b: struct.unpack(">f", b.d[b.i:b.i + 4])[0] < 20)
 assert struct.unpack(">f", h.take(4))[0] == 13.0
 print("fall damage ok")
+
+# 4. Death: a 30 block fall kills (13 health left) -> combat kill screen, respawn restores health.
+move(c, 4.5, -30, 4.5, False)
+move(c, 4.5, -60, 4.5, True)
+k = wait(c, PLAY_CB["player_combat_kill"])
+k.varint()
+assert b"death.fell.accident.generic" in k.d, k.d
+c.send(PLAY_SB["client_command"], varint(0))
+wait(c, PLAY_CB["respawn"])
+h = wait(c, PLAY_CB["set_health"])
+assert struct.unpack(">f", h.take(4))[0] == 20.0
+print("death + respawn ok")
