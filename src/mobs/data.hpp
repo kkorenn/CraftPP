@@ -113,7 +113,11 @@ struct BiomeSpawnInfo {
 inline std::vector<BiomeSpawnInfo> biome_spawns;  // by biome id
 
 // ---------- tags ----------
-inline std::map<std::string, std::vector<uint16_t>> etype_tags, damage_tags, block_tags_ext, item_tags_ext;
+inline std::map<std::string, std::vector<uint16_t>> etype_tags, damage_tags, block_tags_ext, item_tags_ext, biome_tags;
+inline bool biome_in_tag(int biome, const std::string& tag) {
+    auto it = biome_tags.find(tag);
+    return it != biome_tags.end() && in_sorted(it->second, biome);
+}
 inline bool entity_in_tag(int type, const std::string& tag) {
     auto it = etype_tags.find(tag);
     return it != etype_tags.end() && in_sorted(it->second, type);
@@ -141,6 +145,13 @@ inline bool slot_matches(uint8_t group, int slot) {  // EquipmentSlotGroup.test
     return group == slot;
 }
 
+inline std::map<std::string, std::map<std::string, int>> registry_ids;  // "particle_type"/"sound_event" -> name -> id
+inline int reg_id(const std::string& reg, const std::string& name) {
+    auto r = registry_ids.find(reg);
+    if (r == registry_ids.end()) return 0;
+    auto it = r->second.find(name);
+    return it == r->second.end() ? 0 : it->second;
+}
 inline std::map<std::string, int> entity_loot_index;  // "entities/cow", "shearing/sheep/white" -> loot_tables index
 inline void load_entity_loot(const Json& loot);         // loot.hpp
 inline void init_damage_tags(const Json& scaling);     // mobs/entity.hpp
@@ -243,6 +254,7 @@ inline bool load_mob_data(const std::string& path = "data/mobs.json") {
     tags(j["damage_tags"], damage_tags);
     tags(j["block_tags"], block_tags_ext);
     tags(j["item_tags"], item_tags_ext);
+    tags(j["biome_tags"], biome_tags);
     init_damage_tags(j["damage_scaling"]);
     for (auto& m : j["item_mods"].arr) {
         ItemCombat ic;
@@ -250,6 +262,8 @@ inline bool load_mob_data(const std::string& path = "data/mobs.json") {
         ic.weapon_damage = m[2].asInt();
         item_combat[m[0].asInt()] = std::move(ic);
     }
+    for (auto& [reg, m] : j["registry_ids"].obj)
+        for (auto& [n, v] : m.obj) registry_ids[reg][n] = v.asInt();
     for (auto& s : j["smelt"].arr) smelt_result[s[0].asInt()] = s[1].asInt();
     load_entity_loot(j["loot"]);
     for (auto& t : entity_type_info) t.loot = -1;
