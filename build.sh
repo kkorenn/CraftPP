@@ -11,6 +11,8 @@ if [ "$1" = "test" ]; then
   PORT=25599
   rm -rf build/test-world
   printf 'server-port=%s\nlevel-name=build/test-world\nlevel-type=flat\n' "$PORT" > build/test.properties
+  rm -f build/banned-players.json build/banned-ips.json build/whitelist.json
+  printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}]\n' > build/ops.json  # test/bot.py runs op commands
   ./build/craftpp build/test.properties > build/test-server.log 2>&1 &
   PID=$!
   trap 'kill $PID 2>/dev/null' EXIT
@@ -18,10 +20,12 @@ if [ "$1" = "test" ]; then
   python3 test/ping.py 127.0.0.1 $PORT
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
+  python3 -u test/commands_test.py 127.0.0.1 $PORT
   kill $PID; wait $PID 2>/dev/null || true
   ./build/craftpp build/test.properties >> build/test-server.log 2>&1 &
   PID=$!
   sleep 0.5
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
   echo "all tests passed"
 fi

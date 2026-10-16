@@ -43,15 +43,11 @@ inline void join(const PlayerPtr& pp) {
                .varint(63)      // sea level
                .boolean(false)  // online mode
                .boolean(false));  // enforces secure chat
-    p.send_raw_bytes(commands_packet);
+    commands_on_join(p);  // commands tree, op level, border, time, spawn, difficulty, weather, scoreboard
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));  // level chunks load start
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
     p.send(Writer().varint(play_cb::player_position).varint(1)
                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
-    p.send(Writer().varint(play_cb::set_default_spawn_position).str("minecraft:overworld")
-               .i64(int64_t((uint64_t(world_spawn.x) & 0x3FFFFFF) << 38 | (uint64_t(world_spawn.z) & 0x3FFFFFF) << 12 |
-                            (uint64_t(world_spawn.y) & 0xFFF)))
-               .f32(0).f32(0));
     for (size_t i = 0; i < p.inv.size(); i++)
         if (p.inv[i].item >= 0)
             p.send(Writer().varint(play_cb::set_player_inventory).varint(int32_t(i))
