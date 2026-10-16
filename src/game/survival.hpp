@@ -6,6 +6,7 @@
 //      add_exhaustion(p, amount), kill(p, damage_type), respawn(p).
 #include "inventory.hpp"
 #include "loot.hpp"
+#include "../mobs/api.hpp"
 
 #include <unistd.h>
 
@@ -126,7 +127,7 @@ inline void respawn(Player& p) {
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // client dropped its entities
+    entities_reset_view(p);  // client dropped its entities: resend them
     broadcast(remove_entities_packet({p.eid}), &p);
     broadcast(spawn_entity(p), &p);
     for (auto& q : players)
@@ -506,6 +507,8 @@ inline void game_leave(Player& p) {
 }
 inline void game_init() {
     if (!load_game_data()) _exit(1);
+    mobs_init();  // entity framework, mobs, spawning (src/mobs/)
+    entity_post_tick_hooks.push_back(entity_player_touches);
     on_player_join(game_join);
     on_player_tick(game_player_tick);
     on_tick(tick_entities);

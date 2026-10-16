@@ -60,6 +60,7 @@ inline void request_stop() {
     run_on_tick([] {
         printf("Stopping server, saving...\n");
         save_all();
+        mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         print_tick_stats();
         fflush(stdout);
