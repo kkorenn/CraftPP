@@ -91,6 +91,7 @@ inline void post_process(LChunk& l) {
         l.c->level.post_processed = true;
         if (was_on_disk) l.c->dirty = true;
     }
+    if (getenv("CRAFTPP_LEVEL_DEBUG") && !post.empty()) log_info("post-process %d,%d: %zu marks", l.c->cx, l.c->cz, post.size());
     std::stable_sort(post.begin(), post.end(), [](uint32_t a, uint32_t b) { return (a >> 12) < (b >> 12); });  // by section
     for (uint32_t v : post) {
         Pos p{l.c->cx * 16 + int(v & 15), MIN_Y + int(v >> 8), l.c->cz * 16 + int(v >> 4 & 15)};
@@ -109,6 +110,9 @@ inline std::thread::id tick_thread;
 inline int64_t last_release = 0;
 
 inline void level_tick() {
+    static const bool dbg = getenv("CRAFTPP_LEVEL_DEBUG");
+    auto t0 = std::chrono::steady_clock::now();
+    size_t nfluid = 0;
     tick_thread = std::this_thread::get_id();
     {
         std::vector<ChunkPtr> q;
@@ -125,10 +129,9 @@ inline void level_tick() {
         int s = get(p);
         if (block(s) == type) block_tick(s, p);
     });
-    fluid_ticks.tick(t, 65536, check, [](const Pos& p, int type) {  // ServerLevel.tickFluid
+    fluid_ticks.tick(t, 65536, check, [&](const Pos& p, int type) {  // ServerLevel.tickFluid
         int s = get(p);
-        if (getenv("CRAFTPP_LEVEL_DEBUG")) log_info("fluid tick %d %d %d type %d state %d", p.x, p.y, p.z, type, s);
-        if (fluid_type(s) == type) fluid_tick(p, s);
+        if (fluid_type(s) == type) fluid_tick(p, s), nfluid++;
     });
     // chunk source: newly ticking chunks get post-processed, then ticking chunks tick
     for (size_t i = 0; i < post_pending.size();) {
@@ -147,6 +150,10 @@ inline void level_tick() {
         if (it != chunks.end()) tick_chunk(it->second, speed);
     }
     tick_falling_blocks();
+    if (dbg) {
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (ms > 20) log_info("level tick %.1f ms: %zu fluid ticks, %zu ticking chunks", ms, nfluid, ticking.size());
+    }
     // Every 5 s: save tick lists into the chunks; let go of chunks no player views (World unloads them).
     if (server_tick - last_release >= 100) {
         last_release = server_tick;
