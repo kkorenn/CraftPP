@@ -283,9 +283,27 @@ void TerrainGenerator::chunkBiomes(int cx, int cz, const BiomeSource& source, st
         }
 }
 
+std::shared_ptr<const std::vector<uint8_t>> TerrainGenerator::cachedBiomes(int cx, int cz) {
+  std::lock_guard lock(biomeCacheMutex);
+  auto it = biomeCache.find({cx, cz});
+  return it == biomeCache.end() ? nullptr : it->second;
+}
+
+std::shared_ptr<const std::vector<uint8_t>> TerrainGenerator::storeBiomes(int cx, int cz, const std::vector<uint16_t>& q) {
+  auto v = std::make_shared<const std::vector<uint8_t>>(q.begin(), q.end());
+  std::lock_guard lock(biomeCacheMutex);
+  if (biomeCache.insert_or_assign({cx, cz}, v).second) biomeCacheOrder.push_back({cx, cz});
+  while (biomeCacheOrder.size() > 512) {  // ~0.8 MB
+    biomeCache.erase(biomeCacheOrder.front());
+    biomeCacheOrder.pop_front();
+  }
+  return v;
+}
+
 void TerrainGenerator::createBiomes(Chunk& c) {
   std::vector<uint16_t> q;
   chunkBiomes(c.cx, c.cz, biomeSource, q);
+  storeBiomes(c.cx, c.cz, q);
   for (int y = 0; y < HEIGHT / 4; y++)
     for (int z = 0; z < 4; z++)
       for (int x = 0; x < 4; x++) c.set_biome(x, y, z, q[(y * 4 + z) * 4 + x]);
@@ -300,7 +318,7 @@ struct SurfaceContext : material::MaterialContext {
   TerrainGenerator::NoiseChunk& nc;
   Chunk& chunk;
   std::map<std::string, df::Bound> bound;
-  std::map<std::pair<int, int>, std::vector<uint16_t>> neighbours;
+  std::map<std::pair<int, int>, std::shared_ptr<const std::vector<uint8_t>>> neighbours;
   SurfaceContext(TerrainGenerator& g, TerrainGenerator::NoiseChunk& nc, Chunk& c) : g(g), nc(nc), chunk(c) {}
   const df::Bound& get(const std::string& id) {
     auto it = bound.find(id);
@@ -316,8 +334,12 @@ struct SurfaceContext : material::MaterialContext {
     int cx = qx >> 2, cz = qz >> 2;
     if (cx == chunk.cx && cz == chunk.cz) return chunk.get_biome(qx & 3, y, qz & 3);
     auto& q = neighbours[{cx, cz}];
-    if (q.empty()) g.chunkBiomes(cx, cz, g.neighbourBiomeSource, q);
-    return q[(y * 4 + (qz & 3)) * 4 + (qx & 3)];
+    if (!q && !(q = g.cachedBiomes(cx, cz))) {
+      std::vector<uint16_t> v;
+      g.chunkBiomes(cx, cz, g.neighbourBiomeSource, v);
+      q = g.storeBiomes(cx, cz, v);
+    }
+    return (*q)[(y * 4 + (qz & 3)) * 4 + (qx & 3)];
   }
 };
 }  // namespace
