@@ -29,11 +29,15 @@ open(f"{work}/server.properties", "w").write(
     f"server-port=25565\nlevel-name={work}/world\nlevel-type=normal\nlevel-seed={args.seed}\nview-distance={args.view}\n"
     "pause-when-empty-seconds=60\n" + "".join(l + "\n" for l in args.extra_props.split(";") if l))
 vanilla = os.path.realpath(os.path.join(ROOT, "vanilla"))
+# vanilla/ is a symlink to an absolute host path: mount it elsewhere and recreate that path inside the container
+# (bind-mounting at the host path itself is unreliable on Docker Desktop).
+MOUNTS = ["-v", f"{ROOT}:{ROOT}", "-v", f"{vanilla}:/vanilla:ro", "-w", ROOT]
+LINK = f"mkdir -p {os.path.dirname(vanilla)} && ln -sfn /vanilla {vanilla} && "
 subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
 docker = ["docker", "run", "-d", "--name", NAME, f"--cpus={args.cpus}", f"--memory={args.memory}", "--memory-swap", args.memory,
-          "-p", f"{args.port}:25565", "-v", f"{ROOT}:{ROOT}", "-v", f"{vanilla}:{vanilla}:ro", "-w", ROOT, args.image]
+          "-p", f"{args.port}:25565"] + MOUNTS + [args.image]
 t_start = time.time()
-subprocess.run(docker + ["sh", "-c", f"exec {ROOT}/{args.bin} {work}/server.properties > {work}/server.log 2>&1"], check=True,
+subprocess.run(docker + ["sh", "-c", LINK + f"exec {ROOT}/{args.bin} {work}/server.properties > {work}/server.log 2>&1"], check=True,
                capture_output=True)
 
 def proc(field_file):
@@ -128,9 +132,10 @@ finally:
 
 tt = os.path.join(ROOT, os.path.dirname(args.bin), "terrain_test")
 if os.path.exists(tt):  # generator alone, single thread, same limits
-    out = subprocess.run(["docker", "run", "--rm", f"--cpus={args.cpus}", f"--memory={args.memory}", "-v", f"{ROOT}:{ROOT}",
-                          "-v", f"{vanilla}:{vanilla}:ro", "-w", ROOT, args.image, tt], capture_output=True, text=True).stdout
+    out = subprocess.run(["docker", "run", "--rm", f"--cpus={args.cpus}", f"--memory={args.memory}"] + MOUNTS +
+                         [args.image, "sh", "-c", LINK + tt], capture_output=True, text=True).stdout
     for l in out.splitlines():
+        if l.startswith("fingerprint"): row("worldgen fingerprint (must match macOS)", l.split()[1])
         if "ms/chunk" in l: row("generator " + l.split(":")[0].split(";")[0], l.split(":")[1].split(";")[0].strip())
 print("\n| metric | value |\n|---|---|")
 for m, v in rows: print(f"| {m} | {v} |")
