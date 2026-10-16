@@ -10,11 +10,12 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Paper-style console, Bukkit/Paper plugins (embedded JVM, only when plugins/ has jars), persistence
 - perf: paletted chunks (~21 KB), unloading, worldgen worker pool, compression, Pi bench (idle RSS 14.7 MiB, after join 33 MiB, join 1.7 s) — see docs/performance.md
 - Lighting: vanilla sky + block light engine, 0 mismatches vs vanilla on surface/carver stages, persisted, ~0.25 ms/chunk. Per-state light table `src/gen/light_data.hpp` is generated at tool time by tools/gen_light_data.py (tools/LightDump.java reads the vanilla jar). The server never runs vanilla code.
+- Worldgen pipeline (26.3 ChunkStatus, WorldGenRegion), carvers bit-exact, all overworld features except template/fossil (0.06–0.36% diff vs vanilla run-to-run noise 0.2–4.5%). `data/blocks.bin` generated at tool time by tools/gen_block_data.sh.
+- perf-2: buffered reads, single-frame broadcast, get_ptr fast path (get_block 76→16 ns), density vectorized (worldgen −14–17%), idle wakeups 5→0.3/s, level.dat saved per 5 min.
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| features | chunk-status pipeline, carvers, decoration features |
 | structures | all structures, /locate |
 | dimensions | Nether, End, portals |
 | mobs-core | entity framework, first mobs, spawning, /summon |
@@ -22,8 +23,9 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | mobs-bosses | ender dragon, wither, warden |
 | blockticks | scheduled/random ticks, fluids, falling blocks, door/bed physics |
 | parity-audit | packet coverage, per-subsystem diffs vs vanilla, real-client log checks |
-| perf-2 | tick / packet / entity tracking / worldgen hot paths, memory |
 | bug-hunt | ASan/UBSan/TSan, fuzzing, bot stress, soaks |
+| containers | block entities + container menus |
+| storage | vanilla Anvil region files, proto-chunk eviction |
 
 ## Left
 - Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
