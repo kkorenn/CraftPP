@@ -42,6 +42,7 @@ inline void random_tick(int state, Pos pos);
 inline void fluid_tick(Pos pos, int state);
 inline void fluid_random_tick(Pos pos, int state);
 inline bool can_survive(int state, Pos pos);
+inline void wire_indirect_shapes(int s, const Pos& p, int flags, int limit);  // place_rules.hpp
 
 // Level.random: RandomSource.create() (LegacyRandomSource with a random seed).
 inline LegacyRandomSource& rng() {
@@ -323,7 +324,8 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
     if (flags & UPDATE_NEIGHBORS) update_neighbors(p, block(old));  // ponytail: comparator output updates with redstone
     if (!(flags & UPDATE_KNOWN_SHAPE) && limit > 0) {
         int nf = flags & ~(UPDATE_NEIGHBORS | UPDATE_SUPPRESS_DROPS);
-        update_neighbour_shapes(state, p, nf, limit - 1);  // updateIndirectNeighbourShapes: redstone wire only
+        update_neighbour_shapes(state, p, nf, limit - 1);
+        wire_indirect_shapes(state, p, nf, limit - 1);  // updateIndirectNeighbourShapes: redstone wire only
     }
     return true;
 }

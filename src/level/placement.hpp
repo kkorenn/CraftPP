@@ -50,8 +50,14 @@ struct PlaceCtx {  // BlockPlaceContext
 };
 
 inline int item_block(int item) { return item >= 0 && item < ITEM_COUNT ? ITEM_TO_BLOCK[item] : -1; }  // default state
+// place_rules.hpp: the block families this file doesn't dispatch.
+inline int can_be_replaced_more(int s, const PlaceCtx& c);
+inline bool place_more(int b, PlaceCtx& c, int& out);
+inline int wall_variant_of(int standing, int& attach);
+inline bool hanging_wall_can_place(int s, const Pos& p);
 // BlockBehaviour.canBeReplaced(state, context)
 inline bool can_be_replaced_ctx(int s, const PlaceCtx& c) {
+    if (int r = can_be_replaced_more(s, c); r >= 0) return r;
     int ib = item_block(c.item);
     bool same_item = ib >= 0 && block(ib) == block(s);
     if (kind(s) == K_SNOW_LAYER) {
@@ -71,20 +77,9 @@ inline bool can_be_replaced_ctx(int s, const PlaceCtx& c) {
 inline bool water_source_at(const Pos& p) { return fluid_type(get(p)) == WATER; }
 inline int with_waterlogged(int s, const Pos& p) { return has(s, "waterlogged") ? with(s, "waterlogged", water_source_at(p)) : s; }
 
-// StandingAndWallBlockItem: the wall variant of torches and signs.
-inline int wall_variant(int standing) {
-    std::string n = block_of(standing).name;
-    std::string w;
-    if (n == "minecraft:torch") w = "minecraft:wall_torch";
-    else if (n.size() > 6 && n.compare(n.size() - 6, 6, "_torch") == 0) w = n.substr(0, n.size() - 6) + "_wall_torch";
-    else if (n.size() > 5 && n.compare(n.size() - 5, 5, "_sign") == 0 && n.find("hanging") == std::string::npos) w = n.substr(0, n.size() - 5) + "_wall_sign";
-    else return -1;
-    auto it = block_by_name.find(w);
-    return it == block_by_name.end() ? -1 : def(it->second);
-}
-
 // Block.getStateForPlacement: -1 = null (can't place).
 inline int state_for_placement(int b, PlaceCtx& c) {
+    if (int r; place_more(b, c, r)) return r;
     int s = def(b);
     const Pos& p = c.pos;
     int hdir = horizontal_direction(c.player);
@@ -265,13 +260,17 @@ inline bool place_block_item(PlaceCtx& c, int standing) {
     if (!in_height(c.pos.y) || !loaded(c.pos)) return false;
     if (!c.replace_clicked && !can_be_replaced_ctx(get(c.pos), c)) return false;  // canPlace
     int state = -1;
-    int wall = wall_variant(standing);
-    if (wall >= 0) {  // StandingAndWallBlockItem.getPlacementState (attachment DOWN)
+    int attach;
+    int wall = wall_variant_of(standing, attach);
+    if (wall >= 0) {  // StandingAndWallBlockItem / HangingSignItem.getPlacementState
         int ws = state_for_placement(block(wall), c);
         for (int d : c.nearest()) {
-            if (d == UP) continue;
-            int cand = d == DOWN ? state_for_placement(block(standing), c) : ws;
-            if (cand >= 0 && can_survive(cand, c.pos)) { state = cand; break; }
+            if (d == OPP[attach]) continue;
+            int cand = d == attach ? state_for_placement(block(standing), c) : ws;
+            if (cand >= 0 && can_survive(cand, c.pos) && (attach != UP || cand != ws || hanging_wall_can_place(cand, c.pos))) {
+                state = cand;
+                break;
+            }
         }
     } else {
         state = state_for_placement(block(standing), c);
@@ -495,3 +494,5 @@ inline bool use_bucket(Player& pl, ItemStack& slot) {
 }
 
 }  // namespace lvl
+
+#include "place_rules.hpp"
