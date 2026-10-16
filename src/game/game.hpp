@@ -4,6 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../plugins/plugins.hpp"
+#include "../console.hpp"
 #include "../boss/boss.hpp"
 
 #include <unistd.h>
@@ -39,6 +40,7 @@ inline void unregister_player(const PlayerPtr& pp) {
     }
     broadcast(Writer().varint(play_cb::remove_entities).varint(1).varint(pp->eid));
     broadcast(Writer().varint(play_cb::player_info_remove).varint(1).i64(pp->uuid_hi).i64(pp->uuid_lo));
+    log_info("%s lost connection: %s", pp->name.c_str(), pp->quit_reason.empty() ? "Disconnected" : pp->quit_reason.c_str());
     plugins::announce_quit(*pp);  // PlayerQuitEvent may rewrite/suppress it
 }
 
@@ -53,17 +55,34 @@ inline void start_game() {
     game_init();
     register_game_handlers();
     boss::init();  // after the game handlers: it wraps some of them
+    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }
 
-// Any thread: save everything on the tick thread, then exit.
+// Any thread: save everything on the tick thread, then exit (MinecraftServer.stopServer + Paper's wording).
+// The caller has already logged "Stopping server" and disabled plugins.
 inline void request_stop() {
     run_on_tick([] {
-        printf("Stopping server, saving...\n");
+        log_info("Saving players");
+        Text reason = tr("multiplayer.disconnect.server_shutdown");
+        for (auto& p : snapshot()) {  // PlayerList.removeAll
+            save_player(*p);
+            Writer w = pkt(play_cb::disconnect);
+            write_nbt(w, reason);
+            try { p->send(w); p->out.flush(); } catch (...) {}
+            log_info("%s lost connection: %s", p->name.c_str(), plain(reason).c_str());
+            log_info("%s%s left the game", "\xC2\xA7" "e", p->name.c_str());
+        }
+        log_info("Saving worlds");
+        std::string level = props["level-name"];
+        log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
-        print_tick_stats();
+        log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
+        log_info("ThreadedAnvilChunkStorage: All dimensions are saved");
+        console::restore();
+        logging::close();
         fflush(stdout);
         _exit(0);
     });

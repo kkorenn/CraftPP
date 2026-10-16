@@ -22,6 +22,7 @@ shutil.rmtree(RUN, ignore_errors=True)
 os.makedirs(RUN)
 open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name=build/boss-test/world\nlevel-type=flat\n"
                                             f"level-seed={SEED}\ndebug-end-fight=true\npause-when-empty-seconds=600\n")
+open(f"{RUN}/eula.txt", "w").write("eula=true\n")
 open(f"{RUN}/ops.json", "w").write('[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}]\n')
 log = open(f"{RUN}/server.log", "w")
 srv = subprocess.Popen([f"{ROOT}/build/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
@@ -116,7 +117,7 @@ try:
     threading.Thread(target=drain, daemon=True).start()
     try: srv.wait(10)
     except subprocess.TimeoutExpired: os.system(f"sample {srv.pid} 2 -file {RUN}/sample.txt >/dev/null 2>&1"); raise
-    stats = [l for l in open(f"{RUN}/server.log") if l.startswith("Tick stats")]
+    stats = [l for l in open(f"{RUN}/server.log") if "Tick stats" in l]
     print("boss fight ok;", stats[-1].strip() if stats else "")
 finally:
     if srv.poll() is None: srv.kill()

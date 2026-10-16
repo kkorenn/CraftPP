@@ -9,6 +9,12 @@ endif()
 add_compile_options(-ffp-contract=off)
 add_executable(craftpp src/main.cpp)
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
+# logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+  target_compile_definitions(craftpp PRIVATE CRAFTPP_ZLIB=1)
+  target_link_libraries(craftpp PRIVATE ZLIB::ZLIB)
+endif()
 add_executable(worldgen_tests
   test/biome_test.cpp src/worldgen/biome_source.cpp)
 target_include_directories(worldgen_tests PRIVATE src)

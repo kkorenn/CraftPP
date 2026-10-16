@@ -121,7 +121,7 @@ struct DragonFight {
         return false;
     }
     void scan_state() {
-        printf("Scanning for legacy world dragon fight...\n");
+        log_info("Scanning for legacy world dragon fight...");
         bool active = has_active_exit_portal();
         if (active) previously_killed = true;
         else {
@@ -136,7 +136,6 @@ struct DragonFight {
             if (!active) ds[0]->discard(), dragon_eid = -1;
         }
         if (!previously_killed && dragon_killed) dragon_killed = false;
-        fflush(stdout);
         dirty = true;
     }
     void find_or_create_dragon() {

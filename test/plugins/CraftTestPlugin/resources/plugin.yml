@@ -1,0 +1,21 @@
+name: CraftTestPlugin
+version: 1.0.0
+main: craft.test.CraftTestPlugin
+api-version: '1.21'
+description: End-to-end checks for CraftPP's Bukkit support (test/plugin_test.py)
+author: CraftPP
+commands:
+  crafttest:
+    description: Echoes args, reports server state
+    usage: /<command> [text]
+    aliases: [ct]
+  craftop:
+    description: Operator-only command
+    permission: crafttest.op
+  craftblock:
+    description: Sets the block under the sender to diamond via World.getBlockAt
+  craftsched:
+    description: Exercises the scheduler (sync later, async, repeating)
+permissions:
+  crafttest.op:
+    default: op

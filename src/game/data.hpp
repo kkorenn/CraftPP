@@ -117,7 +117,7 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
     try {
         j = Json::parseFile(path);
     } catch (const std::exception& e) {
-        fprintf(stderr, "%s: %s (run: python3 tools/gen_game_data.py)\n", path.c_str(), e.what());
+        log_error("%s: %s (run: python3 tools/gen_game_data.py)", path.c_str(), e.what());
         return false;
     }
     auto u16list = [](const Json& a) {

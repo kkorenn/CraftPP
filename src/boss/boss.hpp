@@ -139,8 +139,7 @@ inline void enter_end_portal(Player& p) {
         won_game.insert(p.eid);
         seen_credits.insert(player_uuid(p));
         p.send(Writer().varint(play_cb::game_event).u8(4).f32(0.0f));  // WIN_GAME
-        printf("[boss] %s entered the exit portal: credits\n", p.name.c_str());
-        fflush(stdout);
+        log_info("%s entered the exit portal: credits", p.name.c_str());
     } else {
         won_game.insert(p.eid);  // ponytail: portal travel back is the same respawn as after the credits
         respawn_after_win(p);
