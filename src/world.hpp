@@ -150,6 +150,7 @@ struct Chunk {
     bool on_disk = false;
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     uint16_t get(int x, int y, int z) const {
         return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
@@ -385,6 +386,10 @@ inline bool load_chunk(Chunk& c) {
             r.i += size_t(len);
             c.block_entities.push_back(std::move(e));
         }
+    if (r.i < out.size()) {  // light (light::save)
+        size_t len = size_t(r.varint());
+        if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
+    }
     return c.on_disk = true;
 }
 
@@ -392,13 +397,16 @@ inline void save_chunk(Chunk& c) {
     std::filesystem::create_directories(world_dir + "/chunks");
     std::string path = chunk_path(c.cx, c.cz), tmp = path + ".tmp";
     Writer w;
+    uint32_t light_version;
+    std::vector<uint8_t> light = light::save(c, light_version);  // before c.m: lock order is light, then chunk
     {
         std::lock_guard lock(c.m);
         for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
         w.varint(int32_t(c.block_entities.size()));
         for (auto& e : c.block_entities)
             w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
-        c.dirty = false;
+        w.varint(int32_t(light.size())).bytes(light);
+        c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
     uLongf n = uLongf(z.size());
@@ -576,7 +584,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
-        light::produced(*c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
+        light::produced(*this, *c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
