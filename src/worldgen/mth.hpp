@@ -59,4 +59,16 @@ inline int64_t getSeed(int32_t x, int32_t y, int32_t z) {
   return (int64_t)seed >> 16;
 }
 
+// Mth.sin / Mth.cos: 65536-entry float table of Math.sin.
+inline const float* sinTable() {
+  static const float* t = [] {
+    static float a[65536];
+    for (int i = 0; i < 65536; i++) a[i] = (float)std::sin(i / 10430.378350470453);
+    return a;
+  }();
+  return t;
+}
+inline float sin(double v) { return sinTable()[(int)(d2l(v * 10430.378350470453) & 65535)]; }
+inline float cos(double v) { return sinTable()[(int)(d2l(v * 10430.378350470453 + 16384.0) & 65535)]; }
+
 }  // namespace Mth
