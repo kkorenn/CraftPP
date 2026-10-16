@@ -151,6 +151,9 @@ struct Chunk {
     uint16_t get_biome(int qx, int qy, int qz) const { return sections[qy >> 2].biomes.get(((qy & 3) * 4 + qz) * 4 + qx); }
 };
 using ChunkPtr = std::shared_ptr<Chunk>;
+struct ChunkCancelled : std::runtime_error {  // World::request of a chunk nobody viewed any more
+    ChunkCancelled() : std::runtime_error("chunk request cancelled") {}
+};
 
 enum : uint8_t { STATE_AIR = 1, STATE_FLUID = 2 };
 
@@ -401,7 +404,11 @@ struct World {
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
-        if (job) pool.submit([this, cx, cz, job] { produce(cx, cz, *job, true); });
+        if (job)
+            pool.submit([this, cx, cz, job] {
+                if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
+                produce(cx, cz, *job, true);
+            });
         return f;
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
@@ -477,6 +484,15 @@ struct World {
 
 private:
     bool viewed(const Key& k) const { return viewers.count(k) != 0; }
+    bool cancel_unviewed(int cx, int cz, std::promise<ChunkPtr>& job) {
+        {
+            std::lock_guard lock(m);
+            if (viewed({cx, cz})) return false;
+            inflight.erase({cx, cz});
+        }
+        job.set_exception(std::make_exception_ptr(ChunkCancelled()));
+        return true;
+    }
 
     std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job) {
         std::lock_guard lock(m);

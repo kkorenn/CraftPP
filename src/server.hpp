@@ -342,10 +342,14 @@ inline void deliver_chunks(Player& p) {
     size_t keep = 0;
     for (auto& e : q) {
         if (sent < CHUNKS_PER_TICK && e.second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            if (!sent) p.send(Writer().varint(play_cb::chunk_batch_start));
             try {
-                push_chunk(p, *e.second.get());
+                ChunkPtr c = e.second.get();
+                if (!sent) p.send(Writer().varint(play_cb::chunk_batch_start));
+                push_chunk(p, *c);
                 sent++;
+            } catch (const ChunkCancelled&) {  // raced with leaving + re-entering the view: ask again
+                e.second = world.request(e.first.first, e.first.second);
+                q[keep++] = std::move(e);
             } catch (const std::exception& ex) {
                 fprintf(stderr, "chunk %d,%d failed: %s\n", e.first.first, e.first.second, ex.what());
             }
