@@ -3,6 +3,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace df {
 namespace {
@@ -118,7 +119,7 @@ float squeeze(float v) {
   float c = clampf(v, -1.0f, 1.0f);
   return c / 2.0f - c * c * c / 24.0f;
 }
-float applyUnary(int op, float v) {
+inline float applyUnary(int op, float v) {
   switch (op) {
     case ABS: return std::fabs(v);
     case SQUARE: return v * v;
@@ -294,7 +295,21 @@ struct UnaryS : Sampler {
   UnaryS(int op, S in) : op(op), in(std::move(in)) {}
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     in->sampleVolume(c, o, v);
-    for (int i = 0; i < o.size(); i++) o.set(i, applyUnary(op, o.get(i)));
+    float* a = o.values.data();
+    const int n = o.size();
+    auto loop = [&](auto opc) { for (int i = 0; i < n; i++) a[i] = applyUnary(decltype(opc)::value, a[i]); };
+    switch (op) {  // op as a compile-time constant: the switch leaves the loop
+      case ABS: loop(std::integral_constant<int, ABS>{}); break;
+      case SQUARE: loop(std::integral_constant<int, SQUARE>{}); break;
+      case CUBE: loop(std::integral_constant<int, CUBE>{}); break;
+      case SQRT: loop(std::integral_constant<int, SQRT>{}); break;
+      case HALF_NEGATIVE: loop(std::integral_constant<int, HALF_NEGATIVE>{}); break;
+      case QUARTER_NEGATIVE: loop(std::integral_constant<int, QUARTER_NEGATIVE>{}); break;
+      case RECIPROCAL: loop(std::integral_constant<int, RECIPROCAL>{}); break;
+      case NEGATE: loop(std::integral_constant<int, NEGATE>{}); break;
+      case SQUEEZE: loop(std::integral_constant<int, SQUEEZE>{}); break;
+      default: for (int i = 0; i < n; i++) a[i] = applyUnary(op, a[i]); break;
+    }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override { return applyUnary(op, in->sampleValue(c, x, y, z)); }
 };
@@ -309,16 +324,17 @@ struct BinS : Sampler {
     l->sampleVolume(c, o, v);
     PBuf rb(v.size());
     r->sampleVolume(c, rb, v);
-    for (int i = 0; i < o.size(); i++) {
-      float a = o.get(i), b = rb.get(i);
-      switch (op) {
-        case ADD: o.addTo(i, b); break;
-        case SUB: o.addTo(i, -b); break;
-        case MUL: o.set(i, a * b); break;
-        case DIV: o.set(i, a / b); break;
-        case MIN: if (b < a) o.set(i, b); break;
-        default: if (b > a) o.set(i, b); break;
-      }
+    // One loop per op (vectorizable); element-wise IEEE ops, so the same bits as the per-element switch.
+    float* a = o.values.data();
+    const float* b = rb.values.data();
+    const int n = o.size();
+    switch (op) {
+      case ADD: for (int i = 0; i < n; i++) a[i] = a[i] + b[i]; break;
+      case SUB: for (int i = 0; i < n; i++) a[i] = a[i] + -b[i]; break;
+      case MUL: for (int i = 0; i < n; i++) a[i] = a[i] * b[i]; break;
+      case DIV: for (int i = 0; i < n; i++) a[i] = a[i] / b[i]; break;
+      case MIN: for (int i = 0; i < n; i++) a[i] = b[i] < a[i] ? b[i] : a[i]; break;
+      default: for (int i = 0; i < n; i++) a[i] = b[i] > a[i] ? b[i] : a[i]; break;
     }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
@@ -351,11 +367,15 @@ struct ConstBinS : Sampler {
   }
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     in->sampleVolume(c, o, v);
-    for (int i = 0; i < o.size(); i++) {
-      if (op == CMIN) { if (k < o.get(i)) o.set(i, k); }
-      else if (op == CMAX) { if (k > o.get(i)) o.set(i, k); }
-      else if (op == CADD) o.addTo(i, k);
-      else o.set(i, apply(o.get(i)));
+    float* a = o.values.data();
+    const int n = o.size();
+    switch (op) {  // one loop per op, same element-wise ops as apply()
+      case CMIN: for (int i = 0; i < n; i++) a[i] = k < a[i] ? k : a[i]; break;
+      case CMAX: for (int i = 0; i < n; i++) a[i] = k > a[i] ? k : a[i]; break;
+      case CADD: for (int i = 0; i < n; i++) a[i] = a[i] + k; break;
+      case CMUL: for (int i = 0; i < n; i++) a[i] = a[i] * k; break;
+      case CSUB: for (int i = 0; i < n; i++) a[i] = k - a[i]; break;
+      default: for (int i = 0; i < n; i++) a[i] = k / a[i]; break;
     }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
