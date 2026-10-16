@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -277,8 +278,10 @@ struct GenContext {  // Structure.GenerationContext
   int meanFirstOccupiedHeight(int minX, int sizeX, int minZ, int sizeZ);
 };
 
+class StructureManager;
 struct StructureStart {
   const Structure* structure;
+  StructureManager* owner = nullptr;  // marks the start dirty after placement (persistence)
   int cx, cz;
   int references = 0;
   std::vector<PieceP> pieces;
@@ -347,8 +350,15 @@ class StructureManager {
   std::optional<Found> findNearest(const std::vector<const Structure*>& wanted, BlockPos from, int maxRadius);
   const std::vector<std::pair<int, int>>& ringPositions(const StructureSet& set);
 
-  // Persistence hooks (chunk save data): start ids + references of a chunk.
-  void setStartReferences(int cx, int cz, const std::string& structureId, int refs);
+  // Persistence. Piece state that placement mutates (scattered-piece heights, placed-chest flags, ...) is saved
+  // per start origin chunk in <dir>/r.<rx>.<rz>.bin (32x32 origin chunks per file) and re-applied when the start
+  // is regenerated, so a structure spanning chunks finishes the same way after a restart. Pieces themselves are
+  // regenerated (deterministic), like vanilla does for monuments.
+  void setPersistDir(const std::string& dir);
+  void saveDirty();  // writes the region files of starts placed since the last save
+  // Chunk save data (vanilla "structures": starts + References): encoded / decoded by the chunk file hooks.
+  void encodeChunk(int cx, int cz, std::vector<uint8_t>& out);
+  void decodeChunk(int cx, int cz, const uint8_t* p, size_t n);
   Generator& generator() { return gen_; }
 
  private:
@@ -368,6 +378,16 @@ class StructureManager {
   std::unordered_map<int64_t, std::vector<StartP>> cache_;
   std::map<const StructureSet*, std::vector<std::pair<int, int>>> rings_;
   std::mutex ringsLock_;
+  // persistence
+  struct Saved { int references; std::vector<int> state; };
+  using RegionMap = std::map<std::pair<int64_t, int>, Saved>;  // (origin chunk key, structure registryIndex)
+  std::string persistDir_;
+  std::mutex persistLock_;
+  std::map<std::pair<int, int>, RegionMap> regions_;
+  std::set<StructureStart*> dirty_;
+  RegionMap& region(int rx, int rz);  // loads lazily; persistLock_ held
+  void restore(StructureStart& s);
+  friend struct StructureStart;
 };
 
 inline int64_t chunkKey(int x, int z) { return (int64_t)(uint32_t)x | (int64_t)(uint32_t)z << 32; }  // ChunkPos.pack

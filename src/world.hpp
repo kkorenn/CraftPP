@@ -355,6 +355,10 @@ inline std::string chunk_path(int cx, int cz) {
 }
 inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
 
+// Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
+inline std::function<void(const Chunk&, Writer&)> chunk_save_extra;
+inline std::function<void(Chunk&, Reader&)> chunk_load_extra;
+
 inline bool load_chunk(Chunk& c) {
     std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
     uint32_t magic = 0, raw = 0;
@@ -384,6 +388,7 @@ inline bool load_chunk(Chunk& c) {
             for (auto& b : e.nbt) b = r.u8();
             c.block_entities.push_back(std::move(e));
         }
+        if (r.i < r.n && chunk_load_extra) chunk_load_extra(c, r);
     }
     return c.on_disk = true;
 }
@@ -398,6 +403,7 @@ inline void save_chunk(Chunk& c) {
         w.i32(int32_t(c.block_entities.size()));
         for (auto& e : c.block_entities)
             w.u8(e.x).u8(e.z).i16(e.y).i32(e.type).i32(int32_t(e.nbt.size())).bytes(e.nbt.data(), e.nbt.size());
+        if (chunk_save_extra) chunk_save_extra(c, w);
         c.dirty = false;
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
@@ -468,6 +474,7 @@ struct World {
     }
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
+    std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
     int save_dirty() {
         std::vector<ChunkPtr> dirty, idle;
         {
@@ -483,6 +490,7 @@ struct World {
         }
         int saved = int(dirty.size());
         for (auto& c : dirty) save_chunk(*c);
+        if (on_saved) on_saved();
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(*c);
         std::lock_guard lock(m);

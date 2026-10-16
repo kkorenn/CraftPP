@@ -3,6 +3,8 @@
 //   STRUCTURE_REFERENCES  createReferences
 //   TERRAIN               Overworld::beardifier (Beardifier.forStructuresInChunk)
 //   FEATURES              piece placement (applyBiomeDecoration's structure part), when `place`
+// and the chunk file hooks (world.hpp chunk_save_extra / chunk_load_extra) for starts + references; the owner
+// calls manager().saveDirty() after saving chunks (piece state region files in <world>/structures).
 #pragma once
 #include <memory>
 

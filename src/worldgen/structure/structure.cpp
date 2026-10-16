@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <set>
 #include <stdexcept>
 
 #include "worldgen/json.hpp"
@@ -388,6 +390,10 @@ void StructureStart::placeInChunk(Level& level, RandomSource& random, const Boun
   for (auto& p : pieces)
     if (p->boundingBox.intersects(chunkBB)) p->postProcess(level, random, chunkBB, ccx, ccz, ref);
   structure->afterPlace(level, random, chunkBB, ccx, ccz, pieces);
+  if (owner) {
+    std::lock_guard l(owner->persistLock_);
+    owner->dirty_.insert(this);  // starts stay cached (never freed), so the raw pointer is stable
+  }
 }
 
 // ------------------------------------------------------------------------------------------- placement
@@ -600,6 +606,7 @@ StartP StructureManager::tryGenerate(const Structure& s, int cx, int cz) {
   if (!stub) return nullptr;
   auto start = std::make_shared<StructureStart>();
   start->structure = &s;
+  start->owner = this;
   start->cx = cx, start->cz = cz;
   if (stub->built) {
     start->pieces = std::move(stub->built->pieces);
@@ -609,6 +616,7 @@ StartP StructureManager::tryGenerate(const Structure& s, int cx, int cz) {
     start->pieces = std::move(b.pieces);
   }
   if (!start->valid()) return nullptr;
+  restore(*start);
   return start;
 }
 
@@ -659,9 +667,119 @@ std::vector<StartP> StructureManager::starts(int cx, int cz) {
   return it->second;
 }
 
-void StructureManager::setStartReferences(int cx, int cz, const std::string& id, int refs) {
-  for (auto& s : starts(cx, cz))
-    if (s->structure->id == id) s->references = refs;
+// ------------------------------------------------------------------------------------------- persistence
+namespace {
+void putInt(std::vector<uint8_t>& o, int32_t v) {
+  for (int i = 0; i < 4; i++) o.push_back((uint8_t)((uint32_t)v >> (8 * i)));
+}
+struct Rd {
+  const uint8_t* p;
+  size_t n, i = 0;
+  bool ok = true;
+  int32_t get() {
+    if (i + 4 > n) return ok = false, 0;
+    uint32_t v = p[i] | p[i + 1] << 8 | p[i + 2] << 16 | (uint32_t)p[i + 3] << 24;
+    i += 4;
+    return (int32_t)v;
+  }
+};
+}  // namespace
+
+void StructureManager::setPersistDir(const std::string& dir) { persistDir_ = dir; }
+
+StructureManager::RegionMap& StructureManager::region(int rx, int rz) {
+  auto [it, inserted] = regions_.try_emplace({rx, rz});
+  if (!inserted || persistDir_.empty()) return it->second;
+  std::ifstream f(persistDir_ + "/r." + std::to_string(rx) + "." + std::to_string(rz) + ".bin", std::ios::binary);
+  std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  Rd r{raw.data(), raw.size()};
+  int count = r.get();
+  for (int k = 0; k < count && r.ok; k++) {
+    int cx = r.get(), cz = r.get(), idx = r.get(), refs = r.get(), len = r.get();
+    if (!r.ok || len < 0 || (size_t)len * 4 > raw.size()) break;
+    Saved sv{refs, std::vector<int>((size_t)len)};
+    for (auto& v : sv.state) v = r.get();
+    if (r.ok) it->second[{chunkKey(cx, cz), idx}] = std::move(sv);
+  }
+  return it->second;
+}
+
+void StructureManager::restore(StructureStart& s) {
+  std::lock_guard l(persistLock_);
+  RegionMap& m = region(s.cx >> 5, s.cz >> 5);
+  auto it = m.find({chunkKey(s.cx, s.cz), s.structure->registryIndex});
+  if (it == m.end()) return;
+  std::vector<int> fresh;
+  for (auto& p : s.pieces) p->saveState(fresh);
+  if (fresh.size() != it->second.state.size()) return;  // different generator version: keep the fresh pieces
+  const int* p = it->second.state.data();
+  for (auto& piece : s.pieces) piece->loadState(p);
+  s.references = it->second.references;
+}
+
+void StructureManager::saveDirty() {
+  std::set<StructureStart*> todo;
+  {
+    std::lock_guard l(persistLock_);
+    if (persistDir_.empty()) return;
+    todo.swap(dirty_);
+  }
+  if (todo.empty()) return;
+  std::vector<std::pair<StructureStart*, Saved>> states;  // placeLock before persistLock (placeInChunk's order)
+  for (StructureStart* s : todo) {
+    std::lock_guard pl(s->placeLock);
+    Saved sv{s->references, {}};
+    for (auto& p : s->pieces) p->saveState(sv.state);
+    states.emplace_back(s, std::move(sv));
+  }
+  std::lock_guard l(persistLock_);
+  std::set<std::pair<int, int>> touched;
+  for (auto& [s, sv] : states) {
+    region(s->cx >> 5, s->cz >> 5)[{chunkKey(s->cx, s->cz), s->structure->registryIndex}] = std::move(sv);
+    touched.insert({s->cx >> 5, s->cz >> 5});
+  }
+  std::filesystem::create_directories(persistDir_);
+  for (auto [rx, rz] : touched) {
+    std::vector<uint8_t> out;
+    RegionMap& m = regions_[{rx, rz}];
+    putInt(out, (int)m.size());
+    for (auto& [k, sv] : m) {
+      for (int v : {keyX(k.first), keyZ(k.first), k.second, sv.references, (int)sv.state.size()}) putInt(out, v);
+      for (int v : sv.state) putInt(out, v);
+    }
+    std::string path = persistDir_ + "/r." + std::to_string(rx) + "." + std::to_string(rz) + ".bin";
+    {
+      std::ofstream f(path + ".tmp", std::ios::binary);
+      f.write((const char*)out.data(), (std::streamsize)out.size());
+    }
+    std::filesystem::rename(path + ".tmp", path);
+  }
+}
+
+// Chunk data (vanilla ChunkSerializer "structures"): starts {id, references} of this chunk + References.
+void StructureManager::encodeChunk(int cx, int cz, std::vector<uint8_t>& out) {
+  auto st = starts(cx, cz);
+  putInt(out, (int)st.size());
+  for (auto& s : st) putInt(out, s->structure->registryIndex), putInt(out, s->references);
+  auto refs = references(cx, cz);
+  putInt(out, (int)refs.size());
+  for (auto& [s, keys] : refs) {
+    putInt(out, s->registryIndex);
+    putInt(out, (int)keys.size());
+    for (int64_t k : keys) putInt(out, keyX(k)), putInt(out, keyZ(k));
+  }
+}
+
+void StructureManager::decodeChunk(int cx, int cz, const uint8_t* p, size_t n) {
+  // Starts and references are recomputed deterministically; only the reference counts carry state.
+  Rd r{p, n};
+  int count = r.get();
+  for (int k = 0; k < count && r.ok; k++) {
+    int idx = r.get(), refs = r.get();
+    if (!r.ok) break;
+    for (auto& s : starts(cx, cz))
+      if (s->structure->registryIndex == idx) s->references = refs;
+  }
 }
 
 namespace {
