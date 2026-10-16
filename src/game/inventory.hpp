@@ -578,7 +578,8 @@ inline void handle_container_click(Player& p, Reader& in) {
         skip_hashed();
     }
     skip_hashed();
-    if (container != p.g.container || p.g.dead || p.gamemode == 3) return;
+    if (container != p.g.container) return;
+    if (p.g.dead || p.gamemode == 3) { p.g.remote_valid = false; return; }  // sendAllDataToRemote
     for (int k = 0; k < changed; k++)
         if (stale[size_t(k)] >= 0 && stale[size_t(k)] < MENU_SLOTS) p.g.remote[size_t(stale[size_t(k)])].item = STALE;
     p.g.remote_carried.item = STALE;

@@ -65,6 +65,11 @@ class Conn:
         cb, sb = (PLAY_CB, PLAY_SB) if self.play else (CFG_CB, CFG_SB)
         if pid == cb["keep_alive"]: self.send(sb["keep_alive"], b.d[b.i:b.i + 8])
         elif self.play and pid == PLAY_CB["chunk_batch_finished"]: self.send(PLAY_SB["chunk_batch_received"], struct.pack(">f", 50.0))
+        elif self.play and pid == PLAY_CB["player_position"]:  # vanilla ignores movement until teleports are accepted
+            d = b.d[b.i:]
+            tid = Buf(d).varint(); n = len(varint(tid))
+            self.pos = struct.unpack(">ddd", d[n:n + 24])
+            self.send(PLAY_SB["accept_teleportation"], d[:n + 24] + d[n + 48:n + 56])
         return pid, b
 
 def skip_nbt(b, t=None):
@@ -164,6 +169,19 @@ def login(name, host, port, view=8, decode=False, uid=None):
     c.send(PLAY_SB["player_loaded"])
     return c, len(c.chunks)
 
+def walk(c, x, y, z, ground=True, step=4.0):
+    """Move in steps of at most `step` blocks a tick, like a real client (vanilla rejects >10 blocks a tick)."""
+    import time
+    sx, sy, sz = getattr(c, "pos", (x, y, z))
+    n = max(1, int(max(abs(x - sx), abs(y - sy), abs(z - sz)) // step) + 1)
+    for i in range(1, n + 1):
+        f = i / n
+        last = i == n
+        c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", sx + (x - sx) * f, sy + (y - sy) * f, sz + (z - sz) * f,
+                                                         1 if ground and last else 0))
+        if not last: time.sleep(0.06)
+    c.pos = (x, y, z)
+
 def sext(v, n): return (v & (1 << n) - 1 ^ 1 << n - 1) - (1 << n - 1)
 def block_pos(v): return v >> 38, sext(v, 12), sext(v >> 12, 26)  # packed BlockPos x:26 z:26 y:12
 
@@ -192,12 +210,7 @@ def play_step(c):
         for _ in range(b.varint()):
             e = b.varint()
             set_block(c, sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15), e >> 12)
-    elif pid == PLAY_CB["player_position"]:
-        tid, pos = b.varint(), b.take(24)  # 26.x ack echoes the position + rotation
-        b.take(24)
-        c.pos = struct.unpack(">ddd", pos)
-        c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
-    return pid
+    return pid  # (teleports are accepted in Conn.recv)
 
 def text_of(b):
     """Pull the 'text' string out of an NBT text component."""
@@ -227,22 +240,32 @@ if __name__ == "__main__":
     print("visibility ok")
 
     # Alice walks one chunk east: expect 17 new chunks + 17 forgets, Bob sees her move.
-    a.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 16.5, -60, 0.5, 1))
+    walk(a, 16.5, -60, 0.5)
     new = forgot = 0
     while new < 17 or forgot < 17:
         p, buf = a.recv()
         if p == PLAY_CB["level_chunk_with_light"]: parse_chunk(buf); new += 1
         elif p == PLAY_CB["forget_level_chunk"]: forgot += 1
     assert (new, forgot) == (17, 17), (new, forgot)
-    def sync_x(x):  # entity_position_sync: id, PositionPath type (linear), x y z
-        x.varint(); x.varint()
-        return struct.unpack(">d", x.take(8))[0] == 16.5
-    wait(b, PLAY_CB["entity_position_sync"], sync_x)  # 16 blocks is too far for a relative move
+    seen_x = [0.5]  # Bob tracks Alice from her spawn x: relative moves (1/4096 block) or position syncs
+    def follow(pkt):
+        p, x = pkt
+        if p in (PLAY_CB["move_entity_pos"], PLAY_CB["move_entity_pos_rot"]):
+            x.varint(); x.varint(); seen_x[0] += struct.unpack(">h", x.take(2))[0] / 4096.0
+        elif p == PLAY_CB["entity_position_sync"]:
+            x.varint(); x.varint(); seen_x[0] = struct.unpack(">d", x.take(8))[0]
+        return abs(seen_x[0] - 16.5) < 1e-3
+    for _ in range(4000):
+        if follow(b.recv()): break
+    assert abs(seen_x[0] - 16.5) < 1e-3, seen_x
     print("streaming + movement ok")
 
     a.send(PLAY_SB["chat"], string("hello") + struct.pack(">qq", 0, 0) + b"\x00" + varint(0) + bytes(3) + b"\x00")
-    msg = text_of(wait(b, PLAY_CB["system_chat"], lambda x: b"hello" in x.d))
-    assert msg == "<Alice> hello", msg
+    pc = wait(b, PLAY_CB["player_chat"])  # unsigned player chat, chat type minecraft:chat
+    pc.varint(); pc.take(16); pc.varint()
+    assert pc.u8() == 0 and pc.str() == "hello"
+    pc.take(16); assert pc.varint() == 0 and pc.u8() == 0 and pc.varint() == 0 and pc.varint() == 1
+    assert text_of(pc) == "Alice"
     a.send(PLAY_SB["chat_command"], string("list"))
     lst = wait(a, PLAY_CB["system_chat"], lambda x: b"commands.list.players" in x.d).d  # translatable, like vanilla
     assert b"Alice" in lst and b"Bob" in lst, lst
