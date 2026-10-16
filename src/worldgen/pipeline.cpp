@@ -162,7 +162,8 @@ ProtoPtr Pipeline::ensure(int cx, int cz, Status target) {
 void Pipeline::run_step(ProtoChunk& c, Status s) {
   const Step& st = steps[size_t(s)];
   int lr = st.lock_radius >= 0 ? st.lock_radius : std::max(st.write_radius, 0);
-  Region region{*this, s, c.cx, c.cz, int(st.direct.size()) - 1, st.write_radius, {}};
+  // Chunks inside the lock radius are visible too (and writable when the step locks them, see set_step).
+  Region region{*this, s, c.cx, c.cz, std::max(int(st.direct.size()) - 1, lr), st.lock_radius > 0 ? std::max(st.write_radius, lr) : st.write_radius, {}};
   int w = 2 * region.radius + 1;
   region.grid.resize(size_t(w * w));
   std::vector<ProtoChunk*> locks;
@@ -185,8 +186,11 @@ void Pipeline::run_step(ProtoChunk& c, Status s) {
     c.chunk = std::make_unique<Chunk>();
     c.chunk->cx = c.cx, c.chunk->cz = c.cz;
   }
+  auto t0 = std::chrono::steady_clock::now();
   if (st.fn) st.fn(region);
   if (s == Status::TERRAIN) c.prime_heightmaps();
+  step_ns[size_t(s)] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  step_count[size_t(s)]++;
   c.status.store(s, std::memory_order_release);
 }
 

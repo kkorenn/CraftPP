@@ -1,5 +1,8 @@
 #include "worldgen/structure/hooks.hpp"
 
+#include <climits>
+#include <filesystem>
+#include <functional>
 #include <mutex>
 #include <unordered_map>
 
@@ -68,7 +71,19 @@ worldgen::Heightmap mapHeightmap(Heightmap h) {
 // WorldGenLevel over the FEATURES region.
 class RegionLevel : public Level {
  public:
-  RegionLevel(worldgen::Region& r, worldgen::TerrainGenerator& t) : r_(r), t_(t) {}
+  using FeatureMap = std::unordered_map<std::string, const worldgen::feat::Placed*>;
+  RegionLevel(worldgen::Region& r, worldgen::TerrainGenerator& t, const worldgen::Features* f = nullptr,
+              const FeatureMap* fm = nullptr)
+      : r_(r), t_(t), f_(f), fm_(fm) {}
+  // FeaturePoolElement.place: PlacedFeature.place(level, generator, random, pos) through the features code.
+  bool placeFeature(const std::string& id, RandomSource& random, BlockPos pos) override {
+    if (!f_ || !fm_) return false;
+    auto it = fm_->find(id);
+    if (it == fm_->end() || !it->second) return false;
+    if (!fl_) fl_ = std::make_unique<worldgen::feat::Level>(r_, *f_);
+    // ponytail: the feature's level.getRandom() is its own region random, not shared with this RegionLevel's
+    return it->second->place(*fl_, random, {pos.x, pos.y, pos.z});
+  }
   int getBlock(int x, int y, int z) override {
     worldgen::ProtoChunk* c = r_.chunk(x >> 4, z >> 4);
     return c && c->chunk ? c->get(x & 15, y, z & 15) : blocks::air;  // vanilla only reads inside the region
@@ -104,6 +119,9 @@ class RegionLevel : public Level {
  private:
   worldgen::Region& r_;
   worldgen::TerrainGenerator& t_;
+  const worldgen::Features* f_;
+  const FeatureMap* fm_;
+  std::unique_ptr<worldgen::feat::Level> fl_;
   std::unique_ptr<RandomSource> rand_;
 };
 
@@ -122,6 +140,7 @@ std::vector<uint8_t> possibleBiomes(const worldgen::TerrainGenerator& t) {
 struct StructureWorld::Impl {
   TerrainView view;
   StructureManager manager;
+  std::unordered_map<std::string, const worldgen::feat::Placed*> features;  // feature pool elements
   explicit Impl(std::shared_ptr<worldgen::TerrainGenerator> t) : view(t), manager(view, possibleBiomes(*t)) {}
 };
 
@@ -153,13 +172,43 @@ StructureWorld::StructureWorld(worldgen::Overworld& ow, bool place) : impl_(std:
   if (!place) return;
   worldgen::TerrainGenerator* terrain = ow.terrain.get();
   worldgen::Features* features = ow.features.get();
-  // ponytail: the features step runs all structure steps before the features; switch to the features agent's
-  // per-step structure_placer hook (same placeStep call) once it lands, so steps interleave like vanilla.
-  ow.pipeline.set_step(worldgen::Status::FEATURES, [m, terrain, features](worldgen::Region& r) {
-    RegionLevel level(r, *terrain);
-    m->placeAll(level, r.cx, r.cz);
-    if (features) features->decorate(r);
-  });
+  if (!features) {  // "structures" stage: structure steps only
+    ow.pipeline.set_step(worldgen::Status::FEATURES, [m, terrain](worldgen::Region& r) {
+      RegionLevel level(r, *terrain);
+      m->placeAll(level, r.cx, r.cz);
+    });
+    return;
+  }
+  // Feature pool elements (village trees, hay, ...): load their placed features up front (loader not thread-safe).
+  for (auto& e : std::filesystem::recursive_directory_iterator(dataRoot() + "/minecraft/worldgen/template_pool")) {
+    if (e.path().extension() != ".json") continue;
+    std::function<void(const Json&)> scan = [&](const Json& j) {
+      if (j.isObject()) {
+        if (auto* t = j.find("element_type"); t && t->isString() && t->str == "minecraft:feature_pool_element")
+          impl_->features.emplace(fullId(j["feature"].asString()), nullptr);
+        for (auto& [k, v] : j.obj) scan(v);
+      } else if (j.isArray()) {
+        for (auto& v : j.arr) scan(v);
+      }
+    };
+    scan(Json::parseFile(e.path().string()));
+  }
+  for (auto& [id, p] : impl_->features) p = features->load_placed(id);
+  const RegionLevel::FeatureMap* fm = &impl_->features;
+  // ChunkGenerator.applyBiomeDecoration: each step's structures before that step's features, same random.
+  features->structure_placer = [m, terrain, features, fm](worldgen::Region& r, int step, WorldgenRandom& random, int64_t seed) {
+    // One level (and region random) per decoration of a chunk, like the WorldGenRegion of the step.
+    thread_local const worldgen::Region* at = nullptr;
+    thread_local StructureManager::References refs;
+    thread_local std::unique_ptr<RegionLevel> level;
+    if (step == 0 || at != &r) {
+      refs = m->references(r.cx, r.cz);
+      level = std::make_unique<RegionLevel>(r, *terrain, features, fm);
+      at = &r;
+    }
+    m->placeStep(*level, r.cx, r.cz, step, random, seed, refs);
+    if (step == STEP_COUNT - 1) level.reset(), at = nullptr;
+  };
 }
 
 StructureWorld::~StructureWorld() = default;

@@ -13,7 +13,7 @@
 //   initialize_light       -                                          -              hook (lighting agent)
 //   light                  initialize_light 1                         -              hook (lighting agent)
 //   spawn                  biomes 1                                   -              (none yet)
-//   full                   -                                          -              chunk handed to World
+//   full                   -                                          -              post-processing, leaf ticks; to World
 //
 // THREADING. Pipeline::ensure / take may be called from any number of threads at once (the World worker pool
 // calls World::generator -> Pipeline::take). A step is a plain function over a Region (the chunk + neighbours,
@@ -45,6 +45,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -80,6 +81,8 @@ struct ProtoChunk {
   std::array<std::array<int16_t, 256>, 6> heightmaps{};
   bool taken = false;  // handed to the World
   std::atomic<int16_t> carver_biome{-1};  // ChunkAccess.carverBiome cache (biome id), -1 = not computed
+  std::vector<int32_t> post_processing;   // markPosForPostProcessing: (y - MIN_Y) << 8 | z << 4 | x
+  std::vector<int32_t> leaf_ticks;        // scheduled LeavesBlock ticks (same packing), run at FULL
   std::shared_ptr<void> structure_data, light_data;  // owned by the structures / lighting steps
 
   ProtoChunk(int cx, int cz, Pipeline* owner) : cx(cx), cz(cz), owner(owner) {}
@@ -129,7 +132,9 @@ using StepFn = std::function<void(Region&)>;
 class Pipeline {
  public:
   Pipeline();
-  void set_step(Status s, StepFn fn, int lock_radius = -1);  // lock_radius -1: max(write radius, 0)
+  // lock_radius -1: max(write radius, 0). A larger lock radius also makes those chunks readable and writable
+  // in the Region (used by the FULL step for post-processing and scheduled leaf ticks, which cross borders).
+  void set_step(Status s, StepFn fn, int lock_radius = -1);
   // Called by ProtoChunk::set for chunks at >= INITIALIZE_LIGHT (lighting hook). May be empty.
   std::function<void(ProtoChunk&, int x, int y, int z, uint16_t old_state, uint16_t new_state)> on_block_changed;
   // Called by take() under the chunk's mutex after copying into `out`, before the proto storage may be freed
@@ -146,6 +151,8 @@ class Pipeline {
   const std::vector<Status>& accumulated(Status s) const { return steps[size_t(s)].accumulated; }
   int write_radius(Status s) const { return steps[size_t(s)].write_radius; }
   size_t loaded() const;  // proto chunks held
+  // Per-status time spent in step functions (ns) and step count, for profiling.
+  std::array<std::atomic<int64_t>, STATUS_COUNT> step_ns{}, step_count{};
 
  private:
   struct Step {

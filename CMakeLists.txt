@@ -33,7 +33,9 @@ target_compile_options(worldgen_tests PRIVATE -Wall -Wextra)
 # Worldgen foundation: RNG, noise, JSON (bit-exact with vanilla; never use -ffast-math here).
 add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_source.cpp
   src/worldgen/density.cpp src/worldgen/terrain.cpp src/worldgen/block_state.cpp src/worldgen/pipeline.cpp
-  src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp)
+  src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp
+  src/worldgen/block_behavior.cpp src/worldgen/feature_basic.cpp src/worldgen/feature_tree.cpp src/worldgen/feature_cave.cpp
+  src/worldgen/feature_misc.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
 find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
@@ -91,3 +93,5 @@ target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB)
 add_executable(structure_test test/structure_test.cpp)
 target_link_libraries(structure_test PRIVATE craftpp_worldgen)
 target_compile_options(structure_test PRIVATE -Wall -Wextra)
+add_executable(pipeline_test test/pipeline_test.cpp)
+target_link_libraries(pipeline_test PRIVATE craftpp_worldgen)

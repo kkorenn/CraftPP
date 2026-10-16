@@ -204,7 +204,7 @@ inline void setup_world() {
     flat_world = type == "flat";
     if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
-    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "vanilla/src/data", props["worldgen-datapack"]);
     const std::string& stages = props["worldgen-stages"];
     if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
     {

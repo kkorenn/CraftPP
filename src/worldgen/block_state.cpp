@@ -24,7 +24,7 @@ Registry::Registry() {
   auto u16 = [&] { int a = u8(); return uint16_t(a << 8 | u8()); };
   auto u32 = [&] { uint32_t a = u16(); return a << 16 | u16(); };
   auto str = [&] { std::string s(u16(), '\0'); f.read(s.data(), std::streamsize(s.size())); return s; };
-  if (u32() != 0x43424431) throw std::runtime_error("data/blocks.bin: bad magic");
+  if (u32() != 0x43424432) throw std::runtime_error("data/blocks.bin: bad magic");
   uint32_t nblocks = u32(), nstates = u32();
   blocks.resize(nblocks);
   state_block.resize(nstates);
@@ -33,6 +33,8 @@ Registry::Registry() {
     k.name = str();
     k.first = int(u32());
     k.def = int(u32());
+    k.block_entity = int16_t(u16());
+    k.classes = str();
     k.props.resize(u8());
     k.count = 1;
     for (auto& p : k.props) {
@@ -46,7 +48,8 @@ Registry::Registry() {
   }
   state_flags.resize(nstates);
   state_fluid.resize(nstates);
-  for (uint32_t s = 0; s < nstates; s++) state_flags[s] = u32(), state_fluid[s] = u8();
+  state_flags2.resize(nstates);
+  for (uint32_t s = 0; s < nstates; s++) state_flags[s] = u32(), state_fluid[s] = u8(), state_flags2[s] = u16();
   if (!f) throw std::runtime_error("data/blocks.bin: truncated");
 
   // Block tags: load every file, resolve references recursively.
@@ -77,6 +80,36 @@ Registry::Registry() {
     return tags[t] = std::move(acc);
   };
   for (auto& [k, v] : raw) resolve(k);
+
+  const std::string froot = "vanilla/src/data/minecraft/tags/fluid";
+  std::unordered_map<std::string, std::vector<std::string>> fraw;
+  for (auto& e : std::filesystem::directory_iterator(froot))
+    if (e.path().extension() == ".json")
+      for (auto& x : Json::parseFile(e.path().string())["values"].arr)
+        fraw["minecraft:" + e.path().stem().string()].push_back(x.isString() ? x.str : x["id"].str);
+  std::function<uint8_t(const std::string&, int)> fres = [&](const std::string& t, int depth) -> uint8_t {
+    uint8_t m = 0;
+    if (depth > 8) return 0;
+    for (auto& v : fraw[t]) m |= v[0] == '#' ? fres(v.substr(1), depth + 1) : fluids(v);
+    return m;
+  };
+  for (auto& [k, v] : fraw) fluid_tags[k] = fres(k, 0);
+}
+
+uint8_t Registry::fluids(std::string_view n) const {
+  if (!n.empty() && n[0] == '#') {
+    std::string t(n.substr(1));
+    if (t.find(':') == std::string::npos) t = "minecraft:" + t;
+    auto it = fluid_tags.find(t);
+    return it == fluid_tags.end() ? 0 : it->second;
+  }
+  n = strip_ns(n);
+  if (n == "empty") return 1 << NO_FLUID;
+  if (n == "water") return 1 << WATER;
+  if (n == "flowing_water") return 1 << FLOWING_WATER;
+  if (n == "lava") return 1 << LAVA;
+  if (n == "flowing_lava") return 1 << FLOWING_LAVA;
+  return 0;
 }
 
 int Registry::block_index(std::string_view name) const {
@@ -149,13 +182,13 @@ std::string Registry::name(int state) const {
 }
 
 int Registry::fluid_block(int s) const {
-  // FlowingFluid.getLegacyLevel: source 0, flowing 8 - amount. ponytail: FALLING (+8) is not in blocks.bin.
+  // FlowingFluid.getLegacyLevel: source 0, flowing 8 - amount (+8 when falling).
   static const int water = R().block_index("water"), lava = R().block_index("lava");
   uint8_t t = fluid_type(s);
   if (t == NO_FLUID) return blocks[0].def;
   int b = t <= FLOWING_WATER ? water : lava;
   int amount = fluid_amount(s);
-  int level = (t == WATER || t == LAVA) ? 0 : 8 - amount;
+  int level = (t == WATER || t == LAVA) ? 0 : 8 - amount + (state_fluid[size_t(s)] & 0x80 ? 8 : 0);
   return with(blocks[size_t(b)].def, "level", std::to_string(level));
 }
 
