@@ -390,7 +390,7 @@ inline void deliver_chunks(Player& p) {
                 e.second = world.request(e.first.first, e.first.second);
                 q[keep++] = std::move(e);
             } catch (const std::exception& ex) {
-                fprintf(stderr, "chunk %d,%d failed: %s\n", e.first.first, e.first.second, ex.what());
+                log_error("chunk %d,%d failed: %s", e.first.first, e.first.second, ex.what());
             }
             continue;
         }
