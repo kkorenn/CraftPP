@@ -3,7 +3,7 @@
 spikes + crystals from the seed, dragon + boss bar, /kill crystals, phase cycle (holding pattern -> landing
 approach -> landing -> sitting scanning -> takeoff), /kill dragon -> exit portal + egg + gateway, exit portal ->
 credits (win_game) -> respawn.  Usage: python3 test/boss_fight.py [--keep]"""
-import math, os, shutil, socket, struct, subprocess, sys, time, uuid
+import json, math, os, shutil, socket, struct, subprocess, sys, time, uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bot import *
 
@@ -108,6 +108,22 @@ try:
     c.send(PLAY_SB["client_command"], varint(0))
     pump(lambda: getattr(c, "respawned", False), 5)
     print("credits ok: win_game, then respawn")
+
+    if "--respawn" in sys.argv:  # 4 crystals on the exit portal rim -> respawn sequence -> new dragon
+        ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+        c.send(PLAY_SB["chat_command"], string("give @s end_crystal 4"))
+        c.send(PLAY_SB["chat_command"], string("tp @s 0.5 64 6.5"))
+        pump(lambda: abs(c.pos[2] - 6.5) < 0.01, 10)
+        old_dragon = dragon
+        for i, (x, z) in enumerate([(3, 0), (-3, 0), (0, 3), (0, -3)]):
+            c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
+            c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | 60)
+                   + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(i + 1))
+        pump(lambda: len(crystals()) == 4, 10)
+        t0 = time.time()
+        pump(lambda: dragon != old_dragon and dragon in types, 60)
+        pump(lambda: len(crystals()) == 10, 5)  # the 4 summoning crystals exploded, the pillars came back with 10
+        print(f"respawn ok: new dragon {dragon} after {time.time() - t0:.0f}s, 10 crystals rebuilt")
     c.send(PLAY_SB["chat_command"], string("stop"))
     import threading  # keep reading so the server's outbox (respawn chunks) drains while it stops
     def drain():
