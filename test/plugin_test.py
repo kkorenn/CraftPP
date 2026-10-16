@@ -32,8 +32,19 @@ def find_jdk():
     return None
 
 
-def build_plugins(jdk):
+def bridge_stale():
+    """True when the bridge jar is missing or older than any bridge source/resource."""
     if not os.path.exists(BRIDGE):
+        return True
+    built = os.path.getmtime(BRIDGE)
+    for d, _, files in os.walk(os.path.join(ROOT, "java/src")):
+        if any(os.path.getmtime(os.path.join(d, f)) > built for f in files):
+            return True
+    return False
+
+
+def build_plugins(jdk):
+    if bridge_stale():
         if not shutil.which("gradle"):
             skip("bridge jar missing and gradle not installed (tools/build_bridge.sh)")
         subprocess.run(["sh", os.path.join(ROOT, "tools/build_bridge.sh")], check=True)
