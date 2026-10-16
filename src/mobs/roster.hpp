@@ -1,6 +1,7 @@
 #pragma once
 // Mob roster entry point (vanilla mob behaviours on top of the mob framework). Included from game/game.hpp.
 #include "breeding.hpp"
+#include "riding.hpp"
 #include "merchant_menu.hpp"
 #include "trading.hpp"
 

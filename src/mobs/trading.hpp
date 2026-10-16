@@ -30,6 +30,7 @@ struct PoiType {
 };
 struct Profession {
     std::string name;
+    int id = 0;                         // villager_profession protocol id
     int poi = -1;                       // index into poi_types; -1 none/nitwit
     std::array<int, 6> trade_set{-1, -1, -1, -1, -1, -1};  // by level 1..5
     std::vector<uint16_t> requested;    // extra items it picks up (farmer seeds/wheat/bone meal)
@@ -99,6 +100,7 @@ inline void load_trading(const Json& j) {
     for (auto& [name, p] : j["professions"].obj) {
         Profession pr;
         pr.name = name;
+        pr.id = p["id"].asInt();
         if (!p["poi"].isNull())
             for (size_t i = 0; i < poi_names.size(); i++)
                 if (poi_names[i] == p["poi"].asString()) pr.poi = int(i);
@@ -328,6 +330,11 @@ struct MerchantState {
         return o.reward_exp ? pop : 0;
     }
 };
+
+// VILLAGER_DATA entity data value (serializer villager_data): type, profession, level.
+inline Writer& write_villager_data(Writer& w, int villager_type, int profession, int level) {
+    return w.varint(villager_type).varint(profession >= 0 ? professions[size_t(profession)].id : 0).varint(level);
+}
 
 // ClientboundMerchantOffersPacket. ItemCost = item, count, empty component predicate.
 inline Writer merchant_offers_packet(int container, const MerchantOffers& offers, int level, int xp, bool show_progress,

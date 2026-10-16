@@ -136,9 +136,11 @@ for m in re.finditer(r"register\(\s*registry,\s*(\w+),\s*PoiTypes\.(\w+),(.*?)\n
             fails.append(f"profession {name}: trade set {key}")
         p["trades"][lvl] = key
     professions[name] = p
-for n in reg("villager_profession"):
+for n, i in reg("villager_profession").items():
     if n not in professions:
         fails.append(f"profession {n} not parsed")
+    else:
+        professions[n]["id"] = i
 
 vt = reg("villager_type")
 out = {"types": types, "trades": trades, "trade_sets": trade_sets, "poi": poi, "professions": professions,
