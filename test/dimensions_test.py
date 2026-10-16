@@ -111,6 +111,7 @@ use_on(c, 21, -60, 20)
 END_PORTAL = state("end_portal")
 until(c, lambda: all(block(c, x, -60, z) == END_PORTAL for x in (21, 22, 23) for z in (21, 22, 23)))
 print("end portal opened ok")
+time.sleep(1)  # portal cooldown from the last trip runs out (standing in a portal while on cooldown resets it)
 move(c, 22.5, -60, 22.5)
 arrive(c, "minecraft:the_end")
 assert c.pos == (100.5, 49.0, 0.5), c.pos
@@ -123,6 +124,7 @@ print("to the end platform ok")
 # Leaving the end: credits first (win_game), then the respawn at the world spawn.
 cmd(c, "setblock 100 49 3 minecraft:end_portal")
 sync(c)
+time.sleep(1)
 move(c, 100.5, 49, 3.5)
 for _ in range(20000):
     pid, b = c.recv()

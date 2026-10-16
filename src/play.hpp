@@ -48,15 +48,7 @@ inline void join(const PlayerPtr& pp) {
 
 // Network thread: join, then hand packets to the tick thread until the connection closes (game/tick.hpp).
 inline void play(const PlayerPtr& pp) {
-    World* level = pp->level;
-    level->begin_join();  // the tick thread must not unload the level while join() streams its chunks
-    try {
-        join(pp);
-    } catch (...) {
-        level->end_join();
-        throw;
-    }
-    level->end_join();
+    join(pp);
     run_play_connection(pp, register_player, unregister_player);
 }
 
@@ -180,15 +172,13 @@ inline void register_core_handlers() {
     on(play_sb::chat_command, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
-        printf("%s issued server command: /%s\n", p.name.c_str(), cmd.c_str());
-        fflush(stdout);
+        log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });
     on(play_sb::chat_command_signed, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
-        printf("%s issued server command: /%s\n", p.name.c_str(), cmd.c_str());
-        fflush(stdout);
+        log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });
 }

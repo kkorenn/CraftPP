@@ -7,6 +7,9 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <deque>
+#include <map>
+#include <mutex>
 #include <vector>
 
 #include "worldgen/biome_source.hpp"
@@ -89,6 +92,13 @@ class TerrainGenerator {
   const PositionalRandomFactory* aquiferRandom;
   std::vector<std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>>> spawnTarget;
   std::unique_ptr<BiomeSource> biomeSource, neighbourBiomeSource;  // null for the end
+  // Recent chunks' biome grids (chunkBiomes layout, ids < 256): the surface stage reads neighbours' biomes like
+  // vanilla's WorldGenRegion does, so a neighbour generated earlier is reused instead of recomputed.
+  std::shared_ptr<const std::vector<uint8_t>> cachedBiomes(int cx, int cz);
+  std::shared_ptr<const std::vector<uint8_t>> storeBiomes(int cx, int cz, const std::vector<uint16_t>& q);
+  std::mutex biomeCacheMutex;
+  std::map<std::pair<int, int>, std::shared_ptr<const std::vector<uint8_t>>> biomeCache;
+  std::deque<std::pair<int, int>> biomeCacheOrder;
   std::unique_ptr<material::MaterialSystem> materials;
 };
 

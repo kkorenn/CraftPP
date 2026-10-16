@@ -1,7 +1,8 @@
 #pragma once
 // Dimensions: moving players between levels (ServerPlayer.teleport across levels, PlayerList.respawn), the end
-// spawn platform, the end exit podium (EnderDragonFight without the dragon), the credits flow, and unloading
-// levels nobody is in. Levels themselves: world.hpp (World, worlds[], cur_level). All on the tick thread.
+// spawn platform, the end exit podium (EnderDragonFight without the dragon) and the credits flow. A level nobody
+// is in holds no view tickets, so autosave (World::save_dirty) unloads all its chunks.
+// Levels themselves: world.hpp (World, worlds[], cur_level). All on the tick thread.
 #include "survival.hpp"
 
 // ---------- moving between levels ----------
@@ -141,32 +142,8 @@ inline void show_end_credits(Player& p) {
     p.seen_credits = true;
 }
 
-// ---------- unloading ----------
-// A level nobody is in (or joining) for 300 ticks (vanilla ServerLevel emptyTime) saves and drops its chunks; its
-// entities stop ticking at once (tick_entities). The overworld is left to the chunk-unloading work.
-inline void unload_empty_levels() {
-    static int empty_ticks[DIM_COUNT] = {};
-    for (int d = DIM_NETHER; d < DIM_COUNT; d++) {
-        World& w = worlds[d];
-        if (level_occupied(&w)) { empty_ticks[d] = 0; continue; }
-        if (++empty_ticks[d] < 300) continue;
-        empty_ticks[d] = 0;
-        bool any;
-        {
-            std::lock_guard lock(w.m);
-            any = !w.chunks.empty();
-        }
-        if (!any) continue;
-        int n = w.unload_all();
-        if (n < 0) continue;  // a join is streaming it
-        printf("Unloaded %d chunk(s) of %s (no players)\n", n, w.id.c_str());
-        fflush(stdout);
-    }
-}
-
 inline void dimensions_init() {
     dragon_fight.load();
-    on_tick(unload_empty_levels);
     on_tick(dragon_fight_tick);
     // After the credits: PlayerList.respawn(player, keepAllPlayerData = true) at the world spawn.
     PacketHandler prev = handlers()[play_sb::client_command];

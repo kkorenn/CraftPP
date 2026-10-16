@@ -72,9 +72,44 @@ inline long rss_kib() {
 #endif
 }
 inline void print_tick_stats() {
-    printf("Tick stats: %lld ticks, mspt avg %.3f max %.3f, peak RSS %ld KiB\n", (long long)server_tick, mspt_avg,
-           mspt_max, rss_kib());
-    fflush(stdout);
+    log_info("Tick stats: %lld ticks, mspt avg %.3f max %.3f, peak RSS %ld KiB", (long long)server_tick, mspt_avg,
+             mspt_max, rss_kib());
+}
+
+// Paper's /tps and /mspt (tick thread only): seconds per 20-tick sample over the last 15 minutes (time-weighted
+// like Paper's RollingAverage, starting at 20 TPS) and the duration of each of the last 1200 ticks.
+inline std::array<double, 900> tps_section_s = [] { std::array<double, 900> a; a.fill(1.0); return a; }();
+inline std::array<float, 1200> tick_ms{};
+inline int64_t tps_sections = 0;
+inline std::chrono::steady_clock::time_point tps_section_start = std::chrono::steady_clock::now();
+inline void record_tick(double ms) {
+    tick_ms[size_t((server_tick + 1199) % 1200)] = float(ms);  // server_tick already counts this tick
+    if (server_tick % 20) return;
+    auto now = std::chrono::steady_clock::now();
+    tps_section_s[size_t(tps_sections++ % 900)] = std::chrono::duration<double>(now - tps_section_start).count();
+    tps_section_start = now;
+}
+inline std::array<double, 3> tps_averages() {  // last 1m, 5m, 15m
+    std::array<double, 3> out{};
+    int n[3] = {60, 300, 900};
+    for (int k = 0; k < 3; k++) {
+        double sum = 0;
+        for (int i = 1; i <= n[k]; i++) sum += tps_section_s[size_t((tps_sections - i + 900 * 4) % 900)];
+        out[size_t(k)] = 20.0 * n[k] / sum;
+    }
+    return out;
+}
+struct TickTimes { double avg, min, max; };
+inline TickTimes tick_times(int n) {  // last n ticks (Paper: 100 = 5s, 200 = 10s, 1200 = 1m)
+    n = int(std::min<int64_t>(n, server_tick));
+    if (n <= 0) return {0, 0, 0};
+    TickTimes t{0, 1e9, 0};
+    for (int i = 1; i <= n; i++) {
+        double v = tick_ms[size_t((server_tick - i) % 1200)];
+        t.avg += v, t.min = std::min(t.min, v), t.max = std::max(t.max, v);
+    }
+    t.avg /= n;
+    return t;
 }
 
 // ---------- the loop ----------
@@ -101,7 +136,8 @@ inline void tick_once() {
                 InLevel in_level(p.level);  // per packet: a handler may move the player to another level
                 dispatch_packet(p, pkt);
             } catch (const std::exception& e) {
-                fprintf(stderr, "%s: bad packet (%s), disconnecting\n", p.name.c_str(), e.what());
+                log_warn("%s: bad packet (%s), disconnecting", p.name.c_str(), e.what());
+                p.quit_reason = std::string("Internal Exception: ") + e.what();
                 kick(p);
                 break;
             }
@@ -133,16 +169,23 @@ inline void start_tick_thread() {
         auto last_busy = clock::now();
         for (;;) {
             if (!players.empty()) last_busy = clock::now();
+            static bool pause_logged = false;
+            if (!players.empty()) pause_logged = false;
             if (players.empty() && clock::now() - last_busy >= pause_after) {
+                if (!pause_logged) {
+                    pause_logged = true;
+                    log_info("Server empty for %lld seconds, pausing", (long long)pause_after.count());
+                }
                 std::unique_lock lock(tick_detail::m);
                 tick_detail::cv.wait(lock, [] { return !tick_detail::tasks.empty(); });
-                next = clock::now();
+                next = tps_section_start = clock::now();  // paused time is not lag
             }
             auto t0 = clock::now();
             tick_once();
             double ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
             mspt_avg = mspt_avg == 0 ? ms : mspt_avg * 0.99 + ms * 0.01;
             if (ms > mspt_max) mspt_max = ms;
+            record_tick(ms);
             next += period;
             auto now = clock::now();
             if (now > next + std::chrono::seconds(2)) next = now;  // way behind: skip ticks instead of bursting

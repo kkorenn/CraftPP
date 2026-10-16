@@ -1,6 +1,7 @@
 #pragma once
 // Shared server state: config, players, broadcast, persistence, chunk streaming.
 #include "gen/ids.hpp"
+#include "log.hpp"
 #include "net.hpp"
 #include "world.hpp"
 #include "game/player_state.hpp"
@@ -22,15 +23,16 @@
 #include <sstream>
 #include <thread>
 
+// Filled from server.properties by load_properties (paper.hpp), which also supplies vanilla's defaults.
 inline std::map<std::string, std::string> props = {
-    {"motd", "A CraftPP Server"},
+    {"motd", "A Minecraft Server"},
     {"server-port", "25565"},
     {"max-players", "20"},
-    {"view-distance", "8"},
-    {"gamemode", "creative"},
+    {"view-distance", "10"},
+    {"gamemode", "survival"},
     {"level-name", "world"},
     {"level-seed", ""},
-    {"level-type", "normal"},  // normal | flat
+    {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
     {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
 };
 inline std::atomic<int> next_entity_id{1};
@@ -77,10 +79,18 @@ struct Player {
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
     Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread
+    ViewTicket view;           // keeps the view square loaded (world.hpp)
+    std::vector<std::pair<std::pair<int, int>, std::shared_future<ChunkPtr>>> chunk_queue;  // nearest first
+    std::string quit_reason;   // logged as "<name> lost connection: <reason>" (empty = "Disconnected")
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
-    void send(const Writer& body) { out.push(body.b); }
-    void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(b); }
+    void send(const Writer& body) {
+        thread_local std::vector<uint8_t> f;
+        f.clear();
+        frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);  // net.hpp
+        out.push_framed(f);
+    }
+    void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
         Writer w;
         w.varint(play_cb::system_chat);
@@ -100,7 +110,8 @@ inline bool is_solid(uint16_t b) { return b != blocks::air && b != blocks::cave_
 
 // PlayerSpawnFinder.getLevelRespawnPos: y to stand on at column (x, z), or INT_MIN.
 inline int level_respawn_y(int x, int z) {
-    Chunk& c = worlds[DIM_OVERWORLD].get(x >> 4, z >> 4);
+    ChunkPtr cp = worlds[DIM_OVERWORLD].get_ptr(x >> 4, z >> 4);
+    Chunk& c = *cp;
     std::lock_guard lock(c.m);
     auto at = [&](int y) { return y >= MIN_Y + HEIGHT ? uint16_t(blocks::air) : c.get(x & 15, y, z & 15); };
     int top = MIN_Y, surface = MIN_Y, ocean = MIN_Y;  // MOTION_BLOCKING, WORLD_SURFACE, OCEAN_FLOOR heights
@@ -146,9 +157,9 @@ inline void place_new_player(Player& p) {
     auto free_at = [](int x, int y, int z) {  // noCollisionNoLiquid for a player box at the block's bottom center
         for (int yy = y; yy <= y + 1; yy++) {
             if (yy < MIN_Y || yy >= MIN_Y + HEIGHT) continue;
-            Chunk& c = worlds[DIM_OVERWORLD].get(x >> 4, z >> 4);
-            std::lock_guard lock(c.m);
-            uint16_t b = c.get(x & 15, yy, z & 15);
+            ChunkPtr c = worlds[DIM_OVERWORLD].get_ptr(x >> 4, z >> 4);
+            std::lock_guard lock(c->m);
+            uint16_t b = c->get(x & 15, yy, z & 15);
             if (is_solid(b) || is_fluid(b)) return false;
         }
         return true;
@@ -197,19 +208,25 @@ inline void setup_dimensions(int64_t seed) {
         };
     }
 }
+inline void on_player_sync(void (*f)(Player&));  // game/tick.hpp
+inline void deliver_chunks(Player& p);
+
 inline void setup_world() {
+    worlds[DIM_OVERWORLD].start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
+    compression_threshold = std::stoi(props["network-compression-threshold"]);
+    on_player_sync(deliver_chunks);
     auto level = read_level_data();
     std::string type, seed_str;
     if (level.count("level-type") && level.count("level-seed")) {
         type = level["level-type"], seed_str = level["level-seed"];
-        printf("Using level-type=%s level-seed=%s from %s (server.properties values ignored)\n", type.c_str(),
-               seed_str.c_str(), level_data_path().c_str());
     } else {
         std::error_code ec;
         bool legacy = std::filesystem::is_directory(world_dir + "/chunks", ec) &&
                       !std::filesystem::is_empty(world_dir + "/chunks", ec);
-        type = legacy ? "flat" : props["level-type"] == "flat" ? "flat" : "normal";
-        if (legacy) printf("Existing world without level.dat: keeping it flat\n");
+        std::string want = props["level-type"];
+        for (auto& ch : want) ch = char(tolower((unsigned char)ch));
+        type = legacy || want == "flat" || want == "minecraft:flat" ? "flat" : "normal";
+        if (legacy) log_warn("Existing world without level.dat: keeping it flat");
         seed_str = std::to_string(parse_seed(props["level-seed"]));
         write_level_data({{"level-type", type}, {"level-seed", seed_str}});
     }
@@ -220,7 +237,6 @@ inline void setup_world() {
     if (flat_world) return;
     auto gen = std::make_shared<worldgen::TerrainGenerator>(seed, "vanilla/src/data", props["worldgen-stages"] != "noise");
     worlds[DIM_OVERWORLD].generator = [gen](Chunk& c) { gen->generate(c); };
-    printf("Level seed %lld\n", (long long)seed);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -229,7 +245,6 @@ inline void setup_world() {
         write_level_data({{"spawn-x", std::to_string(world_spawn.x)}, {"spawn-y", std::to_string(world_spawn.y)},
                           {"spawn-z", std::to_string(world_spawn.z)}});
     }
-    printf("World spawn %d %d %d\n", world_spawn.x, world_spawn.y, world_spawn.z);
 }
 
 
@@ -261,8 +276,8 @@ inline void broadcast_level(const Writer& body, const World* level, const Player
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
-    printf("[chat] %s\n", text.c_str());
-    fflush(stdout);
+    char code = logging::color_code(color);
+    log_info("%s%s", code ? (std::string("\xC2\xA7") + code).c_str() : "", text.c_str());
     Writer w;
     w.varint(play_cb::system_chat);
     text_component(w, text, color);
@@ -346,9 +361,7 @@ inline void save_player(const Player& p) {
 
 inline void save_all() {
     for (auto& p : snapshot()) save_player(*p);
-    int n = 0;
-    for (auto& w : worlds) n += w.save_dirty();
-    if (n) { printf("Saved %d chunk(s)\n", n); fflush(stdout); }
+    for (auto& w : worlds) w.save_dirty();
 }
 
 // Creative-menu slot number -> Inventory index (-1 = not a player inventory slot).
@@ -364,14 +377,39 @@ inline int menu_to_inv(int slot) {
 
 inline int view_distance() { return std::stoi(props["view-distance"]); }
 
-inline void send_chunk(Player& p, int cx, int cz) {
-    Writer w;
-    w.varint(play_cb::level_chunk_with_light);
-    write_chunk(w, p.level->get(cx, cz), p.level->skylight);
-    p.send(w);
+inline void push_chunk(Player& p, Chunk& c) { p.out.push_framed(*chunk_frame(c)); }
+inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *p.level->get_ptr(cx, cz)); }
+
+// Tick thread (on_player_sync): send queued chunks whose generation finished, nearest first, a bounded batch per tick.
+inline constexpr int CHUNKS_PER_TICK = 32;
+inline void deliver_chunks(Player& p) {
+    auto& q = p.chunk_queue;
+    int sent = 0;
+    size_t keep = 0;
+    for (auto& e : q) {
+        if (sent < CHUNKS_PER_TICK && e.second.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            try {
+                ChunkPtr c = e.second.get();
+                if (!sent) p.send(Writer().varint(play_cb::chunk_batch_start));
+                push_chunk(p, *c);
+                sent++;
+            } catch (const ChunkCancelled&) {  // raced with leaving + re-entering the view: ask again
+                e.second = p.level->request(e.first.first, e.first.second);
+                q[keep++] = std::move(e);
+            } catch (const std::exception& ex) {
+                fprintf(stderr, "chunk %d,%d failed: %s\n", e.first.first, e.first.second, ex.what());
+            }
+            continue;
+        }
+        q[keep++] = std::move(e);
+    }
+    q.resize(keep);
+    if (sent) p.send(Writer().varint(play_cb::chunk_batch_finished).varint(sent));
 }
 
-// Send chunks entering the view square, forget ones leaving it.
+// Send chunks entering the view square, forget ones leaving it. Chunks are generated on the worker pool and
+// delivered by deliver_chunks() as they finish (vanilla order: nearest first). During join (network thread,
+// outbox not live yet) it waits and queues them all before returning, so the client has them on spawn.
 inline void update_view(Player& p, int ncx, int ncz, bool initial) {
     int v = view_distance();
     int ocx = p.cx, ocz = p.cz;
@@ -379,6 +417,7 @@ inline void update_view(Player& p, int ncx, int ncz, bool initial) {
     p.cz = ncz;
     auto in_old = [&](int x, int z) { return !initial && std::abs(x - ocx) <= v && std::abs(z - ocz) <= v; };
     auto in_new = [&](int x, int z) { return std::abs(x - ncx) <= v && std::abs(z - ncz) <= v; };
+    p.view.move(*p.level, ncx, ncz, v);
 
     p.send(Writer().varint(play_cb::set_chunk_cache_center).varint(ncx).varint(ncz));
     if (!initial)
@@ -387,16 +426,27 @@ inline void update_view(Player& p, int ncx, int ncz, bool initial) {
                 if (!in_new(x, z))
                     p.send(Writer().varint(play_cb::forget_level_chunk)
                                .i64(int64_t((uint64_t(uint32_t(z)) << 32) | uint32_t(x))));
-    p.send(Writer().varint(play_cb::chunk_batch_start));
-    int sent = 0;
-    // ponytail: sends in row order; sort by distance so nearby chunks show first if streaming feels slow.
+    auto& q = p.chunk_queue;
+    if (initial) q.clear();
+    else std::erase_if(q, [&](auto& e) { return !in_new(e.first.first, e.first.second); });
+    auto dist = [&](const std::pair<int, int>& k) {
+        int dx = k.first - ncx, dz = k.second - ncz;
+        return dx * dx + dz * dz;
+    };
+    std::vector<std::pair<int, int>> add;
     for (int x = ncx - v; x <= ncx + v; x++)
         for (int z = ncz - v; z <= ncz + v; z++)
-            if (!in_old(x, z)) {
-                send_chunk(p, x, z);
-                sent++;
-            }
-    p.send(Writer().varint(play_cb::chunk_batch_finished).varint(sent));
+            if (!in_old(x, z)) add.push_back({x, z});
+    std::stable_sort(add.begin(), add.end(), [&](auto& a, auto& b) { return dist(a) < dist(b); });
+    for (auto& k : add) q.push_back({k, p.level->request(k.first, k.second)});
+    std::stable_sort(q.begin(), q.end(), [&](auto& a, auto& b) { return dist(a.first) < dist(b.first); });
+
+    if (p.out.fd < 0) {  // joining
+        p.send(Writer().varint(play_cb::chunk_batch_start));
+        for (auto& e : q) push_chunk(p, *e.second.get());
+        p.send(Writer().varint(play_cb::chunk_batch_finished).varint(int32_t(q.size())));
+        q.clear();
+    }
 }
 
 inline int gamemode_id(const std::string& s) {

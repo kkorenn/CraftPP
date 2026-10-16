@@ -144,7 +144,8 @@ h.append("inline constexpr const char* SUGGESTION_IDS[] = {" + ",".join(cstr("mi
 PREFIXES = ("commands.", "command.", "argument.", "arguments.", "parsing.", "permissions.", "multiplayer.disconnect.",
             "chat.", "gameMode.", "snbt.", "item.minecraft.", "block.minecraft.", "entity.minecraft.",
             "effect.minecraft.", "enchantment.minecraft.", "options.difficulty.", "disconnect.", "gamerule.",
-            "mirror.", "rotation.", "filled_map.", "biome.minecraft.", "attribute.name.", "commands")
+            "mirror.", "rotation.", "filled_map.", "biome.minecraft.", "attribute.name.", "commands", "death.",
+            "multiplayer.player.")
 sub = sorted((k, v) for k, v in lang.items() if k.startswith(PREFIXES))
 h.append("struct LangEntry { const char* key; const char* value; };")
 h.append("inline constexpr LangEntry LANG[] = {\n" + ",\n".join(f"{{{cstr(k)},{cstr(v)}}}" for k, v in sub) + "};")

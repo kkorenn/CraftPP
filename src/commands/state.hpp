@@ -26,8 +26,7 @@ inline void send_text(Player& p, const Text& t, bool overlay = false) {
     try { p.send(w.boolean(overlay)); } catch (...) {}
 }
 inline void broadcast_text(const Text& t) {
-    printf("%s\n", plain(t).c_str());
-    fflush(stdout);
+    log_info("%s", plain(t, true).c_str());
     for (auto& p : snapshot()) send_text(*p, t);
 }
 
@@ -520,7 +519,7 @@ inline void load_level() {
         try {
             r.set(k, parse_snbt(it->second));
         } catch (...) {
-            fprintf(stderr, "level.dat: bad value for %s\n", it->first.c_str());
+            log_warn("level.dat: bad value for %s", it->first.c_str());
         }
     }
     level_from_nbt(r);

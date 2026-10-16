@@ -73,18 +73,25 @@ inline const char* lang(const char* key) {
     return nullptr;
 }
 
-// Plain-text rendering (console, logs): resolves translations with %s / %n$s.
-inline std::string plain(const Text& t) {
+// Plain-text rendering (console, logs): resolves translations with %s / %n$s. With `codes`, colours become
+// legacy § codes (the console logger turns them into ANSI on a TTY and strips them from latest.log).
+inline std::string plain(const Text& t, bool codes = false, char inherited = 'r') {
     if (t.t == Nbt::String) return t.s;
-    if (t.t == Nbt::List) { std::string o; for (auto& e : t.list) o += plain(e); return o; }
+    if (t.t == Nbt::List) { std::string o; for (auto& e : t.list) o += plain(e, codes, inherited); return o; }
     if (t.t != Nbt::Compound) return to_snbt(t);
     std::string o;
+    char color = inherited;
+    if (auto* c = t.get("color"); codes && c && c->t == Nbt::String) {
+        if (char k = logging::color_code(c->s)) color = k;
+    }
+    std::string mark = codes ? std::string("\xC2\xA7") + color : "";
+    o += mark;
     if (auto* x = t.get("text")) o += x->s;
     else if (auto* k = t.get("translate")) {
         const char* f = lang(k->s.c_str());
         if (!f) { auto* fb = t.get("fallback"); f = fb ? fb->s.c_str() : k->s.c_str(); }
         std::vector<std::string> args;
-        if (auto* w = t.get("with")) for (auto& a : w->list) args.push_back(plain(a));
+        if (auto* w = t.get("with")) for (auto& a : w->list) args.push_back(plain(a, codes, color) + mark);
         size_t next = 0;
         for (const char* p = f; *p; p++) {
             if (*p != '%') { o += *p; continue; }
@@ -100,7 +107,7 @@ inline std::string plain(const Text& t) {
         }
     } else if (auto* sel = t.get("selector")) o += sel->s;
     else if (auto* kb = t.get("keybind")) o += kb->s;
-    if (auto* e = t.get("extra")) for (auto& c : e->list) o += plain(c);
+    if (auto* e = t.get("extra")) for (auto& c : e->list) o += plain(c, codes, color) + mark;
     return o;
 }
 

@@ -201,7 +201,7 @@ struct Cmd {
     void send(const Text& t) const {  // CommandSource.sendSystemMessage
         if (src.silent) return;
         if (src.sender) send_text(*src.sender, t);
-        else { printf("%s\n", plain(t).c_str()); fflush(stdout); }
+        else log_info("%s", plain(t, true).c_str());
     }
     // CommandSourceStack.sendSuccess
     void success(const Text& t, bool broadcast_admins) const {
@@ -213,7 +213,7 @@ struct Cmd {
         if (rule("send_command_feedback"))
             for (auto& p : snapshot())
                 if (p != src.sender && ops.find(player_uuid(*p), p->name)) send_text(*p, b);
-        if (src.sender && rule("log_admin_commands")) { printf("%s\n", plain(b).c_str()); fflush(stdout); }
+        if (src.sender && rule("log_admin_commands")) log_info("%s", plain(b, true).c_str());
     }
 };
 inline Text not_supported(const std::string& cmd) { return lit("/" + cmd + " is not supported yet"); }
@@ -229,7 +229,7 @@ inline void send_failure(const Source& src, const Text& t) {
     Text red = styled(lit(""), "red");
     append(red, t);
     if (src.sender) send_text(*src.sender, red);
-    else { fprintf(stdout, "%s\n", plain(red).c_str()); fflush(stdout); }
+    else log_info("%s", plain(red, true).c_str());
 }
 inline void send_error(const Source& src, const CmdError& e, const std::string& shown_line) {
     send_failure(src, e.msg);
@@ -249,7 +249,7 @@ inline void send_error(const Source& src, const CmdError& e, const std::string& 
     }
     append(ctx, styled(tr("command.context.here"), "red", true));
     if (src.sender) send_text(*src.sender, ctx);
-    else { printf("%s\n", plain(ctx).c_str()); fflush(stdout); }
+    else log_info("%s", plain(ctx, true).c_str());
 }
 
 // Runs a parsed chain; returns the summed result. Throws CmdError.
@@ -305,7 +305,7 @@ inline int perform(const Source& src, const std::string& line) {
         send_error(src, e, line);
     } catch (std::exception& e) {
         send_failure(src, tr("command.failed"));
-        fprintf(stderr, "command '/%s' threw: %s\n", line.c_str(), e.what());
+        log_error("Command exception: /%s: %s", line.c_str(), e.what());
     }
     return 0;
 }

@@ -577,6 +577,7 @@ inline void register_vanilla_commands() {
         write_nbt(w, reason);
         p.send(w);
         p.out.flush();
+        p.quit_reason = plain(reason);
         kick(p);
     };
     reg("kick", [disconnect](Cmd& c) {

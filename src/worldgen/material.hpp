@@ -126,6 +126,10 @@ class MaterialSystem {
   PosRandom positional(const std::string& id) const;  // RandomState.getOrCreateRandomFactory(id)
   std::string dataRoot;
 
+  struct Fiddle { double x, y, z; };
+  Fiddle fiddles(int quartX, int quartY, int quartZ) const;
+  template <class FiddleAt>
+  int zoomed(MaterialContext& ctx, int x, int y, int z, bool clampY, FiddleAt&& at) const;
   bool isAir(int s) const { return s == air || s == caveAir || s == voidAir; }
   bool isWater(int s) const { return s >= waterMin && s <= waterMax; }
   bool hasFluid(int s) const { return isWater(s) || (s >= lavaMin && s <= lavaMax); }
