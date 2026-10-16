@@ -407,7 +407,7 @@ def spawn(binary, world, view):
     p = subprocess.Popen([os.path.abspath(binary), os.path.join(d, "server.properties")], cwd=ROOT,
                          stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT)
     path = os.path.join(d, "server.log")
-    for _ in range(1200):
+    for _ in range(6000):  # 10 min: a TSan build generating a normal world starts slowly
         if "Done (" in open(path).read(): break
         assert p.poll() is None, "server exited during startup:\n" + open(path).read()[-3000:]
         time.sleep(0.1)
