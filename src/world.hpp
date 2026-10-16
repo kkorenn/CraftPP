@@ -137,7 +137,7 @@ struct Chunk {
     std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
     bool on_disk = false;
-    std::shared_ptr<const std::vector<uint8_t>> body;  // cached encoding (write_chunk_body), reset by set()
+    std::shared_ptr<const std::vector<uint8_t>> body;  // cached encoding (write_chunk_body), reset by set() + autosave
 
     uint16_t get(int x, int y, int z) const {
         return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
@@ -444,6 +444,10 @@ struct World {
         {
             std::lock_guard lock(m);
             for (auto& [k, c] : chunks) {
+                {
+                    std::lock_guard cl(c->m);  // encodings are for the sends right after generation; ~20 KB each
+                    c->body.reset();
+                }
                 if (c->dirty) dirty.push_back(c);
                 else if (!viewed(k) && c.use_count() == 1) idle.push_back(c);
             }

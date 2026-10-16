@@ -6,7 +6,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+# Release = -O2 (on a Pi -O3 only grows the binary; docs/performance.md). Worldgen must stay bit-exact with
+# vanilla: never -ffast-math, and -ffp-contract=off (GCC defaults to fused multiply-add contraction).
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 add_compile_options(-ffp-contract=off)
+set(CRAFTPP_CPU "" CACHE STRING "Tune for one CPU, e.g. cortex-a72 (Pi 4) or cortex-a76 (Pi 5); empty = portable")
+if(CRAFTPP_CPU)
+  add_compile_options(-mcpu=${CRAFTPP_CPU})
+endif()
+option(CRAFTPP_LTO "Link-time optimization" OFF)
+if(CRAFTPP_LTO)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
 add_executable(craftpp src/main.cpp)
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
 add_executable(worldgen_tests
