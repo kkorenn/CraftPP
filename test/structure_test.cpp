@@ -93,11 +93,12 @@ void checkAgainstVanilla(const char* file, const std::vector<structure::PieceP>&
   std::vector<uint16_t> placed = blocks;
   VanillaLevel level(placed, cx0, cz0, n, minY, height);
   LegacyRandomSource r(1);
+  structure::BlockPos c = pieces[0]->boundingBox.center(), ref{c.x, pieces[0]->boundingBox.minY, c.z};  // StructureStart.placeInChunk
   for (int cz = cz0; cz < cz0 + n; cz++)
     for (int cx = cx0; cx < cx0 + n; cx++) {
       structure::BoundingBox chunkBB(cx * 16, minY, cz * 16, cx * 16 + 15, minY + height - 1, cz * 16 + 15);
       for (auto& p : pieces)
-        if (p->boundingBox.intersects(chunkBB)) p->postProcess(level, r, chunkBB, cx, cz, {cx * 16, 0, cz * 16});
+        if (p->boundingBox.intersects(chunkBB)) p->postProcess(level, r, chunkBB, cx, cz, ref);
     }
   // Vanilla's later feature step decorates over the fortress (nether vegetation, ...): those are not differences.
   const auto& R = bs::R();
@@ -172,6 +173,39 @@ int main(int argc, char** argv) {
               printf("%s@%d,%d %s %d %d %d .. %d %d %d\n", st->structure->id.c_str(), cx, cz, typeid(*p).name(), b.minX, b.minY, b.minZ,
                      b.maxX, b.maxY, b.maxZ);
             }
+    return 0;
+  }
+  if (getenv("STUB")) {  // STUB=id,cx,cz: pieces of that structure's start in the chunk, biomes ignored, flat heights
+    char id[128];
+    int cx, cz;
+    sscanf(getenv("STUB"), "%127[^,],%d,%d", id, &cx, &cz);
+    struct FlatGen : structure::Generator {
+      int baseHeight(int, int, structure::Heightmap) override { return 64; }
+      void baseColumn(int, int, std::vector<int>& out) override { out.assign(structure::GEN_HEIGHT, blocks::air); }
+      int noiseBiome(int, int, int) override { return 0; }
+      float biomeTemperature(int, structure::BlockPos) override { return 0.5f; }
+      int64_t seed() const override { return s; }
+      int64_t s;
+    } gen;
+    gen.s = seed;
+    const structure::Structure* st = m.structure(id);
+    assert(st);
+    std::vector<uint8_t> all(structure::biomeNames().size(), 1);
+    structure::GenContext ctx(gen, seed, cx, cz, all);
+    auto stub = st->findGenerationPoint(ctx);
+    if (!stub) return printf("no start\n"), 0;
+    structure::Builder b;
+    if (stub->built) b.pieces = std::move(stub->built->pieces);
+    else stub->generator(b);
+    if (const char* f = getenv("CHECK")) {
+      checkAgainstVanilla(f, b.pieces);
+      return 0;
+    }
+    printf("pieces %zu\n", b.pieces.size());
+    for (auto& p : b.pieces) {
+      auto& bb = p->boundingBox;
+      printf("%d %d %d %d %d %d\n", bb.minX, bb.minY, bb.minZ, bb.maxX, bb.maxY, bb.maxZ);
+    }
     return 0;
   }
   if (getenv("ENDCITY")) {  // ENDCITY=cx,cz,y: end city pieces of a start in that chunk at height y (vanilla's start y)
