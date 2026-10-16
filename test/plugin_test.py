@@ -82,7 +82,7 @@ def start_server(d, port, plugins):
             os.symlink(os.path.join(ROOT, name), os.path.join(d, name))
     for j in plugins:
         shutil.copy(j, os.path.join(d, "plugins"))
-    if plugins:
+    if plugins and not os.path.exists(os.path.join(d, "plugins/jvm.properties")):
         open(os.path.join(d, "plugins/jvm.properties"), "w").write(f"bridge-jar={BRIDGE}\n")
     open(os.path.join(d, "test.properties"), "w").write(f"server-port={port}\nlevel-name=world\nlevel-type=flat\n")
     log = open(os.path.join(d, "server.log"), "w")
