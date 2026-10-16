@@ -1379,6 +1379,17 @@ inline void register_vanilla_commands() {
                        [&](int k) { return tr("commands.transfer.success.multiple", {k, host, port}); });
     });
 
+    reg("setidletimeout", [](Cmd& c) {
+        int m = int(c.num("minutes"));
+        props["player-idle-timeout"] = std::to_string(m);  // ponytail: stored only; idle kicking not implemented
+        c.success(m > 0 ? tr("commands.setidletimeout.success", {m}) : tr("commands.setidletimeout.success.disabled"), true);
+        return m;
+    });
+    reg("reload", [](Cmd& c) {
+        c.success(tr("commands.reload.success"), true);  // data packs are the built-in vanilla pack: nothing to reload
+        return 0;
+    });
+
     reg("return", [](Cmd& c) {
         if (c.is("fail")) throw fail(lit(""));
         if (c.is("run")) return 0;
