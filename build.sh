@@ -18,6 +18,7 @@ if [ "$1" = "test" ]; then
   python3 test/ping.py 127.0.0.1 $PORT
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
+  python3 -u test/survival.py 127.0.0.1 $PORT
   kill $PID; wait $PID 2>/dev/null || true
   ./build/craftpp build/test.properties >> build/test-server.log 2>&1 &
   PID=$!
