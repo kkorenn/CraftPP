@@ -182,6 +182,20 @@ if __name__ == "__main__":
     assert "gamemode" not in root_names(parse_tree(t))
     print("op/deop ok")
 
+    # F3+F4 switcher: op (Alice) changes mode, non-op (Carol) is refused.
+    a.send(PLAY_SB["change_game_mode"], varint(3))
+    ev = wait(a, PLAY_CB["game_event"], lambda x: x.d[x.i] == 3)
+    ev.u8(); assert struct.unpack(">f", ev.take(4))[0] == 3.0
+    a.send(PLAY_SB["change_game_mode"], varint(1))
+    wait(a, PLAY_CB["game_event"], lambda x: x.d[x.i] == 3)
+    c.send(PLAY_SB["change_game_mode"], varint(3))
+    c.send(PLAY_SB["chat_command"], string("list"))
+    for _ in range(200):  # until the /list reply; no game mode change may arrive before it
+        pid, buf = c.recv()
+        assert not (pid == PLAY_CB["game_event"] and buf.d[buf.i] == 3), "non-op changed game mode"
+        if pid == PLAY_CB["system_chat"] and b"commands.list" in buf.d: break
+    print("F3+F4 gamemode switcher ok")
+
     cmd(a, "save-all")
     chat_with(a, b"commands.save.success")
     a.send(PLAY_SB["command_suggestion"], varint(8) + string("/time query "))
