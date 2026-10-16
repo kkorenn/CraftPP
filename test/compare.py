@@ -24,6 +24,8 @@ ap.add_argument("--port", type=int, default=25611)
 ap.add_argument("--examples", type=int, default=10)
 ap.add_argument("--timeout", type=float, default=300)
 ap.add_argument("--light", action="store_true", help="also compare sky + block light")
+ap.add_argument("--edits", help="';'-separated console commands run after the chunks arrived ({x} {y} {z} = spawn), "
+                "e.g. \"fill {x} {y-30} {z} {x+6} {y-24} {z+6} air;setblock {x+3} {y-27} {z+3} torch\" (tests incremental light); 'wait' settles in between")
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
 ap.add_argument("--run-dir", default=f"{ROOT}/vanilla/compare_run", help="vanilla server dir (its world is wiped)")
 args = ap.parse_args()
@@ -38,9 +40,13 @@ def wait_log(path, needle, proc, timeout):
         time.sleep(0.5)
     raise TimeoutError(f"no {needle!r} in {path}")
 
-def collect(port, center):
+def settle(c):  # both servers send time / keep-alive packets, so this returns
+    end = time.time() + args.settle
+    while time.time() < end: play_step(c)
+
+def collect(port, center, proc, edited=False):
     """Join, walk to center (block pos; None = stay at spawn) and gather the chunk square around it."""
-    c, _ = login("Cmp", "127.0.0.1", port, view=view, decode=True)
+    c, _ = login("Cmp2" if edited else "Cmp", "127.0.0.1", port, view=view, decode=True)
     c.s.settimeout(args.timeout)
     while not (center or c.spawn): play_step(c)
     center = center or c.spawn
@@ -48,9 +54,18 @@ def collect(port, center):
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
     c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
-    if args.light:  # neighbours may still be lighting: take their light_update packets too
-        end = time.time() + args.settle  # both servers send time / keep-alive packets, so this returns
-        while time.time() < end: play_step(c)
+    if args.light: settle(c)  # neighbours may still be lighting: take their light_update packets too
+    if args.edits and not edited:
+        x, y, z = center
+        for cmd in args.edits.split(";"):
+            cmd = eval("f" + repr(cmd.strip()), {}, dict(x=x, y=y, z=z))  # f-string: {y-30} works
+            if cmd == "wait": settle(c); continue  # let light run between edits (tests decreases)
+            proc.stdin.write(cmd.encode() + b"\n"); proc.stdin.flush()
+        settle(c)
+        c.s.close()
+        # Vanilla sends light_update only for chunks on the view border (clients relight edits themselves),
+        # so rejoin to read the server's light from fresh chunk packets.
+        return collect(port, center, proc, True)
     c.s.close()
     if args.light: LIGHT.append({k: c.light[k] for k in need})
     return {k: c.chunks[k] for k in need}, c.biomes, center
@@ -72,7 +87,7 @@ def run_vanilla(n, center):
                          stdin=subprocess.PIPE, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     try:
         wait_log(log, "Done (", p, 600)
-        return collect(args.port, center)
+        return collect(args.port, center, p)
     finally:
         p.stdin.write(b"stop\n"); p.stdin.flush()
         try: p.wait(120)
@@ -85,12 +100,12 @@ def run_craftpp(center):
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
                            f"level-name=build/compare-world\nlevel-type=normal\n"
                            f"worldgen-stages={stage}\n")
-    p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
+    p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(100):
             try: socket.create_connection(("127.0.0.1", args.port)).close(); break
             except OSError: time.sleep(0.1)
-        return collect(args.port, center)
+        return collect(args.port, center, p)
     finally:
         p.kill(); p.wait()
 

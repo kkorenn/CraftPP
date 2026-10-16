@@ -9,9 +9,10 @@
 // One engine, one mutex: vanilla runs light on its own thread; here every call happens under mutex(), and
 // block reads go straight to the chunks (all chunk writes after generation also take mutex(), see set_block).
 //
-// Persisting vs recomputing: light is recomputed whenever a chunk is first sent after load (see the report in
-// the commit/PR for numbers): lighting costs ~1 ms/chunk here, far below generation, and saving would add
-// ~100 KB/chunk of nibbles to the uncompressed chunk files.
+// Persisting vs recomputing: light is recomputed when a chunk is first sent after a restart. Lighting (init +
+// propagation + compaction) measured 0.14-0.26 ms/chunk on an M-series Mac (expect a few times that on a Pi),
+// two orders of magnitude below generation, while persisting would add up to 26 x 2 x 2 KB per chunk to the
+// uncompressed chunk files. Memory: ~7 KB per lit chunk (1.4 KB column + ~2.5 nibble arrays after compaction).
 #include "light.hpp"
 
 #include "../gen/light_data.hpp"
@@ -228,7 +229,7 @@ struct Engine {
         if (to_remove.erase(sec_key(cx, sy, cz))) return;
         int si = sy - MIN_SEC;
         c.block[si] = Layer();
-        c.sky[si] = create_sky_layer(c, cx, sy, cz);
+        c.sky[si] = create_sky_layer(c, sy);
         c.present[si] = true;
         // SkyLightSectionStorage.onNodeAdded
         if (lowest > sy) lowest = sy;
@@ -239,7 +240,7 @@ struct Engine {
                     for (bool s : {false, true}) sky = s, mark_affected(cx + ox, sy + oy, cz + oz);
     }
     // SkyLightSectionStorage.createDataLayer
-    Layer create_sky_layer(Column& c, int cx, int sy, int cz) {
+    Layer create_sky_layer(Column& c, int sy) {
         int t = top_section(&c);
         if (t != lowest && sy < t) {
             int ay = sy + 1;
@@ -251,7 +252,6 @@ struct Engine {
             for (int i = 0; i < 16; i++) memcpy(l.data.get() + i * 128, above.data.get(), 128);
             return l;
         }
-        (void)cx, (void)cz;
         Layer l;
         l.def = c.light_on ? 15 : 0;
         return l;
