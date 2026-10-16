@@ -5,6 +5,7 @@
 #include "net.hpp"
 #include "world.hpp"
 #include "game/player_state.hpp"
+#include "worldgen/block_state.hpp"
 #include "worldgen/random.hpp"
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
@@ -103,31 +104,34 @@ struct Player {
 using PlayerPtr = std::shared_ptr<Player>;
 
 // ---------- spawn (MinecraftServer.setInitialSpawn, PlayerSpawnFinder) ----------
-// ponytail: block shapes approximated: every non-air, non-fluid block is a full cube (true for noise + material
-// rule output); add real collision shapes with features (leaves, snow layers, plants).
+// ponytail: place_new_player's free_at treats every non-air, non-fluid block as a full cube; use collision
+// shapes there too when players should spawn among plants.
 inline bool is_fluid(uint16_t b) {
     return (b >= blocks::water && b <= blocks::water + 15) || (b >= blocks::lava && b <= blocks::lava + 15);
 }
 inline bool is_solid(uint16_t b) { return b != blocks::air && b != blocks::cave_air && b != blocks::void_air && !is_fluid(b); }
 
-// PlayerSpawnFinder.getLevelRespawnPos: y to stand on at column (x, z), or INT_MIN.
+// PlayerSpawnFinder.getLevelRespawnPos: y to stand on at column (x, z), or INT_MIN. Heightmap predicates as in
+// the worldgen pipeline (Heightmap.Types), standing = collision shape's top face is full.
 inline int level_respawn_y(int x, int z) {
+    const auto& R = bs::R();
+    static const bs::Tag& motion = R.tag("minecraft:blocks_motion_in_heightmap");
     ChunkPtr cp = world.get_ptr(x >> 4, z >> 4);
     Chunk& c = *cp;
     std::lock_guard lock(c.m);
-    auto at = [&](int y) { return y >= MIN_Y + HEIGHT ? uint16_t(blocks::air) : c.get(x & 15, y, z & 15); };
+    auto at = [&](int y) { return y >= MIN_Y + HEIGHT ? int(blocks::air) : int(c.get(x & 15, y, z & 15)); };
     int top = MIN_Y, surface = MIN_Y, ocean = MIN_Y;  // MOTION_BLOCKING, WORLD_SURFACE, OCEAN_FLOOR heights
     for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y && ocean == MIN_Y; y--) {
-        uint16_t b = at(y);
-        if (surface == MIN_Y && b != blocks::air && b != blocks::cave_air && b != blocks::void_air) surface = y + 1;
-        if (top == MIN_Y && (is_solid(b) || is_fluid(b))) top = y + 1;
-        if (is_solid(b)) ocean = y + 1;
+        int b = at(y);
+        if (surface == MIN_Y && !R.is_air(b)) surface = y + 1;
+        if (top == MIN_Y && (R.in(b, motion) || R.has_fluid(b))) top = y + 1;
+        if (R.in(b, motion)) ocean = y + 1;
     }
     if (surface <= top && surface > ocean) return INT_MIN;
     for (int y = top + 1; y >= MIN_Y; y--) {
-        uint16_t b = at(y);
-        if (is_fluid(b)) break;
-        if (is_solid(b)) return y + 1;
+        int b = at(y);
+        if (R.has_fluid(b)) break;
+        if (R.collision_face_full(b, bs::UP)) return y + 1;
     }
     return INT_MIN;
 }
