@@ -18,7 +18,7 @@ option(CRAFTPP_LTO "Link-time optimization" OFF)
 if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
-add_executable(craftpp src/main.cpp)
+add_executable(craftpp src/main.cpp src/light/light.cpp)
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
 find_package(ZLIB QUIET)
