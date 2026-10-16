@@ -8,11 +8,11 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Survival: tick loop, items, loot, inventory/crafting, vitals
 - Worldgen noise + surface stages, bit-exact vs vanilla
 - Paper-style console, Bukkit/Paper plugins (embedded JVM, only when plugins/ has jars), persistence
+- perf: paletted chunks (~21 KB), unloading, worldgen worker pool, compression, Pi bench (idle RSS 14.7 MiB, after join 33 MiB, join 1.7 s) — see docs/performance.md
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| perf | Pi benchmarks (aarch64 Docker), paletted chunks, unloading, worldgen worker pool, network |
 | features | chunk-status pipeline, carvers, decoration features |
 | structures | all structures, /locate |
 | lighting | vanilla light engine |
