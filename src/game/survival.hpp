@@ -41,11 +41,44 @@ inline void heal(Player& p, float a) {
 
 inline void kill(Player& p, const std::string& type);
 
+// LivingEntity.getDamageAfterArmorAbsorb: Player.hurtArmor (durability) then CombatRules.getDamageAfterAbsorb.
+inline float armor_absorb(Player& p, float damage) {
+    float armor = 0, toughness = 0;
+    if (damage > 0) {
+        int wear = int(std::max(1.0f, damage / 4.0f));
+        for (int slot : {36, 37, 38, 39}) {  // FEET, LEGS, CHEST, HEAD
+            ItemStack& s = p.inv[size_t(slot)];
+            if (s.empty()) continue;
+            const ItemInfo& it = item_info[size_t(s.item)];
+            if (it.equip != slot || !it.damage_on_hurt || it.max_damage <= 0) continue;
+            if ((s.damage += wear) >= it.max_damage) {
+                s = {};
+                broadcast_near(p.x, p.z, entity_event_packet(p.eid, 52 - (slot - 36)));  // FEET 52 .. HEAD 49
+            }
+        }
+    }
+    for (int slot : {36, 37, 38, 39}) {
+        const ItemStack& s = p.inv[size_t(slot)];
+        if (s.empty() || item_info[size_t(s.item)].equip != slot) continue;
+        armor += item_info[size_t(s.item)].armor, toughness += item_info[size_t(s.item)].toughness;
+    }
+    armor = std::clamp(armor, 0.0f, 30.0f), toughness = std::clamp(toughness, 0.0f, 20.0f);
+    float t = 2.0f + toughness / 4.0f;
+    float real = std::clamp(armor - damage / t, armor * 0.2f, 20.0f);
+    return damage * (1.0f - real / 25.0f);
+}
+
 // LivingEntity.hurtServer (no armor/effects yet). Returns whether damage was applied.
 inline bool hurt(Player& p, float amount, const std::string& type) {
     if (p.g.dead || amount <= 0) return false;
     bool bypass_invuln = type == "out_of_world" || type == "generic_kill";
     if (!survival_like(p) && !bypass_invuln) return false;
+    // Player.isInvulnerableTo: damage-type game rules (tags is_drowning / is_fall / is_fire / is_freezing)
+    if (type == "drown" && !rule("drowning_damage")) return false;
+    if ((type == "fall" || type == "ender_pearl" || type == "stalagmite") && !rule("fall_damage")) return false;
+    if ((type == "in_fire" || type == "campfire" || type == "on_fire" || type == "lava" || type == "hot_floor" || type == "sulfur_cube_hot" ||
+         type == "unattributed_fireball" || type == "fireball") && !rule("fire_damage")) return false;
+    if (type == "freeze" && !rule("freeze_damage")) return false;
     float applied;
     if (p.g.invulnerable > 10) {
         if (amount <= p.g.last_hurt) return false;
@@ -56,9 +89,10 @@ inline bool hurt(Player& p, float amount, const std::string& type) {
         p.g.invulnerable = 20;
         applied = amount;
     }
-    // ponytail: armor, enchantment protection and absorption are not applied yet.
     auto dt = damage_types.find(type);
-    if (dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
+    if (dt == damage_types.end() || !dt->second.bypasses_armor) applied = armor_absorb(p, applied);
+    // ponytail: enchantment protection, resistance and absorption are not applied yet (no effects/enchantments).
+    if (applied != 0 && dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
     p.g.health = std::max(0.0f, p.g.health - applied);
     Writer w;
     w.varint(play_cb::damage_event).varint(p.eid).varint(damage_type_id(type)).varint(0).varint(0).boolean(false);
@@ -89,19 +123,26 @@ inline void kill(Player& p, const std::string& type) {
         if (dt->second.fall_variants && p.g.fall_distance > 5) key = "death.fell.accident.generic";
     }
     Writer msg;
-    translate_component(msg, key, {p.name});
+    if (rule("show_death_messages")) translate_component(msg, key, {p.name});
+    else msg.u8(0x08).u8(0).u8(0);  // CommonComponents.EMPTY
     std::vector<uint8_t> component(msg.b);
     Writer k;
     k.varint(play_cb::player_combat_kill).varint(p.eid).bytes(component);
     p.send(k);
-    Writer chat;
-    chat.varint(play_cb::system_chat).bytes(component).boolean(false);
-    for (auto& q : players) q->send(chat);
-    log_info("%s", plain(tr(key, {p.name})).c_str());  // vanilla logs the death message like other system chat
+    if (rule("show_death_messages")) {
+        Writer chat;
+        chat.varint(play_cb::system_chat).bytes(component).boolean(false);
+        for (auto& q : players) q->send(chat);
+        log_info("%s", plain(tr(key, {p.name})).c_str());  // vanilla logs the death message like other system chat
+    }
     broadcast_near(p.x, p.z, entity_event_packet(p.eid, 3), &p);
     if (p.g.container) close_container(p, true);
-    drop_all(p);
-    p.g.xp_level = p.g.xp_total = 0, p.g.xp_progress = 0;  // ponytail: no xp orbs dropped yet
+    if (rule("keep_inventory")) {
+        return_grid(p);
+    } else {
+        drop_all(p);
+        p.g.xp_level = p.g.xp_total = 0, p.g.xp_progress = 0;  // ponytail: no xp orbs dropped yet
+    }
     send_health(p);
 }
 
@@ -112,6 +153,7 @@ inline void respawn(Player& p) {
         PlayerGame g;
         g.next_container = p.g.next_container;
         g.loaded = true;
+        g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
         return g;
     }();
     World* died_in = p.level;
@@ -131,14 +173,15 @@ inline void food_tick(Player& p) {
         else if (diff != 0) g.food = std::max(g.food - 1, 0);
     }
     bool hurt_ = g.health > 0 && g.health < 20;
-    if (g.saturation > 0 && hurt_ && g.food >= 20) {
+    bool regen = rule("natural_health_regeneration");
+    if (regen && g.saturation > 0 && hurt_ && g.food >= 20) {
         if (++g.food_timer >= 10) {
             float spent = std::min(g.saturation, 6.0f);
             heal(p, spent / 6.0f);
             add_exhaustion(p, spent);
             g.food_timer = 0;
         }
-    } else if (g.food >= 18 && hurt_) {
+    } else if (regen && g.food >= 18 && hurt_) {
         if (++g.food_timer >= 80) { heal(p, 1); add_exhaustion(p, 6); g.food_timer = 0; }
     } else if (g.food <= 0) {
         if (++g.food_timer >= 80) {
@@ -148,9 +191,12 @@ inline void food_tick(Player& p) {
     } else {
         g.food_timer = 0;
     }
-    if (diff == 0) {
-        if (hurt_ && server_tick % 20 == 0) heal(p, 1);
-        if (g.food < 20 && server_tick % 10 == 0) g.food++;
+    if (diff == 0 && regen) {
+        if (g.game_ticks % 20 == 0) {
+            if (g.health < 20) heal(p, 1);
+            if (g.saturation < 20) g.saturation += 1;
+        }
+        if (g.food < 20 && g.game_ticks % 10 == 0) g.food++;
     }
 }
 
@@ -186,12 +232,37 @@ inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak (no un
     }
 }
 
+// Level.levelEvent(source, type, pos, data): players within 64 blocks, except the source.
+inline void level_event(int type, int x, int y, int z, int data, const Player* except) {
+    Writer w;
+    w.varint(play_cb::level_event).i32(type).i64(int64_t(pack_pos(x, y, z))).i32(data).boolean(false);
+    for (auto& q : players) {
+        double dx = x - q->x, dy = y - q->y, dz = z - q->z;
+        if (q.get() != except && dx * dx + dy * dy + dz * dz < 64.0 * 64.0) q->send(w);
+    }
+}
+// ServerLevel.destroyBlockProgress: crack stage for everyone within 32 blocks but the breaker.
+inline void destroy_block_progress(const Player& p, int x, int y, int z, int stage) {
+    Writer w;
+    w.varint(play_cb::block_destruction).varint(p.eid).i64(int64_t(pack_pos(x, y, z))).u8(uint8_t(stage));
+    for (auto& q : players) {
+        double dx = x - q->x, dy = y - q->y, dz = z - q->z;
+        if (q->eid != p.eid && dx * dx + dy * dy + dz * dz < 1024.0) q->send(w);
+    }
+}
+
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
-inline void destroy_block(Player& p, int x, int y, int z) {
+// Returns false when the held item can't break blocks (swords etc. in creative).
+inline bool destroy_block(Player& p, int x, int y, int z) {
     int state = world.get_block(x, y, z);
-    if (state == blocks::air) return;
+    int item = held(p).item;
+    if (p.gamemode == 1 && item >= 0 && item_info[size_t(item)].tool >= 0 &&
+        !tools[size_t(item_info[size_t(item)].tool)].creative_destroy)
+        return false;
+    if (state == blocks::air) return true;
+    level_event(2001, x, y, z, state, &p);  // Block.spawnDestroyParticles (break particles + sound for others)
     change_block(x, y, z, blocks::air);
-    if (p.gamemode == 1) return;
+    if (p.gamemode == 1) return true;
     // ponytail: multi-block structures (doors, beds, tall plants) only break the targeted half.
     if (correct_tool(p, state)) {
         static std::vector<ItemStack> drops;
@@ -200,10 +271,13 @@ inline void destroy_block(Player& p, int x, int y, int z) {
         for (auto& d : drops) pop_resource(x, y, z, d);
     }
     if (block_of(state).hardness != 0) {
-        int item = held(p).item;
         if (item >= 0 && item_info[size_t(item)].tool >= 0) hurt_tool(p, tools[size_t(item_info[size_t(item)].tool)].damage_per_block);
     }
     add_exhaustion(p, 0.005f);
+    return true;
+}
+inline void destroy_and_ack(Player& p, int x, int y, int z) {
+    if (!destroy_block(p, x, y, z)) p.send(block_update(x, y, z, world.get_block(x, y, z)));
 }
 
 // Player.isWithinBlockInteractionRange(pos, 1.0): eye to the block's box, range 4.5 (creative 5) + 1.
@@ -215,45 +289,100 @@ inline bool within_reach(const Player& p, int x, int y, int z) {
     return dx * dx + dy * dy + dz * dz < r * r;
 }
 
+// DedicatedServer.isUnderSpawnProtection (overworld only, non-ops, only once there are ops).
+inline bool under_spawn_protection(const Player& p, int x, int z) {
+    int radius = std::atoi(props["spawn-protection"].c_str());
+    if (radius <= 0) return false;
+    {
+        std::lock_guard lock(cmd_mtx);
+        if (ops.rows.empty() || ops.find(player_uuid(p), p.name)) return false;
+    }
+    return std::max(std::abs(x - world_spawn.x), std::abs(z - world_spawn.z)) <= radius;
+}
+inline void overlay_message(Player& p, const Text& t) { send_text(p, styled(t, "red"), true); }
+inline std::string short_pos(int x, int y, int z) {  // BlockPos.toShortString
+    return std::to_string(x) + ", " + std::to_string(y) + ", " + std::to_string(z);
+}
+
+// ServerPlayerGameMode.handleBlockBreakAction. Actions: 0 start, 1 change direction, 2 abort, 3 stop.
 inline void dig_action(Player& p, int action, int x, int y, int z) {
     auto& g = p.g;
     if (p.gamemode == 3 || g.dead) return;
+    auto abort = [&] {
+        g.digging = false;
+        if (g.dig_x != x || g.dig_y != y || g.dig_z != z) {
+            log_warn("Mismatch in destroy block pos: BlockPos{x=%d, y=%d, z=%d} BlockPos{x=%d, y=%d, z=%d}", g.dig_x,
+                     g.dig_y, g.dig_z, x, y, z);
+            destroy_block_progress(p, g.dig_x, g.dig_y, g.dig_z, -1);
+        }
+        destroy_block_progress(p, x, y, z, -1);
+    };
     if (!within_reach(p, x, y, z)) {
-        p.send(block_update(x, y, z, world.get_block(x, y, z)));
+        if (g.digging && action == 2) abort();
         return;
     }
     int state = world.get_block(x, y, z);
+    if (y > MIN_Y + HEIGHT - 1) return p.send(block_update(x, y, z, state));
     if (action == 0) {  // START_DESTROY_BLOCK
-        if (p.gamemode == 1) return destroy_block(p, x, y, z);
-        if (state == blocks::air) return;
-        if (p.gamemode == 2) return p.send(block_update(x, y, z, state));  // ponytail: no can_break checks
-        float prog = destroy_progress(p, state);
-        if (prog >= 1.0f) return destroy_block(p, x, y, z);
+        if (under_spawn_protection(p, x, z)) return overlay_message(p, tr("build.spawn_protection", {short_pos(x, y, z)}));
+        if (p.gamemode == 1) return destroy_and_ack(p, x, y, z);
+        if (p.gamemode == 2) return p.send(block_update(x, y, z, state));  // ponytail: no can_break predicate
+        g.dig_start = g.game_ticks;
+        float prog = state == blocks::air ? 1.0f : destroy_progress(p, state);
+        if (state != blocks::air && prog >= 1.0f) return destroy_and_ack(p, x, y, z);
         if (g.digging) p.send(block_update(g.dig_x, g.dig_y, g.dig_z, world.get_block(g.dig_x, g.dig_y, g.dig_z)));
         g.digging = true;
-        g.dig_x = x, g.dig_y = y, g.dig_z = z, g.dig_start = int(server_tick), g.dig_state = state;
+        g.dig_x = x, g.dig_y = y, g.dig_z = z, g.dig_state = state;
+        p.net.last_dig_state = int(prog * 10.0f);
+        destroy_block_progress(p, x, y, z, p.net.last_dig_state);
     } else if (action == 3) {  // STOP_DESTROY_BLOCK
-        if (!g.digging || g.dig_x != x || g.dig_y != y || g.dig_z != z) return p.send(block_update(x, y, z, state));
-        g.digging = false;
-        float prog = destroy_progress(p, state) * float(int(server_tick) - g.dig_start + 1);
-        if (prog >= 0.7f) return destroy_block(p, x, y, z);
-        if (!g.delayed) {  // client was a bit fast: finish when the server-side progress reaches 1
-            g.delayed = true;
-            g.dly_x = x, g.dly_y = y, g.dly_z = z, g.dly_start = g.dig_start, g.dly_state = state;
+        if (!g.digging || g.dig_x != x || g.dig_y != y || g.dig_z != z) return;
+        if (state == blocks::air) return;
+        float prog = destroy_progress(p, state) * float(g.game_ticks - g.dig_start + 1);
+        if (prog >= 0.7f) {
+            g.digging = false;
+            destroy_block_progress(p, x, y, z, -1);
+            return destroy_and_ack(p, x, y, z);
         }
-    } else if (action == 1 || action == 2) {  // abort
-        if (g.digging) p.send(block_update(g.dig_x, g.dig_y, g.dig_z, world.get_block(g.dig_x, g.dig_y, g.dig_z)));
-        g.digging = false;
+        if (!g.delayed) {  // client was a bit fast: finish when the server-side progress reaches 1
+            g.digging = false;
+            g.delayed = true;
+            g.dly_x = x, g.dly_y = y, g.dly_z = z, g.dly_start = g.dig_start;
+        }
+    } else if (action == 2) {  // ABORT_DESTROY_BLOCK
+        abort();
     }
 }
+// ServerPlayerGameMode.tick
 inline void dig_tick(Player& p) {
     auto& g = p.g;
-    if (!g.delayed) return;
-    int state = world.get_block(g.dly_x, g.dly_y, g.dly_z);
-    if (state != g.dly_state) { g.delayed = false; return; }
-    if (destroy_progress(p, state) * float(int(server_tick) - g.dly_start + 1) >= 1.0f) {
-        g.delayed = false;
-        destroy_block(p, g.dly_x, g.dly_y, g.dly_z);
+    g.game_ticks++;
+    auto progress = [&](int x, int y, int z, int state, int ticks) {  // incrementDestroyProgress
+        float prog = destroy_progress(p, state) * float(ticks + 1);
+        int stage = int(prog * 10.0f);
+        if (stage != p.net.last_dig_state) destroy_block_progress(p, x, y, z, stage), p.net.last_dig_state = stage;
+        return prog;
+    };
+    if (g.delayed) {  // vanilla passes delayedTickStart itself as the tick count (bytecode-checked)
+        int state = world.get_block(g.dly_x, g.dly_y, g.dly_z);
+        if (state == blocks::air) {
+            g.delayed = false;
+        } else if (progress(g.dly_x, g.dly_y, g.dly_z, state, g.dly_start) >= 1.0f) {
+            g.delayed = false;
+            destroy_block(p, g.dly_x, g.dly_y, g.dly_z);
+        }
+    } else if (g.digging) {
+        int state = world.get_block(g.dig_x, g.dig_y, g.dig_z);
+        if (state == blocks::air) {
+            destroy_block_progress(p, g.dig_x, g.dig_y, g.dig_z, -1);
+            p.net.last_dig_state = -1;
+            g.digging = false;
+        } else {
+            int ticks = g.game_ticks - g.dig_start;
+            progress(g.dig_x, g.dig_y, g.dig_z, state, ticks);
+            // ponytail: levelEvent 2019/2020 needs Direction.ordinal of the hit face; uses the top face (1).
+            level_event(ticks % 4 == 0 ? 2020 : 2019, g.dig_x, g.dig_y, g.dig_z, 1, nullptr);
+        }
     }
 }
 
@@ -303,15 +432,34 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
         if (dy < 0) p.g.fall_distance -= dy;
         if (p.on_ground) {
             if (p.g.fall_distance > 0) {
-                int dmg = int(std::floor(p.g.fall_distance + 1.0E-6 - 3.0));
+                // Block.fallOn of the block landed on (getOnPos, 0.2 below the feet): damage multiplier.
+                // ponytail: pointed dripstone, farmland trampling and turtle eggs not handled.
+                const std::string& on = block_of(world.get_block(fx, int(std::floor(p.y - 0.2)), fz)).name;
+                float mult = on == "minecraft:hay_block" || on == "minecraft:honey_block" ? 0.2f
+                           : on == "minecraft:slime_block" && !p.g.sneaking ? 0.0f : 1.0f;
+                double dist = p.g.fall_distance;
+                if ((on.size() > 4 && on.compare(on.size() - 4, 4, "_bed") == 0) || on == "minecraft:shelf_mushroom")
+                    dist *= 1.0f - 0.5f;  // Properties.fallDistanceReduction(0.5F)
+                int dmg = int(std::floor((dist + 1.0E-6 - 3.0) * mult));
                 if (dmg > 0) hurt(p, float(dmg), "fall");
             }
             p.g.fall_distance = 0;
         }
     }
+    if (dy > 0) p.g.fall_distance = 0;  // handlePlayerPositionChange: movedUpwards -> resetFallDistance
     if (was_on_ground && !p.on_ground && dy > 0) add_exhaustion(p, p.g.sprinting ? 0.2f : 0.05f);  // jumpFromGround
-    double h = std::sqrt((p.x - ox) * (p.x - ox) + (p.z - oz) * (p.z - oz));
-    if (p.g.sprinting && h > 0 && h < 10) add_exhaustion(p, 0.1f * float(h));
+    // ServerPlayer.checkMovementStatistics (food exhaustion part)
+    double dx = p.x - ox, dz = p.z - oz;
+    if (dx * dx + dy * dy + dz * dz < 1.0E-10) return;  // didNotMove
+    auto cm = [](double d) { return int(std::floor(float(std::sqrt(d)) * 100.0f + 0.5f)); };  // Math.round(float)
+    bool eye_water = eye_in_water(p), feet_water = block_index(feet) == block_index(blocks::water);
+    if (eye_water) {  // isSwimming or isEyeInFluid(WATER): same rate
+        if (int d = cm(dx * dx + dy * dy + dz * dz); d > 0) add_exhaustion(p, 0.01f * float(d) * 0.01f);
+    } else if (feet_water) {
+        if (int d = cm(dx * dx + dz * dz); d > 0) add_exhaustion(p, 0.01f * float(d) * 0.01f);
+    } else if (!in_sorted(tag_climbable, bi) && p.on_ground && p.g.sprinting) {
+        if (int d = cm(dx * dx + dz * dz); d > 0) add_exhaustion(p, 0.1f * float(d) * 0.01f);
+    }
 }
 
 inline void vitals_tick(Player& p) {
@@ -329,6 +477,18 @@ inline void vitals_tick(Player& p) {
     }
 }
 
+// ServerGamePacketListenerImpl.ackBlockChangesUpTo: one block_changed_ack per tick (game/netplay.hpp sends it).
+inline void ack_block_changes(Player& p, int seq) {
+    if (seq < 0) throw std::runtime_error("Expected packet sequence nr >= 0");
+    p.net.ack_upto = std::max(p.net.ack_upto, seq);
+}
+// LivingEntity.swing with the default animation (whack, 6 ticks) to everyone tracking the player.
+inline void swing(Player& p, int hand, bool to_self) {
+    Writer w;
+    w.varint(play_cb::swing_animation).varint(p.eid).varint(hand).varint(1).varint(6);
+    broadcast_near(p.x, p.z, w, to_self ? nullptr : &p);
+}
+
 // ---------- placement ----------
 inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for players
     for (auto& q : players) {
@@ -339,29 +499,38 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
     return false;
 }
 
-inline void use_item_on(Player& p, int hand, int x, int y, int z, int face) {
-    if (p.gamemode == 3 || p.g.dead) return;
-    if (!within_reach(p, x, y, z)) return;
+// ServerPlayerGameMode.useItemOn. Returns 0 PASS, 1 SUCCESS (swing), 2 CONSUME (no swing).
+inline int use_item_on(Player& p, int hand, int x, int y, int z, int face) {
+    if (p.g.dead) return 0;
     int clicked = world.get_block(x, y, z);
-    ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
-    bool hands_empty = held(p).empty() && p.inv[40].empty();
-    if (block_index(clicked) == block_index(blocks::crafting_table) && (!p.g.sneaking || hands_empty) && hand == 0) {
+    bool is_table = block_index(clicked) == block_index(blocks::crafting_table);
+    if (p.gamemode == 3) {  // spectators can open menus but not use anything else
+        if (!is_table) return 0;
         open_crafting_table(p, x, y, z);
-        return;
+        return 2;
+    }
+    ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
+    bool have_items = !held(p).empty() || !p.inv[40].empty();
+    if (is_table && !(p.g.sneaking && have_items) && hand == 0) {  // useWithoutItem
+        open_crafting_table(p, x, y, z);
+        return 1;
     }
     int state = slot.empty() ? -1 : ITEM_TO_BLOCK[slot.item];
-    if (state < 0) return;
+    if (state < 0) return 0;
+    if (p.gamemode == 2) return 0;  // !mayBuild; ponytail: can_place_on (adventure predicates) not supported
     // ponytail: places the block's default state (no facing/axis/half); needs per-block placement rules.
     if (!block_of(clicked).replaceable) {
         static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
         if (face < 0 || face > 5) face = 1;
         x += off[face][0], y += off[face][1], z += off[face][2];
     }
+    if (y < MIN_Y || y > MIN_Y + HEIGHT - 1) return 0;
     int target = world.get_block(x, y, z);
-    if (!block_of(target).replaceable) return p.send(block_update(x, y, z, target));
-    if (block_of(state).collision && box_hits_player(x, y, z)) return p.send(block_update(x, y, z, target));
+    if (!block_of(target).replaceable) return 0;
+    if (block_of(state).collision && box_hits_player(x, y, z)) return 0;
     change_block(x, y, z, state);
     if (p.gamemode != 1 && --slot.count <= 0) slot = {};
+    return 1;
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
@@ -426,7 +595,7 @@ inline void register_game_handlers() {
         int seq = in.varint();
         if (action <= 3) {
             dig_action(p, action, x, y, z);
-            p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+            ack_block_changes(p, seq);
         } else if ((action == 4 || action == 5) && p.gamemode != 3 && !p.g.dead) {  // DROP_ALL_ITEMS / DROP_ITEM
             ItemStack& s = held(p);
             if (s.empty()) return;
@@ -438,6 +607,7 @@ inline void register_game_handlers() {
             p.g.use_ticks = 0;
         } else if (action == 7 && p.gamemode != 3) {  // SWAP_ITEM_WITH_OFFHAND
             std::swap(held(p), p.inv[40]);
+            p.g.use_ticks = 0;
         }
     });
     on(play_sb::use_item_on, [](Player& p, Reader& in, int) {
@@ -445,21 +615,49 @@ inline void register_game_handlers() {
         int x, y, z;
         read_block_pos(in, x, y, z);
         int face = in.varint();
-        in.f32(); in.f32(); in.f32(); in.u8(); in.u8();
+        float cx = in.f32(), cy = in.f32(), cz = in.f32();  // hit location relative to the block
+        in.u8(); in.u8();
         int seq = in.varint();
-        use_item_on(p, hand, x, y, z, face);
-        p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        // ServerGamePacketListenerImpl.handleUseItemOn
+        ack_block_changes(p, seq);
+        if (!within_reach(p, x, y, z)) return;
+        if (std::abs(cx - 0.5) >= 1.0000001 || std::abs(cy - 0.5) >= 1.0000001 || std::abs(cz - 0.5) >= 1.0000001) {
+            log_warn("Rejecting UseItemOnPacket from %s: Location (%s, %s, %s) too far away from hit block BlockPos{x=%d, y=%d, z=%d}.",
+                     p.name.c_str(), fmt_double(x + double(cx)).c_str(), fmt_double(y + double(cy)).c_str(),
+                     fmt_double(z + double(cz)).c_str(), x, y, z);
+            return;
+        }
+        const int max_y = MIN_Y + HEIGHT - 1;
+        if (y > max_y) return overlay_message(p, tr("build.tooHigh", {max_y}));
+        if (y < MIN_Y) return overlay_message(p, tr("build.tooLow", {MIN_Y}));
+        static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
+        int f = face >= 0 && face <= 5 ? face : 1;
+        if (under_spawn_protection(p, x, z)) {
+            overlay_message(p, tr("build.spawn_protection", {short_pos(x, y, z)}));
+        } else if (!p.net.awaiting) {
+            const ItemStack& used = p.inv[hand == 1 ? 40u : size_t(p.selected)];
+            bool placing = !used.empty() && ITEM_TO_BLOCK[used.item] >= 0;  // wasBlockPlacementAttempt
+            int result = use_item_on(p, hand, x, y, z, face);
+            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= MIN_Y)))
+                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {MIN_Y}));
+            else if (result == 1) swing(p, hand, false);
+        } else {
+            overlay_message(p, tr("build.tooHigh", {max_y}));
+        }
+        p.send(block_update(x, y, z, world.get_block(x, y, z)));
+        int nx = x + off[f][0], ny = y + off[f][1], nz = z + off[f][2];
+        p.send(block_update(nx, ny, nz, world.get_block(nx, ny, nz)));
     });
     on(play_sb::use_item, [](Player& p, Reader& in, int) {
         int hand = in.varint();
         int seq = in.varint();
         start_using(p, hand);
-        p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        ack_block_changes(p, seq);
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });
     on(play_sb::container_close, [](Player& p, Reader& in, int) {
-        int id = in.varint();
-        if (id == p.g.container) close_container(p, false);
+        in.varint();  // vanilla closes whatever menu is open, whatever the id (doCloseContainer)
+        close_container(p, false);
     });
     on(play_sb::client_command, [](Player& p, Reader& in, int) {
         if (in.varint() == 0) respawn(p);

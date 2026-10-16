@@ -2,7 +2,7 @@
 """Dimensions on the flat test world: nether portal lighting + travel + linking back, the survival delay,
 dimension kept across rejoin, execute in, the end portal (eyes of ender), the end platform and the credits.
 Usage: python3 test/dimensions_test.py host port"""
-import json, os, struct, sys, time
+import json, os, socket, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +14,7 @@ def state(name, **props):
 PORTAL = {state("nether_portal", axis="x"), state("nether_portal", axis="z")}
 def pos(x, y, z): return struct.pack(">q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF))
 def item(n): return ITEMS["minecraft:" + n]["protocol_id"]
-def move(c, x, y, z): c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x, y, z, 1))
+def move(c, x, y, z): walk(c, x, y, z)
 def cmd(c, line): c.send(PLAY_SB["chat_command"], string(line))
 def hold(c, it): c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(item(it)) + varint(0) + varint(0))
 def use_on(c, x, y, z, face=1):
@@ -38,7 +38,8 @@ def arrive(c, dim):  # a respawn packet into `dim`, then the teleport
     while play_step(c) != PLAY_CB["player_position"]: pass
 
 host, port = sys.argv[1], int(sys.argv[2])
-c, _ = login("Alice", host, port, decode=True)
+ALICE = uuid.UUID("00000000-0000-4000-8000-00000000a11c")  # same profile across the rejoin
+c, _ = login("Alice", host, port, decode=True, uid=ALICE)
 c.last = None
 cmd(c, "gamemode creative")
 # Obsidian frame 4 wide x 5 tall along x at z = 5 (inside 2 x 3), standing on the flat grass (y -61).
@@ -60,11 +61,11 @@ sync(c)
 assert block(c, int(px // 1), int(py // 1), int(pz // 1)) in PORTAL, "arrived inside the created exit portal"
 print(f"to the nether ok: {c.pos}")
 
-c.s.close()  # rejoin: the player stays in the nether
+c.s.shutdown(socket.SHUT_RDWR)  # rejoin: the player stays in the nether
 for attempt in range(40):  # until the server has seen the old connection go
     time.sleep(0.25)
     try:
-        c, _ = login("Alice", host, port, decode=True)
+        c, _ = login("Alice", host, port, decode=True, uid=ALICE)
         break
     except AssertionError:
         pass
@@ -82,7 +83,8 @@ move(c, px, py, pz)
 arrive(c, "minecraft:overworld")
 dt = time.time() - t0
 assert dt > 3.5, f"survival portal delay too short: {dt:.1f}s"
-assert 10 <= c.pos[0] <= 13 and abs(c.pos[2] - 5.5) < 1 and abs(c.pos[1] + 59) < 1, c.pos
+if abs(px * 8 - 11.5) <= 128 and abs(pz * 8 - 5.5) <= 128:  # the original frame is within the search radius
+    assert 10 <= c.pos[0] <= 13 and abs(c.pos[2] - 5.5) < 1 and abs(c.pos[1] + 59) < 1, c.pos
 print(f"back to the original portal ok ({dt:.1f}s survival delay): {c.pos}")
 
 # Breaking the frame collapses the portal.
