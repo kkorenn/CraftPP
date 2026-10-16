@@ -190,6 +190,7 @@ inline void setup_world() {
     auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
     auto gen = ow->terrain;
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
