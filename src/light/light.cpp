@@ -717,17 +717,53 @@ void adopt_loaded(Engine& e, Column& c, Chunk& w) {
     e.run();
 }
 
+// DEBUG: lower-bound fixed-point check (light that should have arrived from a neighbour but did not).
+void verify(Engine& e, int cx, int cz) {
+    for (bool s : {false, true}) {
+        e.sky = s;
+        int shown = 0;
+        for (int y = MIN_Y; y < MIN_Y + HEIGHT; y++)
+            for (int z = cz * 16; z < cz * 16 + 16; z++)
+                for (int x = cx * 16; x < cx * 16 + 16; x++) {
+                    if (!e.storing(x >> 4, y >> 4, z >> 4)) continue;
+                    int l = e.stored(x, y, z);
+                    uint16_t ps = e.state(x, y, z);
+                    for (int d = 0; d < 6; d++) {
+                        int nx = x - DX[d], ny = y - DY[d], nz = z - DZ[d];  // neighbour n, propagating in d to p
+                        if (!e.storing(nx >> 4, ny >> 4, nz >> 4)) continue;
+                        int nl = e.stored(nx, ny, nz);
+                        if (nl <= 1 || nl - opacity(ps) <= l) continue;
+                        uint16_t ns = e.state(nx, ny, nz);
+                        if (shape_occludes(ns, ps, d)) continue;
+                        if (shown++ < 3) {
+                            auto st = [&](int a, int b) { Column* c = e.col(a, b); return c ? int(c->status) * 10 + c->adopted : -1; };
+                            printf("VERIFY %s (%d,%d,%d)=%d state %d; from (%d,%d,%d)=%d state %d dir %d; col %d n-col %d\n",
+                                   s ? "sky" : "block", x, y, z, l, ps, nx, ny, nz, nl, ns, d, st(x >> 4, z >> 4), st(nx >> 4, nz >> 4));
+                        }
+                    }
+                }
+        if (shown) printf("VERIFY %s chunk %d,%d: %d violations\n", s ? "sky" : "block", cx, cz, shown);
+    }
+    fflush(stdout);
+}
+
 void ensure_lit(World& world, int cx, int cz) {
+    // ChunkMap.prepareTickingChunk: a chunk is sent once its 3x3 is FULL, so every light source that can reach it
+    // (< 16 blocks) has been propagated. The 3x3 are World chunks: generated (taken, adopted) or loaded.
     if (Engine& e = engine(); e.pipeline) {
-        {
-            std::lock_guard lock(mutex());
-            if (Column* c = e.col(cx, cz); c && c->adopted && c->status == LIT) return;
-        }
-        e.pipeline->ensure(cx, cz, worldgen::Status::LIGHT);  // a loaded chunk: light its generated version
-        Chunk& w = world.get(cx, cz);
-        std::lock_guard lock(mutex());
-        Column& c = *e.col(cx, cz);
-        if (!c.adopted) adopt_loaded(e, c, w);
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++) {
+                int x = cx + dx, z = cz + dz;
+                {
+                    std::lock_guard lock(mutex());
+                    if (Column* c = e.col(x, z); c && c->adopted && c->status == LIT) continue;
+                }
+                e.pipeline->ensure(x, z, worldgen::Status::LIGHT);  // a loaded chunk: light its generated version
+                Chunk& w = world.get(x, z);
+                std::lock_guard lock(mutex());
+                Column& c = *e.col(x, z);
+                if (!c.adopted) adopt_loaded(e, c, w);
+            }
         return;
     }
     auto lit_3x3 = [&](Engine& e) {
@@ -776,6 +812,8 @@ void write(Writer& w, int cx, int cz) {
     std::lock_guard lock(mutex());
     Engine& e = engine();
     e.run();
+    static const bool check = getenv("CRAFTPP_LIGHT_VERIFY");
+    if (check) verify(e, cx, cz);
     write_masks(w, e.col(cx, cz), ~0u, ~0u);
 }
 
