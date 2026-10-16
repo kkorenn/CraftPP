@@ -141,6 +141,12 @@ members defined out of line). **Clang is ~20 % faster than GCC 12 on the surface
 
 (Run before the zoom/neighbour-biome work; same session, so comparable with each other.)
 
+## Linux
+
+`./build.sh test` passes inside the bookworm container with GCC 12 (whole suite: bot, persist, survival,
+commands; plugins are compiled out without a JDK). Clang 14 builds it too. SIGINT/SIGTERM (`docker stop`) save
+and exit cleanly. Remaining Linux warnings are all `-Wunused-function` in plugins.cpp.
+
 ## Exactness
 
 - `terrain_test` prints a fingerprint (FNV over every block and biome of 32 generated chunks). macOS (Apple
