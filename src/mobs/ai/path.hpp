@@ -61,12 +61,20 @@ struct Path {
     void truncate(int i) { if (int(nodes.size()) > i) nodes.resize(size_t(i)); }
 };
 
-// NodeEvaluator: shared node pool (one search at a time on the tick thread).
-struct NodeEvaluator {
-    Mob* mob = nullptr;
+// Search scratch shared by every evaluator: one search at a time on the tick thread, so mobs don't each keep
+// node pools/hash tables alive between searches (memory per mob stays small).
+struct PathScratch {
     std::vector<PNode> pool;
     std::unordered_map<int, int> by_hash;
     std::unordered_map<int64_t, uint8_t> type_cache;
+    std::vector<int> heap;
+};
+inline PathScratch& path_scratch() { static PathScratch s; return s; }
+struct NodeEvaluator {
+    Mob* mob = nullptr;
+    std::vector<PNode>& pool = path_scratch().pool;
+    std::unordered_map<int, int>& by_hash = path_scratch().by_hash;
+    std::unordered_map<int64_t, uint8_t>& type_cache = path_scratch().type_cache;
     int entity_width = 1, entity_height = 1, entity_depth = 1;
     bool can_pass_doors = true, can_open_doors = false, can_float = false, can_walk_over_fences = false;
     virtual ~NodeEvaluator() = default;
@@ -150,7 +158,7 @@ struct WalkNodeEvaluator : NodeEvaluator {
 struct PathFinder {
     NodeEvaluator* eval;
     int max_visited;
-    std::vector<int> heap;
+    std::vector<int>& heap = path_scratch().heap;
     PathFinder(NodeEvaluator* e, int mv) : eval(e), max_visited(mv) {}
     // BinaryHeap
     void up(int idx) {
