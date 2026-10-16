@@ -649,8 +649,8 @@ inline void register_game_handlers() {
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });
     on(play_sb::container_close, [](Player& p, Reader& in, int) {
-        int id = in.varint();
-        if (id == p.g.container) close_container(p, false);
+        in.varint();  // vanilla closes whatever menu is open, whatever the id (doCloseContainer)
+        close_container(p, false);
     });
     on(play_sb::client_command, [](Player& p, Reader& in, int) {
         if (in.varint() == 0) respawn(p);

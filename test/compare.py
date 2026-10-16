@@ -11,7 +11,7 @@ from bot import login, play_step, PLAY_SB
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
-RUN = f"{ROOT}/vanilla/compare_run"
+RUN = os.environ.get("COMPARE_RUN", f"{ROOT}/vanilla/compare_run")  # override when several worktrees compare at once
 MIN_Y = -64
 
 ap = argparse.ArgumentParser()
