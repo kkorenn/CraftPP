@@ -4,6 +4,7 @@
 // Writes blocks only through Chunk::set and biomes through Chunk::set_biome.
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,7 @@ namespace material { class MaterialSystem; }
 namespace worldgen {
 
 class TerrainGenerator;
+class Carvers;
 
 // Aquifer.NoiseBasedAquifer bound to one NoiseChunk's caching context.
 class Aquifer {
@@ -68,7 +70,20 @@ class TerrainGenerator {
   // surface=false stops after the noise stage (no material rules: bedrock, ore veins, surface blocks).
   explicit TerrainGenerator(int64_t seed, const std::string& dataRoot = "vanilla/src/data", bool surface = true);
   ~TerrainGenerator();
-  void generate(Chunk& c);  // biomes, noise fill, material rules
+  void generate(Chunk& c);  // biomes, noise fill, material rules (standalone, neighbour biomes computed on demand)
+  // ChunkStatusTasks.buildTerrain on a chunk whose biomes are set: noise fill, material rules (if enabled),
+  // carvers (if given) + applyCarvingMask. noiseBiome(qx, qy, qz): stored biome of the region's chunks
+  // (WorldGenRegion.getNoiseBiome, qy clamped by the caller); carverBiome(cx, cz): see Carvers::carve.
+  void buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
+                    const std::function<int(int, int)>& carverBiome);
+  // Uncached multi-noise biome at a quart (BiomeSource.createUncachedResolver: point path).
+  struct ClimateSampler {
+    df::SamplerContext ctx{false};
+    std::vector<df::Bound> f;
+  };
+  std::unique_ptr<ClimateSampler> climateSampler();
+  int uncachedBiome(ClimateSampler& s, int qx, int qy, int qz);
+  int64_t seed;
   void createBiomes(Chunk& c);
   void chunkBiomes(int cx, int cz, const BiomeSource& source, std::vector<uint16_t>& out);
   std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c);

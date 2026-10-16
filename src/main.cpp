@@ -200,6 +200,7 @@ int main(int argc, char** argv) {
     register_command_handlers();
     register_paper_commands();
     on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
+    on_tick(broadcast_light);  // light_update for block edits (src/light)
     start_game();  // tick thread (game/tick.hpp)
     log_info("Running delayed init tasks");
     log_info("Done (%.3fs)! For help, type \"help\"", secs(boot));
