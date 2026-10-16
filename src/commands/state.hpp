@@ -1,5 +1,5 @@
 #pragma once
-// World-level state owned by the command system: world clocks, game rules, difficulty, weather, spawn,
+// World-level state owned by the command system: world clocks, game rules, world_difficulty, weather, spawn,
 // world border, scoreboard/teams/tags, ops/bans/whitelist. Persisted to <world>/craftpp_level.snbt and
 // the vanilla-format JSON lists (ops.json, banned-players.json, banned-ips.json, whitelist.json).
 #include "../server.hpp"
@@ -16,6 +16,7 @@
 // ponytail: global lock; becomes unnecessary once everything runs on the survival tick thread.
 inline std::recursive_mutex cmd_mtx;
 inline std::string server_dir = ".";  // where ops.json etc. live (directory of server.properties)
+inline bool autosave_off = false;  // /save-off (main.cpp autosave checks it)
 inline std::mt19937_64 cmd_rng{std::random_device{}()};
 
 inline Writer pkt(int id) { Writer w; w.varint(id); return w; }
@@ -118,39 +119,34 @@ inline void advance_weather() {
     }
 }
 
-// ---------- difficulty, spawn, border ----------
-inline int difficulty = 2;  // peaceful easy normal hard
+// ---------- world_difficulty, spawn, border ----------
+inline int props_difficulty() {  // server.properties "difficulty" (vanilla default easy)
+    std::string s = props.count("difficulty") ? props["difficulty"] : "easy";
+    return s == "peaceful" || s == "0" ? 0 : s == "normal" || s == "2" ? 2 : s == "hard" || s == "3" ? 3 : 1;
+}
+inline int world_difficulty = 1;  // peaceful easy normal hard; level.dat wins over server.properties
 inline bool difficulty_locked = false;
 inline const char* DIFFICULTY_NAMES[] = {"peaceful", "easy", "normal", "hard"};
-inline Writer difficulty_packet() { return std::move(pkt(play_cb::change_difficulty).varint(difficulty).boolean(difficulty_locked)); }
+inline Writer difficulty_packet() { return std::move(pkt(play_cb::change_difficulty).varint(world_difficulty).boolean(difficulty_locked)); }
 
-struct Spawn { int x = 0, y = -60, z = 0; float yaw = 0, pitch = 0; };
-inline Spawn world_spawn;
+inline float spawn_yaw = 0, spawn_pitch = 0;  // position is server.hpp's world_spawn (level.dat spawn-x/y/z)
 inline uint64_t pack_pos(int x, int y, int z) {
     return (uint64_t(int64_t(x) & 0x3FFFFFF) << 38) | (uint64_t(int64_t(z) & 0x3FFFFFF) << 12) | uint64_t(int64_t(y) & 0xFFF);
 }
 inline Writer spawn_packet() {
     return std::move(pkt(play_cb::set_default_spawn_position).str("minecraft:overworld")
                          .i64(int64_t(pack_pos(world_spawn.x, world_spawn.y, world_spawn.z)))
-                         .f32(world_spawn.yaw).f32(world_spawn.pitch));
+                         .f32(spawn_yaw).f32(spawn_pitch));
 }
 
-struct Border {
+struct Border {  // WorldBorder; lerps over game ticks like vanilla's MovingBorderExtent
     double cx = 0, cz = 0, from = 59999968, to = 59999968;
-    int64_t lerp_ms = 0, lerp_start = 0;  // wall-clock lerp (vanilla lerps over game ticks)
+    int64_t lerp_total = 0, lerp_left = 0;
     double damage = 0.2, buffer = 5;
     int warn_dist = 5, warn_time = 15;
-    double size() const {
-        if (!lerp_ms) return to;
-        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        double t = std::min(1.0, double(now - lerp_start) / double(lerp_ms));
-        return from + (to - from) * t;
-    }
-    int64_t remaining_ms() const {
-        if (!lerp_ms) return 0;
-        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        return std::max<int64_t>(0, lerp_start + lerp_ms - now);
-    }
+    double size() const { return lerp_left <= 0 ? to : from + (to - from) * (1.0 - double(lerp_left) / double(lerp_total)); }
+    int64_t remaining_ms() const { return lerp_left; }  // packet field is ticks in 26.3
+    void tick() { if (lerp_left > 0 && --lerp_left == 0) from = to; }
 };
 inline Border border;
 inline void write_varlong(Writer& w, int64_t v) {
@@ -310,6 +306,8 @@ inline NumberFormat number_format_from(const Nbt* n) {
     return f;
 }
 
+inline Nbt bossbars_nbt();                 // bossbar.hpp
+inline void bossbars_from(const Nbt& l);
 inline Nbt level_to_nbt() {
     Nbt r = Nbt::compound();
     r.set("game_time", Nbt::num(Nbt::Long, game_time));
@@ -327,7 +325,7 @@ inline Nbt level_to_nbt() {
     for (size_t i = 0; i < game_rule_values.size(); i++)
         gr.set(gen::GAME_RULES[i].id, Nbt::num(Nbt::Int, game_rule_values[i]));
     r.set("game_rules", gr);
-    r.set("difficulty", Nbt::num(Nbt::Byte, difficulty));
+    r.set("difficulty", Nbt::num(Nbt::Byte, world_difficulty));
     r.set("difficulty_locked", Nbt::num(Nbt::Byte, difficulty_locked));
     Nbt w = Nbt::compound();
     w.set("clear_time", Nbt::num(Nbt::Int, weather.clear_time));
@@ -337,12 +335,9 @@ inline Nbt level_to_nbt() {
     w.set("thundering", Nbt::num(Nbt::Byte, weather.thundering));
     r.set("weather", w);
     Nbt sp = Nbt::compound();
-    sp.set("x", Nbt::num(Nbt::Int, world_spawn.x));
-    sp.set("y", Nbt::num(Nbt::Int, world_spawn.y));
-    sp.set("z", Nbt::num(Nbt::Int, world_spawn.z));
-    sp.set("yaw", Nbt::real(Nbt::Float, world_spawn.yaw));
-    sp.set("pitch", Nbt::real(Nbt::Float, world_spawn.pitch));
-    r.set("spawn", sp);
+    sp.set("yaw", Nbt::real(Nbt::Float, spawn_yaw));
+    sp.set("pitch", Nbt::real(Nbt::Float, spawn_pitch));
+    r.set("spawn_angle", sp);
     Nbt b = Nbt::compound();
     b.set("center_x", Nbt::real(Nbt::Double, border.cx));
     b.set("center_z", Nbt::real(Nbt::Double, border.cz));
@@ -410,6 +405,7 @@ inline Nbt level_to_nbt() {
         tags.set(uuid, l);
     }
     r.set("entity_tags", tags);
+    r.set("bossbars", bossbars_nbt());
     return r;
 }
 
@@ -430,7 +426,7 @@ inline void level_from_nbt(const Nbt& r) {
     if (auto* gr = r.get("game_rules"))
         for (auto& [k, v] : gr->comp)
             if (int i = game_rule_index(k); i >= 0) game_rule_values[size_t(i)] = int(v.i);
-    difficulty = int(I(r.get("difficulty"), 2));
+    world_difficulty = int(I(r.get("difficulty"), props_difficulty()));
     difficulty_locked = I(r.get("difficulty_locked"), 0);
     if (auto* w = r.get("weather")) {
         weather.clear_time = int(I(w->get("clear_time"), 0));
@@ -441,20 +437,16 @@ inline void level_from_nbt(const Nbt& r) {
         weather.rain_level = weather.raining ? 1.f : 0.f;
         weather.thunder_level = weather.thundering ? 1.f : 0.f;
     }
-    if (auto* sp = r.get("spawn")) {
-        world_spawn.x = int(I(sp->get("x"), 0));
-        world_spawn.y = int(I(sp->get("y"), -60));
-        world_spawn.z = int(I(sp->get("z"), 0));
-        world_spawn.yaw = float(D(sp->get("yaw"), 0));
-        world_spawn.pitch = float(D(sp->get("pitch"), 0));
+    if (auto* sp = r.get("spawn_angle")) {
+        spawn_yaw = float(D(sp->get("yaw"), 0));
+        spawn_pitch = float(D(sp->get("pitch"), 0));
     }
     if (auto* b = r.get("world_border")) {
         border.cx = D(b->get("center_x"), 0);
         border.cz = D(b->get("center_z"), 0);
         border.from = D(b->get("size"), 59999968);
         border.to = D(b->get("target"), border.from);
-        border.lerp_ms = I(b->get("lerp_time"), 0);
-        border.lerp_start = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        border.lerp_total = border.lerp_left = I(b->get("lerp_time"), 0);
         border.damage = D(b->get("damage_per_block"), 0.2);
         border.buffer = D(b->get("safe_zone"), 5);
         border.warn_dist = int(I(b->get("warning_blocks"), 5));
@@ -501,31 +493,37 @@ inline void level_from_nbt(const Nbt& r) {
             if (auto* m = e.get("members")) for (auto& x : m->list) t.members.push_back(x.s);
             teams[t.name] = t;
         }
+    if (auto* bb = r.get("bossbars")) bossbars_from(*bb);
     if (auto* tags = r.get("entity_tags"))
         for (auto& [uuid, l] : tags->comp)
             for (auto& t : l.list) entity_tags[uuid].insert(t.s);
 }
 
-inline std::string level_path() { return world_dir + "/craftpp_level.snbt"; }
+// Stored in <world>/level.dat (key=value, shared with worldgen): each top-level entry becomes one key,
+// e.g. game-time=1234, world-clocks={...} (SNBT values).
+inline std::string level_key(const std::string& k) { std::string o = k; for (auto& c : o) if (c == '_') c = '-'; return o; }
 inline void save_level() {
     std::lock_guard lock(cmd_mtx);
-    std::filesystem::create_directories(world_dir);
-    {
-        std::ofstream f(level_path() + ".tmp");
-        f << to_snbt(level_to_nbt()) << '\n';
-    }
-    std::filesystem::rename(level_path() + ".tmp", level_path());
+    std::map<std::string, std::string> kv;
+    for (auto& [k, v] : level_to_nbt().comp) kv[level_key(k)] = to_snbt(v);
+    kv["spawn-x"] = std::to_string(world_spawn.x);
+    kv["spawn-y"] = std::to_string(world_spawn.y);
+    kv["spawn-z"] = std::to_string(world_spawn.z);
+    write_level_data(kv);
 }
 inline void load_level() {
-    std::ifstream f(level_path());
-    if (!f) return;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    try {
-        level_from_nbt(parse_snbt(ss.str()));
-    } catch (...) {
-        fprintf(stderr, "failed to read %s\n", level_path().c_str());
+    auto kv = read_level_data();
+    Nbt r = Nbt::compound();
+    for (auto& [k, v] : level_to_nbt().comp) {
+        auto it = kv.find(level_key(k));
+        if (it == kv.end()) continue;
+        try {
+            r.set(k, parse_snbt(it->second));
+        } catch (...) {
+            fprintf(stderr, "level.dat: bad value for %s\n", it->first.c_str());
+        }
     }
+    level_from_nbt(r);
 }
 
 // ---------- ops / bans / whitelist (vanilla JSON formats) ----------
@@ -647,7 +645,7 @@ struct UserList {
         f << (rows.empty() ? "]\n" : "\n]\n");
     }
 };
-inline UserList ops{"ops.json"}, banned_players{"banned-players.json"}, banned_ips{"banned-ips.json"}, whitelist{"whitelist.json"};
+inline UserList ops{"ops.json", {}}, banned_players{"banned-players.json", {}}, banned_ips{"banned-ips.json", {}}, whitelist{"whitelist.json", {}};
 inline void save_lists() {
     ops.save(true, false, false);
     banned_players.save(false, true, false);

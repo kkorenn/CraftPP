@@ -146,7 +146,7 @@ inline ItemEntity& spawn_item(const ItemStack& s, double x, double y, double z, 
                               int pickup_delay = 10) {
     ItemEntity e;
     e.eid = next_entity_id++;
-    e.uh = int64_t(game_rng() & ~0xF000ull | 0x4000), e.ul = int64_t(game_rng() & 0x3FFFFFFFFFFFFFFFull | 0x8000000000000000ull);
+    e.uh = int64_t((game_rng() & ~0xF000ull) | 0x4000), e.ul = int64_t((game_rng() & 0x3FFFFFFFFFFFFFFFull) | 0x8000000000000000ull);
     e.x = x, e.y = y, e.z = z, e.vx = vx, e.vy = vy, e.vz = vz, e.sx = x, e.sy = y, e.sz = z;
     e.stack = s;
     e.pickup_delay = pickup_delay;

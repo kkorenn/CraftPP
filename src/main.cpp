@@ -77,6 +77,7 @@ static void handle(int fd) {
         Reader hello = wait_for(fd, pkt, login_sb::hello);
         std::string name = hello.str(16);
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
+        if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg);
         if (find_player(name)) return disconnect_login(fd, "You are already logged in");
         if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!");
         send_packet(fd, Writer()
@@ -131,6 +132,8 @@ int main(int argc, char** argv) {
     signal(SIGTERM, [](int) { shutdown_requested = 1; });
     load_properties(argc > 1 ? argv[1] : "server.properties");
     world_dir = props["level-name"];
+    server_dir = std::filesystem::path(argc > 1 ? argv[1] : "server.properties").parent_path().string();
+    if (server_dir.empty()) server_dir = ".";
     setup_world();
     std::ifstream cfg("data/config.bin", std::ios::binary);
     if (!cfg) {
@@ -140,7 +143,8 @@ int main(int argc, char** argv) {
     config_packets.assign(std::istreambuf_iterator<char>(cfg), {});
     build_commands_packet();
     register_core_handlers();
-    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar); wraps handlers, hooks the tick
+    register_command_handlers();
+    on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
     start_game();  // tick thread (game/tick.hpp)
     int port = std::stoi(props["server-port"]);
 
@@ -177,7 +181,10 @@ int main(int argc, char** argv) {
                 plugins::stop();  // onDisable before the world is saved
                 request_stop();  // saves on the tick thread, then exits
             }
-            if (tick % 25 == 24) world.save_dirty();
+            if (tick % 25 == 24 && !autosave_off) {
+                world.save_dirty();
+                run_on_tick(save_level);
+            }
         }
     }).detach();
 

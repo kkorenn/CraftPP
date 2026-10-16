@@ -2,7 +2,7 @@
 // Survival gameplay entry point: included from play.hpp after the handler registry.
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
-#include "tick.hpp"
+#include "survival.hpp"
 #include "../plugins/plugins.hpp"
 
 #include <unistd.h>
@@ -49,6 +49,9 @@ inline void keepalive_tick(Player& p) {
 
 // Called once from main() after register_core_handlers().
 inline void start_game() {
+    game_init();
+    register_game_handlers();
+    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }
@@ -58,6 +61,7 @@ inline void request_stop() {
     run_on_tick([] {
         printf("Stopping server, saving...\n");
         save_all();
+        save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         print_tick_stats();
         fflush(stdout);
         _exit(0);

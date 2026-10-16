@@ -217,8 +217,9 @@ if __name__ == "__main__":
     msg = text_of(wait(b, PLAY_CB["system_chat"], lambda x: b"hello" in x.d))
     assert msg == "<Alice> hello", msg
     a.send(PLAY_SB["chat_command"], string("list"))
-    msg = text_of(wait(a, PLAY_CB["system_chat"], lambda x: b"players online" in x.d))
-    assert "Alice" in msg and "Bob" in msg, msg
+    lst = wait(a, PLAY_CB["system_chat"], lambda x: b"commands.list.players" in x.d).d  # translatable, like vanilla
+    assert b"Alice" in lst and b"Bob" in lst, lst
+    msg = "list ok"
     a.send(PLAY_SB["chat_command"], string("gamemode survival"))
     ev = wait(a, PLAY_CB["game_event"], lambda x: x.d[x.i] == 3)
     print("chat + commands ok:", msg)

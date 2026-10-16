@@ -110,6 +110,7 @@ struct CmdError {
     std::string input;
     int cursor = -1;
 };
+inline CmdError fail(Text t) { return {std::move(t), "", -1}; }
 inline CmdError err(const std::string& key, std::initializer_list<TArg> args = {}) { return {tr(key, args), "", -1}; }
 
 // ---------- brigadier StringReader ----------

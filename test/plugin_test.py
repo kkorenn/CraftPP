@@ -126,6 +126,8 @@ def main():
         assert msg == "[CraftTest] Alice joined", msg
         print("PlayerJoinEvent message ok:", msg)
         b, _ = login("Bob", "127.0.0.1", PORT, view=2)
+        a.s.settimeout(20)  # a missing reply fails the test instead of hanging it
+        b.s.settimeout(20)
         chat_with(a, "[CraftTest] Bob joined")
 
         a.send(PLAY_SB["chat_command"], string("crafttest hello world"))
@@ -154,8 +156,8 @@ def main():
 
         a.send(PLAY_SB["chat_command"], string("blocked thing"))
         chat_with(a, "blocked by preprocess")
-        a.send(PLAY_SB["chat_command"], string("alias-to-list"))
-        chat_with(a, "players online")
+        a.send(PLAY_SB["chat_command"], string("rewrite-me"))
+        chat_with(a, "crafttest ok: rewritten")
         print("PlayerCommandPreprocessEvent cancel + rewrite ok")
 
         # Block API: put diamond under Alice, then try to break it (cancelled -> block resent).

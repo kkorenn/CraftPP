@@ -209,7 +209,9 @@ std::string player_json(const Player& p) {
     return "{\"uuid\":" + q(uuid_str(p.uuid_hi, p.uuid_lo)) + ",\"name\":" + q(p.name) + ",\"x\":" + num(p.x) +
            ",\"y\":" + num(p.y) + ",\"z\":" + num(p.z) + ",\"yaw\":" + num(p.yaw) + ",\"pitch\":" + num(p.pitch) +
            ",\"gamemode\":" + std::to_string(p.gamemode) + ",\"op\":" + (is_op(p) ? "true" : "false") +
-           ",\"health\":20,\"food\":20,\"level\":0,\"exp\":0,\"totalExp\":0,\"ip\":\"127.0.0.1\",\"port\":0" +
+           ",\"health\":" + num(p.g.health) + ",\"food\":" + std::to_string(p.g.food) + ",\"level\":" +
+           std::to_string(p.g.xp_level) + ",\"exp\":" + num(p.g.xp_progress) + ",\"totalExp\":" + std::to_string(p.g.xp_total) +
+           ",\"ip\":\"127.0.0.1\",\"port\":0" +
            ",\"entityId\":" + std::to_string(p.eid) + ",\"onGround\":" + (p.on_ground ? "true" : "false") +
            ",\"ping\":0,\"heldSlot\":" + std::to_string(p.selected) + "}";
 }
@@ -324,6 +326,7 @@ std::string item_json(const Player::Slot& s) {
 // ---------- shared plugin state ----------
 
 std::atomic<bool> running{false};
+std::atomic<std::thread::id> tick_thread{};  // set by the first tick: Bukkit's main thread from then on
 std::mutex state_mtx;
 std::map<std::string, bool> listeners;           // hookable event -> some plugin listens (bridge "listeners" notify)
 std::set<std::string> labels;                    // plugin command roots (name, aliases, plugin:name)
@@ -533,42 +536,17 @@ void chat(const PlayerPtr& pp, const std::string& msg) {
     broadcast_legacy(line && line->isString() ? line->asString() : fallback);
 }
 
-// Appends plugin roots (literal + greedy "args" asking the server for suggestions, Paper's shape for
-// plugin.yml commands) to the Brigadier tree built by commands.hpp. Root must be node 0, root index last.
+// Adds plugin roots (literal + greedy "args" asking the server for suggestions, Paper's shape for
+// plugin.yml commands) to the command tree (commands/dispatcher.hpp). Execution and tab completion stay here:
+// player_command() and the command_suggestion wrapper see plugin labels before the dispatcher does.
 void patch_command_tree() {
     std::vector<std::string> roots;
     {
         std::lock_guard lock(state_mtx);
         roots.assign(labels.begin(), labels.end());
     }
-    if (roots.empty() || commands_packet.empty()) return;
-    Reader frame(commands_packet);
-    int len = frame.varint();
-    size_t body = frame.i;
-    if (size_t(len) != commands_packet.size() - body || commands_packet.back() != 0) return;
-    if (frame.varint() != play_cb::commands) return;
-    int count = frame.varint();
-    uint8_t root_flags = frame.u8();
-    int nchild = frame.varint();
-    std::vector<int> children;
-    for (int i = 0; i < nchild; i++) children.push_back(frame.varint());
-    if ((root_flags & 3) != 0) return;
-    size_t rest = frame.i;
-    Writer w;
-    w.varint(play_cb::commands).varint(count + 2 * int(roots.size()));
-    w.u8(root_flags);
-    for (size_t i = 0; i < roots.size(); i++) children.push_back(count + 2 * int(i));
-    w.varint(int32_t(children.size()));
-    for (int c : children) w.varint(c);
-    w.bytes(commands_packet.data() + rest, commands_packet.size() - 1 - rest);  // other nodes, minus root index
-    for (size_t i = 0; i < roots.size(); i++) {
-        w.u8(0x01 | 0x04).varint(1).varint(count + 2 * int(i) + 1).str(roots[i]);  // literal, executable
-        w.u8(0x02 | 0x04 | 0x10).varint(0).str("args").varint(arg_types::string_).varint(2).str("minecraft:ask_server");
-    }
-    w.varint(0);
-    Writer f;
-    f.varint(int32_t(w.b.size())).bytes(w.b);
-    commands_packet = f.b;
+    for (auto& r : roots) add_command_root(r);
+    if (!roots.empty()) resend_all_commands();
 }
 
 // ---------- API calls from plugins (Java -> C++, "api" {m, a}) ----------
@@ -667,8 +645,24 @@ std::string api(const std::string& m, const Json& a) {
             auto f = item_by_name.find(norm_id(text_arg(*it, "item")));
             if (f != item_by_name.end() && f->second > 0) slot = {f->second, std::max(1, int(num_arg(*it, "count", 1)))};
         }  // ponytail: item meta (name/lore/enchants) is dropped; CraftPP slots hold item + count only
-        p.inv[size_t(i)] = slot;
-        send_slot(p, i);
+        set_inv(p, i, slot);  // synced to the client at the end of the tick
+        return "null";
+    }
+    if (m == "player.setHealth") {
+        Player& p = require_player(a);
+        float v = float(std::clamp(num_arg(a, "value", 20), 0.0, 20.0));  // ponytail: max health fixed at 20 (no attributes)
+        if (v <= 0) kill(p, "generic_kill");
+        else p.g.health = v;  // survival's sync hook sends set_health
+        return "null";
+    }
+    if (m == "player.setFood") { require_player(a).g.food = std::clamp(int(num_arg(a, "value", 20)), 0, 20); return "null"; }
+    if (m == "player.damage") { hurt(require_player(a), float(num_arg(a, "amount", 1)), "generic"); return "null"; }
+    if (m == "player.setLevel" || m == "player.setExp" || m == "player.giveExp") {
+        Player& p = require_player(a);
+        if (m == "player.setLevel") p.g.xp_level = std::max(0, int(num_arg(a, "value")));
+        if (m == "player.setExp") p.g.xp_progress = float(std::clamp(num_arg(a, "value"), 0.0, 1.0));
+        if (m == "player.giveExp") p.g.xp_total += int(num_arg(a, "value"));
+        send_experience(p);
         return "null";
     }
     if (m == "player.setHeldSlot") {
@@ -742,7 +736,20 @@ jbyteArray JNICALL n_call(JNIEnv* e, jclass, jbyteArray type, jbyteArray json) {
         std::string t = from_bytes(e, type);
         if (t != "api") throw std::runtime_error("unknown request " + t);
         Json req = Json::parse(from_bytes(e, json));
-        return to_bytes(e, api(req["m"].asString(), req.has("a") ? req["a"] : Json{}));
+        const std::string& m = req["m"].asString();
+        const Json& args = req.has("a") ? req["a"] : Json{};
+        std::thread::id main = tick_thread;
+        if (main == std::thread::id{} || main == std::this_thread::get_id()) return to_bytes(e, api(m, args));
+        // A JVM thread other than the main one (async task, async chat listener): game state belongs to the
+        // tick thread, so run there and wait. ponytail: one round trip per call; batch if async plugins get chatty.
+        auto done = std::make_shared<std::promise<std::string>>();
+        auto fut = done->get_future();
+        run_on_tick([done, m, args] {
+            try { done->set_value(api(m, args)); } catch (...) { done->set_exception(std::current_exception()); }
+        });
+        if (fut.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+            throw std::runtime_error("tick thread did not run " + m + " within 10 s");
+        return to_bytes(e, fut.get());
     } catch (const std::exception& ex) {
         throw_java(e, ex.what());
         return nullptr;
@@ -1233,6 +1240,9 @@ void start() {
     if (!running) return;
     install_handlers();
     patch_command_tree();
+    // Plugin timers expect the main thread to keep ticking with nobody online (Bukkit semantics);
+    // vanilla's empty-server pause stays available by setting the property explicitly.
+    if (!props.count("pause-when-empty-seconds")) props["pause-when-empty-seconds"] = "2000000000";
     on_tick([] { tick(); });  // Bukkit main thread = the game tick thread (game/tick.hpp)
 #else
     DIR* d = opendir("plugins");
@@ -1289,6 +1299,7 @@ bool console_command(const std::string& line) {
 void tick() {
 #if CRAFTPP_JNI
     if (!running) return;
+    tick_thread = std::this_thread::get_id();
     JNIEnv* e = env();
     e->CallStaticVoidMethod(main_cls, m_tick);
     if (auto err = take_exception(e); !err.empty()) log_line("ERROR", "", "plugin tick failed: " + err);

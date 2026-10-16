@@ -21,3 +21,8 @@ cmake -S . -B build && cmake --build build
 - `python3 test/ping.py` - server list ping
 - `python3 test/bot.py` - two headless bots: join, chunk streaming, visibility, chat, commands
 - `python3 tools/run_client.py` - real vanilla client, offline, auto-joins localhost
+
+## Plugins
+Bukkit/Spigot/Paper plugin jars in `plugins/` run on an embedded JVM (paper-api 26.3). Build the bridge once with
+`tools/build_bridge.sh` (Gradle + JDK 25). At runtime you need Java 25+. Without plugin jars no Java is loaded.
+See [docs/plugins.md](docs/plugins.md).

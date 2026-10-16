@@ -145,8 +145,8 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
         if (event.getMessage().startsWith("/blocked")) {
             event.setCancelled(true);
             event.getPlayer().sendMessage("blocked by preprocess");
-        } else if (event.getMessage().startsWith("/alias-to-list")) {
-            event.setMessage("/list");
+        } else if (event.getMessage().startsWith("/rewrite-me")) {
+            event.setMessage("/crafttest rewritten");
         }
     }
 
