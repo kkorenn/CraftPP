@@ -32,3 +32,4 @@ java/.gradle/
 /banned-ips.json
 /whitelist.json
 /.console_history
+data/block_dump.json

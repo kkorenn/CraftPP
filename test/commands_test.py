@@ -131,8 +131,8 @@ if __name__ == "__main__":
     cmd(a, "setblock 1 -59 1 stone")
     wait(a, PLAY_CB["block_update"])
     cmd(a, "fill 0 -59 0 3 -59 3 oak_planks hollow")
-    wait(a, PLAY_CB["section_blocks_update"])
     assert b"commands.fill.success" in chat_with(a, b"commands.fill")
+    wait(a, PLAY_CB["section_blocks_update"])  # level sync: block updates go out at the end of the tick
     cmd(a, "fill 0 0 0 100 100 100 stone")
     assert b"commands.fill.toobig" in chat_with(a, b"commands.fill")
     print("setblock/fill ok")

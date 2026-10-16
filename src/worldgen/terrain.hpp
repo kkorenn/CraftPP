@@ -28,6 +28,7 @@ class Aquifer {
   Aquifer(TerrainGenerator& gen, df::SamplerContext& ctx, const DensityVolume& volume);
   // Block state for a position, or -1 (vanilla null) when solid: caller then uses default_block.
   int computeSubstance(int x, int y, int z, double density);
+  bool shouldScheduleFluidUpdate = false;  // set by computeSubstance (vanilla Aquifer.shouldScheduleFluidUpdate)
 
  private:
   struct FluidStatus {

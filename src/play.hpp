@@ -143,7 +143,7 @@ inline void register_core_handlers() {
         // Creative breaks on start; survival on finish.
         // ponytail: client's dig timing is trusted and nothing drops; add hardness/tool checks + item drops with survival.
         if ((action == 0 && p.gamemode == 1) || (action == 3 && p.gamemode != 1)) change_block(x, y, z, blocks::air);
-        if (action <= 3) p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        if (action <= 3) ack_block_changes(p, seq);
     });
     on(play_sb::pick_item_from_block, [](Player& p, Reader& in, int id) {
         (void)id;
@@ -172,7 +172,7 @@ inline void register_core_handlers() {
             }
             if (replaceable(world.get_block(x, y, z))) change_block(x, y, z, state);
         }
-        p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        ack_block_changes(p, seq);
     });
     on(play_sb::chat, [](Player& p, Reader& in, int id) {
         (void)id;

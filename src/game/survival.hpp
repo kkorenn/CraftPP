@@ -197,13 +197,15 @@ inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak (no un
     }
 }
 
+namespace lvl {
+inline bool player_destroy(Player& p, int x, int y, int z, int state);  // level/glue.hpp: playerWillDestroy + removeBlock
+}
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
 inline void destroy_block(Player& p, int x, int y, int z) {
     int state = world.get_block(x, y, z);
     if (state == blocks::air) return;
-    change_block(x, y, z, blocks::air);
+    if (!lvl::player_destroy(p, x, y, z, state)) return;
     if (p.gamemode == 1) return;
-    // ponytail: multi-block structures (doors, beds, tall plants) only break the targeted half.
     if (correct_tool(p, state)) {
         static std::vector<ItemStack> drops;
         drops.clear();
@@ -437,7 +439,7 @@ inline void register_game_handlers() {
         int seq = in.varint();
         if (action <= 3) {
             dig_action(p, action, x, y, z);
-            p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+            ack_block_changes(p, seq);
         } else if ((action == 4 || action == 5) && p.gamemode != 3 && !p.g.dead) {  // DROP_ALL_ITEMS / DROP_ITEM
             ItemStack& s = held(p);
             if (s.empty()) return;
@@ -459,13 +461,13 @@ inline void register_game_handlers() {
         in.f32(); in.f32(); in.f32(); in.u8(); in.u8();
         int seq = in.varint();
         use_item_on(p, hand, x, y, z, face);
-        p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        ack_block_changes(p, seq);
     });
     on(play_sb::use_item, [](Player& p, Reader& in, int) {
         int hand = in.varint();
         int seq = in.varint();
         start_using(p, hand);
-        p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+        ack_block_changes(p, seq);
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });
     on(play_sb::container_close, [](Player& p, Reader& in, int) {
