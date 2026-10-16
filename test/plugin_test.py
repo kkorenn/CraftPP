@@ -191,6 +191,9 @@ def main():
         chat_with(a, "place cancelled at y=150")
         print("BlockPlaceEvent cancel ok")
 
+        a.send(PLAY_SB["chat_command"], string("tp @s 998.5 ~ 0.5"))
+        wait(a, PLAY_CB["player_position"])
+        time.sleep(0.2)
         a.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 1001.5, a.pos[1], 0.5, 1))
         chat_with(a, "move cancelled")
         tp = wait(a, PLAY_CB["player_position"])

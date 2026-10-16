@@ -67,9 +67,12 @@ try:
             elif pid == PLAY_CB["player_position"]:
                 tid, pos = b.varint(), b.take(24); b.take(24)
                 c.pos = struct.unpack(">ddd", pos)
+                c.teleports = getattr(c, "teleports", 0) + 1
                 c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
             elif pid == PLAY_CB["game_event"]:
                 c.events = getattr(c, "events", []) + [b.u8()]
+            elif pid == PLAY_CB["disconnect"]:
+                raise AssertionError(f"disconnected: {b.d[b.i:]!r}")
             elif pid == PLAY_CB["respawn"]:
                 c.respawned = True
             if until(): return True
@@ -89,8 +92,9 @@ try:
     t0 = time.time()
     # HOLDING_PATTERN 0 -> LANDING_APPROACH 2 -> LANDING 3 -> SITTING_SCANNING 6 -> TAKEOFF 4 (no survival target)
     pump(lambda: phases[-2:] == [6, 4] or phases[-1:] == [0] and 4 in phases, 150)
-    i = phases.index(2)
-    assert phases[i:i + 4] == [2, 3, 6, 4], phases
+    # phase data goes out at the dragon's tracker interval (3 ticks), so a phase that lasts < 3 ticks can be skipped
+    i = phases.index(6)
+    assert phases[i + 1] == 4 and (2 in phases[:i] or 3 in phases[:i]), phases
     print(f"phases ok: {phases} in {time.time() - t0:.0f}s")
 
     c.send(PLAY_SB["chat_command"], string("kill @e[type=ender_dragon]"))
@@ -103,19 +107,20 @@ try:
     assert block_at(c, 0, 63, 0) == BLK["bedrock"] and block_at(c, 3, 60, 0) == BLK["bedrock"]
     print(f"kill ok: exit portal (20 blocks at y 60), egg at 0 64 0, gateway at {gx} 75 {gz}")
 
-    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 1.5, 60.0, 0.5, 1))
+    walk(c, 1.5, 60.0, 0.5)  # <= 4 blocks a tick, like a client
     pump(lambda: 4 in getattr(c, "events", []), 5)
     c.send(PLAY_SB["client_command"], varint(0))
     pump(lambda: getattr(c, "respawned", False), 5)
+    n0 = getattr(c, "teleports", 0)
+    pump(lambda: getattr(c, "teleports", 0) > n0, 20)  # the respawn's chunks come first: read them before going on
     print("credits ok: win_game, then respawn")
 
     # Wither: soul sand T + three skulls (the last one placed by the player) -> invulnerable charge-up -> blast
-    ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
     for cmd in ["difficulty normal", "setblock 6 -60 6 soul_sand", "setblock 5 -59 6 soul_sand", "setblock 6 -59 6 soul_sand",
                 "setblock 7 -59 6 soul_sand", "setblock 5 -58 6 wither_skeleton_skull", "setblock 6 -58 6 wither_skeleton_skull",
                 "give @s wither_skeleton_skull 1", "tp @s 6.5 -60 3.5"]:
         c.send(PLAY_SB["chat_command"], string(cmd))
-    time.sleep(0.5)
+    pump(lambda: abs(c.pos[2] - 3.5) < 1e-6, 10)
     c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
     c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (7 & 0x3FFFFFF) << 38 | (6 & 0x3FFFFFF) << 12 | (-59 & 0xFFF))
            + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(99))

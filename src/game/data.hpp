@@ -32,6 +32,7 @@ struct ToolRule {
 struct ToolInfo {
     float default_speed = 1;
     int damage_per_block = 1;
+    bool creative_destroy = true;  // can_destroy_blocks_in_creative
     std::vector<ToolRule> rules;
 };
 struct ItemInfo {
@@ -45,12 +46,15 @@ struct ItemInfo {
     int use_remainder = -1, craft_remainder = -1;
     int equip = -1;  // Inventory armor index (36 feet .. 39 head), 40 offhand, -1 none
     float attack_damage = 0, attack_speed = 0;  // mainhand attribute modifiers (add_value)
+    float armor = 0, toughness = 0;  // attribute modifiers in the equip slot
+    bool damage_on_hurt = true;      // equippable.damage_on_hurt
 };
 struct DamageType {
     int id = 0;
     std::string msg;
     float exhaustion = 0;
     bool fall_variants = false;
+    bool bypasses_armor = false;  // #minecraft:bypasses_armor
 };
 
 inline std::vector<BlockInfo> block_info;
@@ -157,6 +161,7 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
             ToolInfo ti;
             ti.default_speed = (*t)["ds"].asFloat();
             ti.damage_per_block = (*t)["dpb"].asInt();
+            ti.creative_destroy = !t->find("nc");
             for (auto& r : (*t)["r"].arr) {
                 ToolRule tr;
                 tr.blocks = u16list(r[0]);
@@ -179,12 +184,15 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
         if (auto* a = it.find("as")) ii.attack_speed = a->asFloat();
         if (auto* e = it.find("eq"))
             if (auto s = equip_slots.find(e->asString()); s != equip_slots.end()) ii.equip = s->second;
+        if (auto* a = it.find("ar")) ii.armor = (*a)[0].asFloat(), ii.toughness = (*a)[1].asFloat();
+        ii.damage_on_hurt = !it.find("nd");
         item_by_name[ii.name] = int(item_info.size());
         item_info.push_back(std::move(ii));
     }
     auto& reg = j["registries"];
     for (auto& [k, v] : reg["damage_type"].obj)
-        damage_types[k] = {v[0].asInt(), v[1].asString(), v[2].asFloat(), v[3].asString() == "fall_variants"};
+        damage_types[k] = {v[0].asInt(), v[1].asString(), v[2].asFloat(), v[3].asString() == "fall_variants",
+                           v.arr.size() > 4 && v[4].asBool()};
     for (auto& [k, v] : reg["menu"].obj) menu_ids[k] = v.asInt();
     for (auto& [k, v] : reg["data_component_type"].obj) component_ids[k] = v.asInt();
     tag_climbable = u16list(j["block_tags"]["climbable"]);

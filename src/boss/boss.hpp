@@ -84,16 +84,13 @@ inline void respawn_after_win(Player& p) {  // PlayerList.respawn(player, keepAl
                .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63).u8(1));
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(0)
+    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
     entities_reset_view(p);
-    broadcast(remove_entities_packet({p.eid}), &p);
-    broadcast(spawn_entity(p), &p);
-    for (auto& q : players)
-        if (q.get() != &p) p.send(spawn_entity(*q));
+    player_entity_respawned(p);  // others see the player re-added at its new position
 }
 inline void enter_end_portal(Player& p) {
     if (won_game.count(p.eid)) return;
@@ -128,7 +125,7 @@ inline void portal_checks(Player& p) {
                     auto t = gateway_exit(i);
                     gateway_cooldown[p.eid] = server_tick;
                     p.x = t[0] + 0.5, p.y = t[1], p.z = t[2] + 0.5;
-                    p.send(Writer().varint(play_cb::player_position).varint(0)
+                    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0x18));  // keep rotation
                     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, false);
                     return;
