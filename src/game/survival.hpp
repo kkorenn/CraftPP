@@ -333,7 +333,7 @@ inline void vitals_tick(Player& p) {
 // ---------- placement ----------
 inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for players
     for (auto& q : players) {
-        if (q->gamemode == 3 || q->g.dead) continue;
+        if (q->gamemode == 3 || q->g.dead || q->level != cur_level) continue;
         if (q->x + 0.3 > x && q->x - 0.3 < x + 1 && q->y + 1.8 > y && q->y < y + 1 && q->z + 0.3 > z && q->z - 0.3 < z + 1)
             return true;
     }

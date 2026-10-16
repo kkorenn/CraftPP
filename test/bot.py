@@ -105,7 +105,7 @@ def parse_chunk(b, decode=False):
     while data.i < len(data.d):
         data.i16(); data.i16()
         sections.append((paletted(data, 4096, 8, decode), paletted(data, 64, 3, decode)))
-    assert len(sections) == 24, len(sections)
+    assert len(sections) in (16, 24), len(sections)  # nether/end 0..255, overworld -64..319
     for _ in range(b.varint()):  # block entities
         b.u8(); b.i16(); b.varint(); skip_nbt(b)
     for _ in range(4): b.take(b.varint())  # light masks (BitSet as byte array in 26.x)
@@ -148,15 +148,24 @@ def login(name, host, port, view=8, decode=False, uid=None):
 def sext(v, n): return (v & (1 << n) - 1 ^ 1 << n - 1) - (1 << n - 1)
 def block_pos(v): return v >> 38, sext(v, 12), sext(v >> 12, 26)  # packed BlockPos x:26 z:26 y:12
 
-def set_block(c, x, y, z, state, min_y=-64):
+def set_block(c, x, y, z, state):
     if (x >> 4, z >> 4) in c.chunks:
-        c.chunks[x >> 4, z >> 4][(y - min_y) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)] = state
+        secs = c.chunks[x >> 4, z >> 4]
+        min_y = -64 if len(secs) == 24 else 0
+        if min_y <= y < min_y + 16 * len(secs):
+            secs[(y - min_y) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)] = state
 
 def play_step(c):
     """Receive one play packet, recording chunks (c.chunks) and world spawn (c.spawn), acking teleports."""
     pid, b = c.recv()
+    c.last = b
     if pid == PLAY_CB["level_chunk_with_light"]:
         cx, cz, secs = parse_chunk(b, c.decode); c.chunks[cx, cz] = secs
+    elif pid == PLAY_CB["login"]:
+        b.i32(); b.u8(); [b.str() for _ in range(b.varint())]; b.varint(); b.varint(); b.varint(); b.take(3)
+        b.varint(); c.dimension = b.str()
+    elif pid == PLAY_CB["respawn"]:  # new level: the client drops every chunk
+        b.varint(); c.dimension = b.str(); c.chunks.clear()
     elif pid == PLAY_CB["set_default_spawn_position"]:
         b.str(); c.spawn = block_pos(b.i64())
     elif pid == PLAY_CB["block_update"] and c.decode:

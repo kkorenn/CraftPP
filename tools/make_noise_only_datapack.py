@@ -33,5 +33,6 @@ if a.stage != "full":
         put(f"data/minecraft/worldgen/biome/{os.path.basename(f)}", b)
 if a.stage == "noise":
     # SequenceRule's codec accepts an empty list; it compiles to "no match" -> default block stays.
-    put("data/minecraft/worldgen/material_rule/overworld.json", {"type": "minecraft:sequence", "sequence": []})
+    for dim in ("overworld", "nether", "end"):
+        put(f"data/minecraft/worldgen/material_rule/{dim}.json", {"type": "minecraft:sequence", "sequence": []})
 print(out)

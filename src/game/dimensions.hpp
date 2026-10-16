@@ -33,11 +33,7 @@ inline void move_to_level(Player& p, World* to, double x, double y, double z, fl
         p.send(game_event(8, weather.thunder_level));
     }
     p.send(game_event(13, 0));  // LEVEL_CHUNKS_LOAD_START
-    {
-        to->joining++;  // keeps the level loaded while its chunks stream (unload_empty_levels)
-        update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-        to->joining--;
-    }
+    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
     // sendAllPlayerInfo + reset sent info
     p.g.remote_valid = false;  // full inventory resync at the end of the tick
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
@@ -152,7 +148,7 @@ inline void unload_empty_levels() {
     static int empty_ticks[DIM_COUNT] = {};
     for (int d = DIM_NETHER; d < DIM_COUNT; d++) {
         World& w = worlds[d];
-        if (level_occupied(&w) || w.joining > 0) { empty_ticks[d] = 0; continue; }
+        if (level_occupied(&w)) { empty_ticks[d] = 0; continue; }
         if (++empty_ticks[d] < 300) continue;
         empty_ticks[d] = 0;
         bool any;
@@ -162,6 +158,7 @@ inline void unload_empty_levels() {
         }
         if (!any) continue;
         int n = w.unload_all();
+        if (n < 0) continue;  // a join is streaming it
         printf("Unloaded %d chunk(s) of %s (no players)\n", n, w.id.c_str());
         fflush(stdout);
     }

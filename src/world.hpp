@@ -240,7 +240,7 @@ struct World {
     double coordinate_scale = 1;
     bool skylight = true, ceiling = false;
     std::string dir = "world";               // save folder (chunks/, portals.txt)
-    std::atomic<int> joining{0};             // network threads streaming a join into this level
+    int joining = 0;                         // network threads streaming a join into this level (under m)
 
     // Nether portal blocks (vanilla PoiManager NETHER_PORTAL records), kept by set_block, saved with the chunks.
     std::set<std::tuple<int, int, int>> portals;
@@ -329,11 +329,17 @@ struct World {
         return int(list.size());
     }
 
-    // Saves and drops every chunk. Only when no player is in (or joining) this level: nothing holds a Chunk&.
+    // A network thread streams chunks of this level (join): unload_all waits until it is done.
+    void begin_join() { std::lock_guard lock(m); joining++; }
+    void end_join() { std::lock_guard lock(m); joining--; }
+
+    // Saves and drops every chunk. Tick thread, only when no player is in this level; refused (returns -1)
+    // while a join streams it, so nothing holds a Chunk& across it.
     int unload_all() {
         save_dirty();
         std::lock_guard sl(save_m);
         std::lock_guard lock(m);
+        if (joining) return -1;
         int n = int(chunks.size());
         chunks.clear();
         return n;

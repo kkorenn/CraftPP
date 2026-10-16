@@ -48,7 +48,15 @@ inline void join(const PlayerPtr& pp) {
 
 // Network thread: join, then hand packets to the tick thread until the connection closes (game/tick.hpp).
 inline void play(const PlayerPtr& pp) {
-    join(pp);
+    World* level = pp->level;
+    level->begin_join();  // the tick thread must not unload the level while join() streams its chunks
+    try {
+        join(pp);
+    } catch (...) {
+        level->end_join();
+        throw;
+    }
+    level->end_join();
     run_play_connection(pp, register_player, unregister_player);
 }
 

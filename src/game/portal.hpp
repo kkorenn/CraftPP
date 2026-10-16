@@ -288,15 +288,14 @@ inline void nether_portal_travel(Player& p) {
         off_z = pos_fwd - (area.min.get(entry_axis == X ? Z : X) + 0.5);
     }
     InLevel in_level(to);
-    to->joining++;  // keep the destination loaded while we search and build in it
     Rect exit;
     if (auto found = find_closest_portal(*to, approx, to_nether)) {
         uint16_t st = at(*found);
         exit = largest_rectangle(*found, axis_of(st), 21, Y, 21, [&](Pos q) { return at(q) == st; });
     } else {
-        if (p.gamemode == 3) { to->joining--; return; }
+        if (p.gamemode == 3) return;
         exit = create_portal(approx, entry_axis);
-        if (exit.size1 == 0) { to->joining--; return; }  // vanilla: "Unable to create a portal"
+        if (exit.size1 == 0) return;  // vanilla: "Unable to create a portal"
     }
     uint16_t bl = at(exit.min);
     int axis = is_nether_portal(bl) ? axis_of(bl) : X;
@@ -308,7 +307,6 @@ inline void nether_portal_travel(Player& p) {
     // ponytail: full-cube collision and a 1/16 step search stand in for Level.findFreePosition's shape search.
     for (double lift = 0; lift <= 1.0; lift += 1.0 / 16)
         if (box_free(tx, ty + lift, tz)) { ty += lift; break; }
-    to->joining--;
     change_dimension(p, to, tx, ty, tz, p.yaw + rotation, p.pitch);
 }
 
