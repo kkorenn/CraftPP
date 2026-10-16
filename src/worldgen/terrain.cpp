@@ -314,7 +314,7 @@ struct SurfaceContext : material::MaterialContext {
   int noiseBiome(int qx, int qy, int qz) override {
     int y = std::clamp(qy - (TerrainGenerator::MIN_Y >> 2), 0, TerrainGenerator::HEIGHT / 4 - 1);
     int cx = qx >> 2, cz = qz >> 2;
-    if (cx == chunk.cx && cz == chunk.cz) return chunk.sections[y >> 2].biomes[((y & 3) * 4 + (qz & 3)) * 4 + (qx & 3)];
+    if (cx == chunk.cx && cz == chunk.cz) return chunk.get_biome(qx & 3, y, qz & 3);
     auto& q = neighbours[{cx, cz}];
     if (q.empty()) g.chunkBiomes(cx, cz, g.neighbourBiomeSource, q);
     return q[(y * 4 + (qz & 3)) * 4 + (qx & 3)];

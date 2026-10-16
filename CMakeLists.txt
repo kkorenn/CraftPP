@@ -18,6 +18,9 @@ add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_so
   src/worldgen/density.cpp src/worldgen/terrain.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
+find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
+find_package(Threads REQUIRED)
+target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB Threads::Threads)
 target_link_libraries(craftpp PRIVATE craftpp_worldgen)
 # Test targets are skipped until their source exists (keeps in-progress work from breaking the build).
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/worldgen_rng_test.cpp)
