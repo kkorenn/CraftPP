@@ -4,6 +4,7 @@ set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/game.json ] || python3 tools/gen_game_data.py
+[ -f data/level.json ] || python3 tools/gen_level_data.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
 if [ "$1" = "test" ]; then cmake --build build -j; else cmake --build build -j --target craftpp; fi
 
@@ -46,6 +47,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/level_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"

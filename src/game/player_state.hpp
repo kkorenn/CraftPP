@@ -113,6 +113,7 @@ struct PlayerGame {
     ItemStack remote_carried;
     bool remote_valid = false;
     int keepalive_timer = 0;
+    int ack_seq = -1;  // highest block_changed_ack sequence to send at the end of the tick (level/level.hpp)
 };
 
 struct Player;

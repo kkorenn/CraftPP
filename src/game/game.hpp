@@ -3,6 +3,7 @@
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
+#include "../level/glue.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
 
@@ -52,6 +53,7 @@ inline void keepalive_tick(Player& p) {
 // Called once from main() after register_core_handlers().
 inline void start_game() {
     game_init();
+    lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     on_player_tick(keepalive_tick);

@@ -131,8 +131,19 @@ struct Section {
     Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
+// Level tick state that travels with the chunk (src/level/): worldgen post-processing marks (vanilla
+// ProtoChunk.postProcessing, packed x | z << 4 | (y - MIN_Y) << 8) and the tick lists in the level's own
+// encoding. Owned by the tick thread once the chunk is loaded; save_chunk reads it under Chunk::m.
+struct ChunkLevelData {
+    bool post_processed = true;  // generated chunks start false; LevelChunk.postProcessGeneration ran
+    std::vector<uint32_t> post;
+    std::vector<uint8_t> ticks;
+};
+
 struct Chunk {
     int cx, cz;
+    ChunkLevelData level;
+    uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::array<Section, SECTIONS> sections;
     std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
@@ -145,6 +156,7 @@ struct Chunk {
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
+        edits++;
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
     void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes.set(((qy & 3) * 4 + qz) * 4 + qx, b); }
@@ -359,6 +371,13 @@ inline bool load_chunk(Chunk& c) {
     if (uncompress(out.data(), &n, z.data(), uLong(z.size())) != Z_OK || n != raw) return false;
     Reader r(out);
     for (auto& s : c.sections) s.blocks.read(r), s.biomes.read(r);
+    if (r.i < r.n && r.u8() == 1) {  // level data (absent in older files: processed, no ticks)
+        c.level.post_processed = r.u8();
+        c.level.post.resize(size_t(r.varint()));
+        for (auto& v : c.level.post) v = uint32_t(r.i32());
+        c.level.ticks.resize(size_t(r.varint()));
+        for (auto& b : c.level.ticks) b = r.u8();
+    }
     return c.on_disk = true;
 }
 
@@ -369,6 +388,10 @@ inline void save_chunk(Chunk& c) {
     {
         std::lock_guard lock(c.m);
         for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
+        w.u8(1).u8(c.level.post_processed).varint(int32_t(c.level.post.size()));
+        for (uint32_t v : c.level.post) w.i32(int32_t(v));
+        w.varint(int32_t(c.level.ticks.size()));
+        w.bytes(c.level.ticks.data(), c.level.ticks.size());
         c.dirty = false;
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
@@ -397,6 +420,18 @@ struct World {
     bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
+    std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
+
+    // The chunk if loaded, else null (never loads or generates).
+    ChunkPtr find(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+    bool is_viewed(int cx, int cz) {
+        std::lock_guard lock(m);
+        return viewed({cx, cz});
+    }
 
     void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }
 
@@ -537,6 +572,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         auto c = std::make_shared<Chunk>();
         c->cx = cx, c->cz = cz;
         if (!load_chunk(*c)) {
+            c->level.post_processed = false;
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
@@ -546,6 +582,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             chunks[{cx, cz}] = c;
             inflight.erase({cx, cz});
         }
+        if (on_load) on_load(c);
         job.set_value(c);
     } catch (...) {
         {

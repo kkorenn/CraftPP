@@ -537,6 +537,7 @@ struct Eval {
     if (y < s.minY || y > s.minY + s.height - 1) return;
     int x = col & 15, z = col >> 4;
     chunk.set(x, y, z, (uint16_t)state);
+    if (state_flags()[size_t(state)] & STATE_FLUID) chunk.level.post.push_back(uint32_t(x | z << 4 | (y - MIN_Y) << 8));
     int& fa = firstAvailable(col);
     if (y <= fa - 2) return;
     if (!s.isAir(state)) {

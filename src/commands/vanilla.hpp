@@ -37,6 +37,11 @@ struct BlockBatch {
     int changed = 0;
     bool set(int x, int y, int z, int state) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT || world.get_block(x, y, z) == state) return false;
+        if (level_command_place) {
+            if (!level_command_place(x, y, z, state)) return false;
+            changed++;
+            return true;
+        }
         world.set_block(x, y, z, uint16_t(state));
         sections[{x >> 4, (y - MIN_Y) >> 4, z >> 4}].push_back({uint16_t((x & 15) << 8 | (z & 15) << 4 | ((y - MIN_Y) & 15)), state});
         changed++;

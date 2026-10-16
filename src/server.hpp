@@ -312,7 +312,9 @@ inline void save_player(const Player& p) {
     std::filesystem::rename(path + ".tmp", path);
 }
 
+inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
 inline void save_all() {
+    if (on_save_all) on_save_all();
     for (auto& p : snapshot()) save_player(*p);
     world.save_dirty();
 }
