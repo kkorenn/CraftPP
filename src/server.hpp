@@ -214,10 +214,9 @@ inline PlayerPtr find_player(const std::string& name) {
 }
 
 inline void broadcast(const Writer& body, const Player* except = nullptr) {
-    for (auto& p : snapshot()) {
-        if (p.get() == except) continue;
-        try { p->send(body); } catch (...) {}  // its own thread notices the dead socket
-    }
+    std::lock_guard lock(players_mtx);  // no copy: send() only appends to the player's outbox
+    for (auto& p : players)
+        if (p.get() != except) p->send(body);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
