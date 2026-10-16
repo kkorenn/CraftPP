@@ -158,7 +158,9 @@ inline void send_changes(Entity& e) {  // ServerEntity.sendChanges
         bool rot = yr != t.yaw || xr != t.pitch;
         t.teleport_delay++;
         int64_t dx = enc4096(e.pos.x) - t.base_x, dy = enc4096(e.pos.y) - t.base_y, dz = enc4096(e.pos.z) - t.base_z;
-        bool arrow = e.in_tag("arrows");
+        static std::vector<uint8_t> arrow_types;  // ServerEntity: AbstractArrow always sends position + rotation
+        if (arrow_types.empty()) for (size_t t = 0; t < entity_type_info.size(); t++) arrow_types.push_back(entity_in_tag(int(t), "arrows"));
+        bool arrow = arrow_types[size_t(e.type)];
         Vec3 base{double(t.base_x) / 4096.0, double(t.base_y) / 4096.0, double(t.base_z) / 4096.0};
         bool send_pos = arrow || (e.pos - base).length_sqr() >= 7.6293945E-6f || t.tick_count % 60 == 0;
         if (arrow) rot = true;
@@ -251,6 +253,7 @@ inline Entity* add_entity(std::unique_ptr<Entity> up) {
     ent_detail::by_id[e.id] = std::move(up);
     if (e.as_player()) {
         ent_detail::player_ents.push_back(&e);
+        update_players(e);
     } else {
         ensure_entity_chunk_loaded(e.chunk_x, e.chunk_z);
         chunk_ents(e.chunk_x, e.chunk_z).list.push_back(&e);
@@ -416,6 +419,7 @@ inline void update_player_view(Player& p) {
         }
     std::vector<Entity*> seen = v.seen;
     for (Entity* e : seen) update_player(*e, p);
+    for (Entity* e : ent_detail::player_ents) update_player(*e, p);
 }
 
 // ---------- the entity tick ----------
@@ -469,6 +473,14 @@ inline void tick_world_entities() {
     // tracker
     for (Entity* e : to_tick) {
         if (e->removed) continue;
+        int64_t sec = section_key(*e);
+        if (sec != e->trk.section) {
+            e->trk.section = sec;
+            update_players(*e);
+        }
+        send_changes(*e);
+    }
+    for (Entity* e : player_ents) {  // players are tracked like any entity (their own ticks run elsewhere)
         int64_t sec = section_key(*e);
         if (sec != e->trk.section) {
             e->trk.section = sec;

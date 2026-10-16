@@ -83,6 +83,7 @@ if [ "$1" = "test" ]; then
   ls build/logs/*-1.log* > /dev/null 2>&1 || fail "previous latest.log was not rolled over"
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
   python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/mobs_test.py 127.0.0.1 $PORT --after-restart
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"

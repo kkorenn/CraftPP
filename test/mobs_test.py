@@ -25,15 +25,17 @@ def pump(c, seconds, on):
 
 def main(host, port):
     c, _ = login("Sam", host, port)
-    sx, _, sz = c.pos
+    c.send(PLAY_SB["client_command"], varint(0))  # respawn in case an earlier test left Sam dead
+    sx, sz = -40.5, 40.5  # away from blocks other tests place near the origin
     sy = -60.0  # flat world ground
     cmd(c, f"tp Sam {sx} {sy} {sz}")
     cmd(c, "gamerule spawn_mobs false")  # keep the area quiet until the spawning check
     cmd(c, "time set noon")
     cmd(c, "kill @e[type=!player]")
+    pump(c, 1.5, lambda pid, b: False)  # let the respawn / teleport settle (entity views are rebuilt)
 
     # ---- /summon, selectors, gravity + movement packets ----
-    cmd(c, f"summon minecraft:cow {sx + 3} {sy + 4} {sz}")
+    cmd(c, f"summon minecraft:cow {sx + 3} {sy + 8} {sz}")
     cow = {}
     moved = {"dy": 0.0}
     def watch_cow(pid, b):
@@ -47,7 +49,7 @@ def main(host, port):
         elif pid == PLAY_CB["entity_position_sync"] and "id" in cow:
             if b.varint() == cow["id"]:
                 b.varint(); moved["sync_y"] = struct.unpack(">ddd", b.take(24))[1]
-        return "id" in cow and (moved["dy"] < -3.5 or moved.get("sync_y", 1e9) <= sy + 0.01)
+        return "id" in cow and (moved["dy"] < -6 or moved.get("sync_y", 1e9) <= sy + 0.01)
     assert pump(c, 10, watch_cow), f"cow fall not seen: {cow} {moved}"
     print(f"summon ok: cow {cow['id']} fell (deltas {moved['dy']:.2f}, sync y {moved.get('sync_y')})")
     # mob AI produces delta packets: wait for a pos/rot/head update of any mob
@@ -176,8 +178,20 @@ def main(host, port):
     cmd(c, "gamerule spawn_mobs false")
     cmd(c, "time set noon")
     cmd(c, "kill @e[type=!player]")
-    time.sleep(0.3)
+    pump(c, 1.5, lambda pid, b: False)
+    cmd(c, f'summon cow {sx} {sy} {sz} {{CustomName:"keeper",NoAI:1b,Tags:["persist"]}}')
+    pump(c, 1, lambda pid, b: False)
     print("mobs ok")
 
+def after_restart(host, port):
+    c, _ = login("Sam", host, port)
+    cmd(c, "execute if entity @e[type=cow,name=keeper,tag=persist]")
+    wait(c, PLAY_CB["system_chat"], lambda b: b"commands.execute.conditional.pass" in b.d or b"conditional.fail" in b.d and (_ for _ in ()).throw(AssertionError("keeper cow lost")))
+    cmd(c, "kill @e[type=cow,name=keeper]")
+    print("mob persistence ok: named cow survived restart")
+
 if __name__ == "__main__":
+    if "--after-restart" in sys.argv:
+        after_restart(sys.argv[1], int(sys.argv[2]))
+        sys.exit(0)
     main(sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1", int(sys.argv[2]) if len(sys.argv) > 2 else 25565)
