@@ -460,9 +460,9 @@ struct BlockRot : Processor {
 };
 
 struct Protected : Processor {
-  std::vector<uint8_t> mask;
+  const bs::Tag* tag = nullptr;
   bool process(Level& level, BlockPos, BlockPos, BlockPos, BlockInfo& info, const PlaceSettings&) const override {
-    return !mask[Blocks::get().blockOf(level.getBlock(info.pos.x, info.pos.y, info.pos.z))];
+    return !tag->has(Blocks::get().blockOf(level.getBlock(info.pos.x, info.pos.y, info.pos.z)));
   }
 };
 
@@ -515,7 +515,7 @@ struct BlockAge : Processor {
     };
     auto withProps = [&](const char* block, int from) {  // withPropertiesOf
       int s0 = b.defaultState(block);
-      for (auto& [k, vals] : b.block(from).props)
+      for (auto& k : b.propNames(from))
         if (b.hasProp(s0, k)) s0 = b.with(s0, k, b.prop(from, k));
       return s0;
     };
@@ -591,7 +591,7 @@ ProcessorP parseProcessor(const Json& j) {
   }
   if (t == "minecraft:protected_blocks") {
     auto p = std::make_shared<Protected>();
-    p->mask = Blocks::get().tagMask(j["value"].asString());
+    p->tag = &Blocks::get().tag(j["value"].asString());
     return p;
   }
   if (t == "minecraft:capped") {

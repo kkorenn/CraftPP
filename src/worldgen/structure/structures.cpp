@@ -164,7 +164,7 @@ struct RuinedPortalStructure : Structure {
     BlockPos corners[4] = {{bb.minX, 0, bb.minZ}, {bb.maxX, 0, bb.minZ}, {bb.minX, 0, bb.maxZ}, {bb.maxX, 0, bb.maxZ}};
     for (int i = 0; i < 4; i++) ctx.gen.baseColumn(corners[i].x, corners[i].z, cols[i]);
     bool ocean = setup.placement == RuinedPortal::ON_OCEAN_FLOOR;
-    const auto& motion = Blocks::get().tagMask("blocks_motion_in_heightmap");
+    const bs::Tag& motion = Blocks::get().tag("blocks_motion_in_heightmap");
     int projectedY;
     for (projectedY = newY; projectedY > minY; projectedY--) {
       int solid = 0;
@@ -172,7 +172,7 @@ struct RuinedPortalStructure : Structure {
       for (auto& c : cols) {
         int idx = projectedY - MIN_Y;
         int st = idx >= 0 && idx < GEN_HEIGHT ? c[idx] : blocks::air;  // NoiseColumn.getBlock: air outside
-        bool opaque = ocean ? motion[Blocks::get().blockOf(st)] != 0 : !Blocks::get().isAir(st);
+        bool opaque = ocean ? motion.has(Blocks::get().blockOf(st)) : !Blocks::get().isAir(st);
         if (opaque && ++solid == 3) {
           done = true;
           break;

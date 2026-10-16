@@ -251,8 +251,9 @@ std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::createNoiseChunk
   return nc;
 }
 
-std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c) {
+std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c, const df::Sampler* beardifier) {
   auto nc = createNoiseChunk({16, HEIGHT, 16, c.cx * 16, MIN_Y, c.cz * 16});
+  nc->ctx.beardifier = beardifier;  // NoiseChunk user field Beardifier.CONTEXT_KEY
   const DensityVolume& v = nc->volume;
   DensityBuffer density(v.size());
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, v);
@@ -349,8 +350,8 @@ int TerrainGenerator::uncachedBiome(ClimateSampler& s, int qx, int qy, int qz) {
 }
 
 void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
-                                    const std::function<int(int, int)>& carverBiome) {
-  auto nc = fillFromNoise(c);
+                                    const std::function<int(int, int)>& carverBiome, const df::Sampler* beardifier) {
+  auto nc = fillFromNoise(c, beardifier);
   if (!materials) return;
   SurfaceContext ctx(*this, *nc, c);
   ctx.regionBiome = &noiseBiome;

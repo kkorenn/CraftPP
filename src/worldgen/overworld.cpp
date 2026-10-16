@@ -29,7 +29,8 @@ Overworld::Overworld(int64_t seed, const std::string& stages, const std::string&
       }
       return int(b);
     };
-    terrain->buildTerrain(*r.center().chunk, noiseBiome, carvers.get(), carverBiome);
+    auto beard = beardifier ? beardifier(r.cx, r.cz) : nullptr;
+    terrain->buildTerrain(*r.center().chunk, noiseBiome, carvers.get(), carverBiome, beard.get());
   });
   if (features) pipeline.set_step(Status::FEATURES, [this](Region& r) { features->decorate(r); });
 }
