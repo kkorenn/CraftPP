@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/game.json ] || python3 tools/gen_game_data.py
-[ -f data/roster.json ] || python3 tools/gen_roster_data.py
+[ data/roster.json -nt tools/gen_roster_data.py ] || python3 tools/gen_roster_data.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
 if [ "$1" = "test" ]; then cmake --build build -j; else cmake --build build -j --target craftpp; fi
 
