@@ -812,7 +812,14 @@ struct PlayerEntity : LivingEntity {
         set_shared_flag(1, p->g.sneaking);
         set_shared_flag(3, p->g.sprinting);
     }
-    bool hurt_server(const DamageSource& s, float dmg) override { return hurt(*p, s, dmg); }
+    bool hurt_server(const DamageSource& s, float dmg) override {  // ServerPlayer.hurtServer: canHarmPlayer
+        if (const Player* by = s.causing ? s.causing->as_player_const() : nullptr; by && by != p) {
+            if (!rule("pvp")) return false;
+            Team* a = team_of(by->name);
+            if (a && a == team_of(p->name) && !a->friendly_fire) return false;  // doTeamsAllowDamage
+        }
+        return hurt(*p, s, dmg);
+    }
     void knockback(double power, double xd, double zd) override {  // ServerPlayer: velocity goes to its own client
         power *= 1.0 - attr(attr::knockback_resistance);
         if (power <= 0.0) return;
