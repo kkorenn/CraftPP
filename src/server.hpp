@@ -21,6 +21,8 @@
 #include <random>
 #include <thread>
 
+#include <unistd.h>
+
 // Filled from server.properties by load_properties (paper.hpp), which also supplies vanilla's defaults.
 inline std::map<std::string, std::string> props = {
     {"motd", "A Minecraft Server"},
@@ -38,6 +40,11 @@ inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed regi
 inline std::vector<uint8_t> commands_packet;
 inline World world;
 inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
+inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
+    shutdown_requested = 1;
+    if (shutdown_pipe[1] >= 0) (void)!write(shutdown_pipe[1], "x", 1);
+}
 inline bool flat_world = false;
 struct SpawnPos { int x, y, z; };
 inline SpawnPos world_spawn{0, -60, 0};  // LevelData respawn position (flat: the old fixed spawn)

@@ -689,7 +689,7 @@ inline void register_vanilla_commands() {
 
     reg("stop", [](Cmd& c) {
         c.success(tr("commands.stop.stopping"), true);
-        shutdown_requested = 1;
+        request_shutdown_async();
         return 1;
     });
     reg("save-all", [](Cmd& c) {
