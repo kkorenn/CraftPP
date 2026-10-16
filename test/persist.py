@@ -29,6 +29,7 @@ if "--after-restart" in sys.argv:
 
 c, _ = login("Steve", host, port, decode=True, uid=UID)
 c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(STONE_ITEM) + varint(0) + varint(0))
+c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 2.5, -60, 0.5, 1))  # out of the way: placement checks the player box
 c.send(PLAY_SB["use_item_on"], varint(0) + pos(0, -61, 0) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(1))
 assert block_pos(wait(c, PLAY_CB["block_update"]).i64()) == (0, -60, 0)
 c.send(PLAY_SB["player_action"], varint(0) + pos(2, -61, 2) + b"\x01" + varint(2))

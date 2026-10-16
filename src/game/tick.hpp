@@ -11,9 +11,10 @@
 //  * Network threads (one per connection, main.cpp handle()): login + configuration, then join() (sends the
 //    login packet and the initial chunks before the player is visible to the tick thread), then only read
 //    frames and push them into Player::in. They never touch game state after join().
-//  * Writer threads (one per player): Player::send() only appends to Player::out; the tick thread calls
-//    flush() once per tick and the writer sends the whole batch with one send(). A slow client can't stall
-//    the tick; one that falls 32 MiB behind is disconnected.
+//  * No writer threads: Player::send() only appends to Player::out; at the end of every tick the tick thread
+//    flushes each outbox with non-blocking send()s (usually one syscall per player per tick). What the socket
+//    doesn't take stays queued for the next tick, so a slow client can't stall the tick; one that falls
+//    32 MiB behind is disconnected.
 //  * Shared structures with their own locks: World/Chunk (chunks are streamed from join() on network threads),
 //    `players` (written only on the tick thread, under players_mtx; network threads read it for login checks).
 //
@@ -58,43 +59,6 @@ inline void on_player_leave(void (*f)(Player&)) { tick_detail::leave_hooks.push_
 
 // Disconnects a player: its network thread sees EOF and the normal leave path runs.
 inline void kick(Player& p) { shutdown(p.fd, SHUT_RDWR); }
-
-// ---------- writer thread ----------
-inline void start_writer(const PlayerPtr& pp) {
-    pp->out.writer = std::thread([p = pp.get()] {
-        std::vector<uint8_t> local;
-        for (;;) {
-            bool last;
-            {
-                std::unique_lock lock(p->out.m);
-                p->out.cv.wait(lock, [&] { return (p->out.flush_req && !p->out.buf.empty()) || p->out.closed; });
-                local.swap(p->out.buf);
-                p->out.flush_req = false;
-                last = p->out.closed;
-            }
-            try {
-                if (!local.empty()) send_raw(p->fd, local.data(), local.size());
-            } catch (...) {
-                std::lock_guard lock(p->out.m);
-                p->out.closed = true;
-                p->out.buf.clear();
-                shutdown(p->fd, SHUT_RDWR);
-                return;
-            }
-            local.clear();
-            if (local.capacity() > (1 << 20)) local.shrink_to_fit();  // don't keep the initial-chunks burst around
-            if (last) return;
-        }
-    });
-}
-inline void stop_writer(Player& p) {  // sends what is queued, then ends the writer thread
-    {
-        std::lock_guard lock(p.out.m);
-        p.out.closed = true;
-    }
-    p.out.cv.notify_one();
-    if (p.out.writer.joinable()) p.out.writer.join();
-}
 
 // ---------- tick stats ----------
 inline double mspt_avg = 0, mspt_max = 0;  // exponential average / max over the run (ms per tick)
@@ -148,7 +112,7 @@ inline void tick_once() {
         for (auto f : player_tick_hooks) f(*pp);
     for (auto& pp : players) {
         for (auto f : player_sync_hooks) f(*pp);
-        if (pp->out.buf.size() > (32u << 20)) kick(*pp);  // ponytail: unlocked size peek is a heuristic only
+        if (pp->out.pending() > (32u << 20)) kick(*pp);
         pp->out.flush();
     }
     server_tick++;
@@ -185,8 +149,8 @@ inline void start_tick_thread() {
 // Network-thread side of a play connection: everything after join().
 inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const PlayerPtr&),
                                 void (*on_unregister)(const PlayerPtr&)) {
-    start_writer(pp);
-    pp->out.flush();  // login + chunks queued by join()
+    pp->out.fd = pp->fd;
+    pp->out.flush();  // start on the login + chunks queued by join(); the tick thread sends the rest
     run_on_tick([pp, on_register] {
         on_register(pp);
         for (auto f : tick_detail::join_hooks) f(*pp);
@@ -206,5 +170,5 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
         done.set_value();
     });
     done.get_future().wait();
-    stop_writer(*pp);
+    pp->out.flush();  // best effort: last packets (e.g. a disconnect message)
 }

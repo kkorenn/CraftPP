@@ -3,10 +3,11 @@
 #include "../protocol.hpp"
 
 #include <array>
-#include <condition_variable>
+#include <iosfwd>
+#include <cerrno>
+#include <sys/socket.h>
 #include <cstdint>
 #include <mutex>
-#include <thread>
 #include <vector>
 
 // Item stack. Only the damage component is tracked so far (tools wear out); other components are dropped.
@@ -19,13 +20,14 @@ struct ItemStack {
     }
 };
 
-// Outgoing bytes: game code appends framed packets, the player's writer thread sends them in one batch per flush.
+// Outgoing bytes: game code appends framed packets; flush() writes as much as the socket takes without
+// blocking (MSG_DONTWAIT) and keeps the rest for the next tick. No writer thread.
 struct Outbox {
     std::mutex m;
-    std::condition_variable cv;
     std::vector<uint8_t> buf;
-    bool flush_req = false, closed = false;
-    std::thread writer;
+    size_t off = 0;  // bytes of buf already sent
+    bool closed = false;
+    int fd = -1;  // set when play starts (tick.hpp run_play_connection)
 
     void push(const std::vector<uint8_t>& body) {
         uint8_t len[5];
@@ -43,13 +45,34 @@ struct Outbox {
         std::lock_guard lock(m);
         if (!closed) buf.insert(buf.end(), b.begin(), b.end());
     }
-    void flush() {
-        {
-            std::lock_guard lock(m);
-            if (buf.empty()) return;
-            flush_req = true;
+    size_t pending() {
+        std::lock_guard lock(m);
+        return buf.size() - off;
+    }
+    // Non-blocking write of the queue. Returns false once the connection is dead (and shuts the socket down).
+    bool flush() {
+        std::lock_guard lock(m);
+        if (closed || fd < 0) return false;
+        while (off < buf.size()) {
+#ifdef MSG_NOSIGNAL
+            ssize_t r = ::send(fd, buf.data() + off, buf.size() - off, MSG_DONTWAIT | MSG_NOSIGNAL);
+#else
+            ssize_t r = ::send(fd, buf.data() + off, buf.size() - off, MSG_DONTWAIT);  // SIGPIPE ignored in main()
+#endif
+            if (r > 0) { off += size_t(r); continue; }
+            if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) break;
+            closed = true;
+            buf.clear(), off = 0;
+            ::shutdown(fd, SHUT_RDWR);
+            return false;
         }
-        cv.notify_one();
+        if (off == buf.size()) {
+            buf.clear(), off = 0;
+            if (buf.capacity() > (256u << 10)) buf.shrink_to_fit();  // don't keep the initial-chunks burst around
+        } else if (off > (1u << 20)) {
+            buf.erase(buf.begin(), buf.begin() + std::ptrdiff_t(off)), off = 0;
+        }
+        return true;
     }
 };
 
@@ -91,3 +114,7 @@ struct PlayerGame {
     bool remote_valid = false;
     int keepalive_timer = 0;
 };
+
+struct Player;
+inline void load_player_extra(Player& p, std::istream& f);       // survival.hpp
+inline void save_player_extra(const Player& p, std::ostream& f);  // survival.hpp
