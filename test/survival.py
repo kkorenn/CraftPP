@@ -91,7 +91,22 @@ k = wait(c, PLAY_CB["player_combat_kill"])
 k.varint()
 assert b"death.fell.accident.generic" in k.d, k.d
 c.send(PLAY_SB["client_command"], varint(0))
-wait(c, PLAY_CB["respawn"])
+r = wait(c, PLAY_CB["respawn"])
+r.varint(); r.str(); r.i64(); r.varint(); r.varint(); r.take(2); assert r.u8() == 0; r.varint(); r.varint(); r.u8()
+assert r.i == len(r.d), "respawn packet has trailing bytes"
 h = wait(c, PLAY_CB["set_health"])
 assert struct.unpack(">f", h.take(4))[0] == 20.0
 print("death + respawn ok")
+
+# 5. Crafting table: place one, use it -> open_screen with the crafting menu type.
+REG = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))
+c.send(PLAY_SB["chat_command"], string("gamemode creative"))
+wait(c, PLAY_CB["game_event"], lambda b: b.d[b.i] == 3)
+c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(item("crafting_table")) + varint(0) + varint(0))
+c.send(PLAY_SB["use_item_on"], varint(0) + pos(3, -61, 0) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(5))
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == (3, -60, 0))
+c.send(PLAY_SB["use_item_on"], varint(0) + pos(3, -60, 0) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(6))
+o = wait(c, PLAY_CB["open_screen"])
+o.varint()
+assert o.varint() == REG["minecraft:menu"]["entries"]["minecraft:crafting"]["protocol_id"]
+print("crafting table ok")

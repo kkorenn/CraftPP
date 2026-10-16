@@ -123,7 +123,7 @@ inline void respawn(Player& p) {
     }();
     place_new_player(p);
     p.send(Writer().varint(play_cb::respawn).varint(dimension_types::overworld).str("minecraft:overworld").i64(0)
-               .varint(p.gamemode).u8(0xFF).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63)
+               .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63)
                .u8(0));
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
