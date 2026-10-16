@@ -46,7 +46,7 @@ inline int condition_count(Cmd& c, const std::string& what) {
                 }
         return count;
     }
-    if (what == "entity") return int(c.players("entities", true).size());
+    if (what == "entity") return int(c.targets("entities", true).size());
     if (what == "score") {
         std::string th = c.holders("target")[0];
         std::string to = c.str("targetObjective");
@@ -118,14 +118,17 @@ inline std::vector<Source> apply_execute(const Segment& seg, const Source& in, c
     if (sub == "run") return {s};
     if (sub == "as") {
         std::vector<Source> out;
-        for (auto& p : c.players("targets", true)) { Source t = s; t.entity = p; out.push_back(t); }
+        for (auto& p : c.targets("targets", true)) { Source t = s; t.entity = p.p; t.mob = p.e; out.push_back(t); }
         return out;
     }
+    auto rot_of = [](const Target& t, float& y, float& p) { if (t.p) y = t.p->yaw, p = t.p->pitch; else entity_rotation(t.e, y, p); };
     if (sub == "at") {
         std::vector<Source> out;
-        for (auto& p : c.players("targets", true)) {
+        for (auto& p : c.targets("targets", true)) {
             Source t = s;
-            t.x = p->x; t.y = p->y; t.z = p->z; t.yaw = p->yaw; t.pitch = p->pitch;
+            Vec3 v = p.pos();
+            t.x = v.x; t.y = v.y; t.z = v.z;
+            rot_of(p, t.yaw, t.pitch);
             out.push_back(t);
         }
         return out;
@@ -140,20 +143,25 @@ inline std::vector<Source> apply_execute(const Segment& seg, const Source& in, c
             return {s};
         }
         std::vector<Source> out;
-        for (auto& p : c.players("targets", true)) { Source t = s; t.x = p->x; t.y = p->y; t.z = p->z; out.push_back(t); }
+        for (auto& p : c.targets("targets", true)) { Source t = s; Vec3 v = p.pos(); t.x = v.x; t.y = v.y; t.z = v.z; out.push_back(t); }
         return out;
     }
     if (sub == "rotated") {
         if (c.has("rot")) { c.get<Coords>("rot").rotation(s, s.yaw, s.pitch); return {s}; }
         std::vector<Source> out;
-        for (auto& p : c.players("targets", true)) { Source t = s; t.yaw = p->yaw; t.pitch = p->pitch; out.push_back(t); }
+        for (auto& p : c.targets("targets", true)) { Source t = s; rot_of(p, t.yaw, t.pitch); out.push_back(t); }
         return out;
     }
     if (sub == "facing") {
         if (c.has("pos")) { Vec3 v = c.vec("pos"); face_towards(s, v.x, v.y, v.z); return {s}; }
         std::vector<Source> out;
         bool eyes = c.str("anchor", "feet") == "eyes";
-        for (auto& p : c.players("targets", true)) { Source t = s; face_towards(t, p->x, p->y + (eyes ? 1.62 : 0), p->z); out.push_back(t); }
+        for (auto& p : c.targets("targets", true)) {
+            Source t = s;
+            Vec3 v = p.pos();
+            face_towards(t, v.x, v.y + (eyes ? (p.p ? 1.62 : entity_eye_height(p.e)) : 0), v.z);
+            out.push_back(t);
+        }
         return out;
     }
     if (sub == "anchored") { s.eyes = c.str("anchor") == "eyes"; return {s}; }
