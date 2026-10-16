@@ -47,7 +47,8 @@ def main(host, port):
         elif pid == PLAY_CB["entity_position_sync"] and "id" in cow:
             if b.varint() == cow["id"]:
                 b.varint(); moved["sync_y"] = struct.unpack(">ddd", b.take(24))[1]
-        return "id" in cow and (moved["dy"] < -3.5 or moved.get("sync_y", 1e9) <= sy + 0.01)
+        # (with chunk light gating, the first pairing can arrive after the cow already landed)
+        return "id" in cow and (moved["dy"] < -3.5 or moved.get("sync_y", 1e9) <= sy + 0.01 or cow["y"] <= sy + 0.01)
     assert pump(c, 10, watch_cow), f"cow fall not seen: {cow} {moved}"
     print(f"summon ok: cow {cow['id']} fell (deltas {moved['dy']:.2f}, sync y {moved.get('sync_y')})")
     # mob AI produces delta packets: wait for a pos/rot/head update of any mob
