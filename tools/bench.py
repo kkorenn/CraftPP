@@ -27,14 +27,15 @@ shutil.rmtree(work, ignore_errors=True)
 os.makedirs(work)
 open(f"{work}/server.properties", "w").write(
     f"server-port=25565\nlevel-name={work}/world\nlevel-type=normal\nlevel-seed={args.seed}\nview-distance={args.view}\n"
-    "pause-when-empty-seconds=60\n" + "".join(l + "\n" for l in args.extra_props.split(";") if l))
+    "pause-when-empty-seconds=60\nwhite-list=false\n" + "".join(l + "\n" for l in args.extra_props.split(";") if l))
+open(f"{work}/eula.txt", "w").write("eula=true\n")
 vanilla = os.path.realpath(os.path.join(ROOT, "vanilla"))
 # vanilla/ is a symlink to an absolute host path: mount it elsewhere and recreate that path inside the container
 # (bind-mounting at the host path itself is unreliable on Docker Desktop).
 MOUNTS = ["-v", f"{ROOT}:{ROOT}", "-v", f"{vanilla}:/vanilla:ro", "-w", ROOT]
 LINK = f"mkdir -p {os.path.dirname(vanilla)} && ln -sfn /vanilla {vanilla} && "
 subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
-docker = ["docker", "run", "-d", "--name", NAME, f"--cpus={args.cpus}", f"--memory={args.memory}", "--memory-swap", args.memory,
+docker = ["docker", "run", "-d", "-i", "--name", NAME, f"--cpus={args.cpus}", f"--memory={args.memory}", "--memory-swap", args.memory,
           "-p", f"{args.port}:25565"] + MOUNTS + [args.image]
 t_start = time.time()
 subprocess.run(docker + ["sh", "-c", LINK + f"exec {ROOT}/{args.bin} {work}/server.properties > {work}/server.log 2>&1"], check=True,
@@ -59,7 +60,7 @@ rows = []
 def row(metric, value): rows.append((metric, value)); print(f"  {metric}: {value}", flush=True)
 try:
     t0 = t_start
-    while "listening" not in open(f"{work}/server.log").read():
+    while not any(k in open(f"{work}/server.log").read() for k in ("listening", "Done (")):
         if time.time() - t0 > 600: raise TimeoutError(open(f"{work}/server.log").read())
         time.sleep(0.1)
     row("startup (spawn search + generator init)", f"{time.time() - t0:.1f} s")

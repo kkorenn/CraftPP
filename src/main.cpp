@@ -1,27 +1,13 @@
-#include "play.hpp"
+#include "paper.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 #include <iostream>
 #include <iterator>
-
-static void load_properties(const char* path) {
-    std::ifstream f(path);
-    if (!f) {  // write defaults so the user has something to edit
-        std::ofstream o(path);
-        for (auto& [k, v] : props) o << k << '=' << v << '\n';
-        return;
-    }
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        auto eq = line.find('=');
-        if (eq != std::string::npos) props[line.substr(0, eq)] = line.substr(eq + 1);
-    }
-}
 
 static std::string status_json(int protocol) {
     // Echo a matching protocol so the list shows the MOTD; mismatched clients see the required version.
@@ -32,8 +18,22 @@ static std::string status_json(int protocol) {
            "},\"description\":{\"text\":\"" + json_escape(props["motd"]) + "\"}}";
 }
 
-static void disconnect_login(int fd, const std::string& msg) {
+// "/ip:port" like Java's InetSocketAddress (or vanilla's placeholder when log-ips=false).
+static std::string peer_address(int fd) {
+    if (props["log-ips"] == "false") return "<ip address withheld>";
+    sockaddr_in a{};
+    socklen_t n = sizeof a;
+    char ip[INET_ADDRSTRLEN] = "?";
+    if (getpeername(fd, (sockaddr*)&a, &n) == 0) inet_ntop(AF_INET, &a.sin_addr, ip, sizeof ip);
+    return std::string("/") + ip + ":" + std::to_string(ntohs(a.sin_port));
+}
+
+static void disconnect_login(int fd, const std::string& msg, const std::string& name = "") {
     send_packet(fd, Writer().varint(login_cb::login_disconnect).str("{\"text\":\"" + json_escape(msg) + "\"}"));
+    if (name.empty()) return;  // e.g. wrong protocol version: vanilla only logs it at debug level
+    std::string who = name + " (" + peer_address(fd) + ")";
+    log_info("Disconnecting %s: %s", who.c_str(), msg.c_str());
+    log_info("%s lost connection: %s", who.c_str(), msg.c_str());
 }
 
 // Wait for a specific packet id, ignoring others (client_information, brand, etc.).
@@ -77,8 +77,9 @@ static void handle(int fd) {
         Reader hello = wait_for(fd, pkt, login_sb::hello);
         std::string name = hello.str(16);
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
-        if (find_player(name)) return disconnect_login(fd, "You are already logged in");
-        if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!");
+        if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
+        if (find_player(name)) return disconnect_login(fd, "You are already logged in", name);
+        if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!", name);
         start_compression(fd, login_cb::login_compression);  // net.hpp, network-compression-threshold
         send_packet(fd, Writer()
                             .varint(login_cb::login_finished)
@@ -106,10 +107,13 @@ static void handle(int fd) {
         player->eid = next_entity_id++;
         player->gamemode = std::max(0, gamemode_id(props["gamemode"]));
         if (!load_player(*player)) place_new_player(*player);
-        printf("%s logged in with entity id %d\n", name.c_str(), player->eid);
+        record_usercache(name, uuid_dashed(uuid_hi, uuid_lo));
+        log_info("%s[%s] logged in with entity id %d at ([%s]%s, %s, %s)", name.c_str(), peer_address(fd).c_str(),
+                 player->eid, props["level-name"].c_str(), java_double(player->x).c_str(), java_double(player->y).c_str(),
+                 java_double(player->z).c_str());
         play(player);
     } catch (const std::exception& e) {
-        fprintf(stderr, "client error: %s\n", e.what());
+        if (!player && strcmp(e.what(), "disconnected")) log_warn("Connection error: %s", e.what());
     }
     if (player) {
         save_player(*player);
@@ -127,25 +131,40 @@ static void handle(int fd) {
     }
 }
 
+static void request_shutdown(int) { shutdown_requested = 1; }
+
 int main(int argc, char** argv) {
+    auto boot = std::chrono::steady_clock::now();
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGINT, [](int) { shutdown_requested = 1; });
-    signal(SIGTERM, [](int) { shutdown_requested = 1; });
-    load_properties(argc > 1 ? argv[1] : "server.properties");
-    world_dir = props["level-name"];
-    setup_world();
+    for (int sig : {SIGINT, SIGTERM, SIGHUP}) signal(sig, request_shutdown);  // all save first, like the JVM's hook
+    std::string props_path = argc > 1 ? argv[1] : "server.properties";
+    server_dir = std::filesystem::path(props_path).parent_path().string();
+    if (server_dir.empty()) server_dir = ".";
+    logging::open(server_dir + "/logs");
+    utsname u{};
+    uname(&u);
+    log_info("[bootstrap] Running CraftPP (C++%ld) on %s %s (%s)", __cplusplus / 100 % 100, u.sysname, u.release, u.machine);
+    log_info("[bootstrap] Loading CraftPP %s for Minecraft %s", IMPLEMENTATION_VERSION.c_str(), GAME_VERSION);
+    load_properties(props_path);
+    if (!check_eula(server_dir)) return 0;
+    ensure_paper_files(server_dir);
+
+    log_info("Starting minecraft server version %s", GAME_VERSION);
+    log_info("Loading properties");
+    log_info("This server is running CraftPP version %s (MC: %s) (Implementing API version %s-R0.1-SNAPSHOT)",
+             IMPLEMENTATION_VERSION.c_str(), GAME_VERSION, GAME_VERSION);
+    static const char* game_types[] = {"SURVIVAL", "CREATIVE", "ADVENTURE", "SPECTATOR"};
+    log_info("Default game type: %s", game_types[std::max(0, gamemode_id(props["gamemode"]))]);
     std::ifstream cfg("data/config.bin", std::ios::binary);
     if (!cfg) {
-        fprintf(stderr, "missing data/config.bin, run: python3 tools/gen_data.py\n");
+        log_error("Missing data/config.bin, run: python3 tools/gen_data.py");
         return 1;
     }
     config_packets.assign(std::istreambuf_iterator<char>(cfg), {});
-    build_commands_packet();
-    register_core_handlers();
-    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar); wraps handlers, hooks the tick
-    start_game();  // tick thread (game/tick.hpp)
-    int port = std::stoi(props["server-port"]);
 
+    int port = std::stoi(props["server-port"]);
+    const std::string& ip = props["server-ip"];
+    log_info("Starting Minecraft server on %s:%d", ip.empty() ? "*" : ip.c_str(), port);
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     int yes = 1;
     setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
@@ -153,22 +172,61 @@ int main(int argc, char** argv) {
     addr.sin_family = AF_INET;
     addr.sin_port = htons(uint16_t(port));
     addr.sin_addr.s_addr = INADDR_ANY;
+    if (!ip.empty() && inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) addr.sin_addr.s_addr = INADDR_ANY;
     if (bind(srv, (sockaddr*)&addr, sizeof addr) < 0 || listen(srv, 64) < 0) {
-        perror("bind/listen");
+        log_warn("**** FAILED TO BIND TO PORT!");
+        log_warn("The exception was: %s", strerror(errno));
+        log_warn("Perhaps a server is already running on that port?");
+        logging::close();
         return 1;
     }
-    printf("CraftPP (%s, protocol %d) listening on port %d - MOTD: %s\n", GAME_VERSION, PROTOCOL_VERSION, port,
-           props["motd"].c_str());
-    fflush(stdout);
+    log_warn("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
+    log_warn("The server will make no attempt to authenticate usernames. Beware.");
+    log_warn("While this makes the game possible to play without internet access, it also opens up the ability for "
+             "hackers to connect with any username they choose.");
+    log_warn("CraftPP does not implement online-mode authentication, so this applies regardless of server.properties.");
 
-    std::thread([] {  // console commands
-        for (std::string line; std::getline(std::cin, line);) {
-            if (line == "stop") { shutdown_requested = 1; return; }
-            if (!line.empty()) run_on_tick([line] {
-                std::string l = line[0] == '/' ? line.substr(1) : line;
-                if (!plugins::console_command(l)) run_command(nullptr, l);
-            });
-        }
+    log_info("Preparing level \"%s\"", props["level-name"].c_str());
+    auto level_start = std::chrono::steady_clock::now();
+    world_dir = props["level-name"];
+    log_info("Preparing start region for dimension minecraft:overworld");
+    setup_world();  // generator + spawn search (generates the spawn chunks)
+    auto secs = [](auto since) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count(); };
+    log_info("Time elapsed: %lld ms", (long long)(secs(level_start) * 1000));
+    log_info("Done preparing level \"%s\" (%.3fs)", props["level-name"].c_str(), secs(level_start));
+    build_commands_packet();
+    register_core_handlers();
+    register_command_handlers();
+    register_paper_commands();
+    on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
+    start_game();  // tick thread (game/tick.hpp)
+    log_info("Running delayed init tasks");
+    log_info("Done (%.3fs)! For help, type \"help\"", secs(boot));
+
+    console::complete = [](const std::string& text) {
+        std::promise<std::pair<size_t, std::vector<std::string>>> done;
+        auto result = done.get_future();
+        run_on_tick([&] {  // suggestions read game state: tick thread only
+            auto [start, list] = suggestions(text, console_source());
+            std::vector<std::string> out;
+            for (auto& s : list) out.push_back(s.text);
+            done.set_value({start, out});
+        });
+        return result.get();
+    };
+    std::thread([] {
+        // A pipe or file ending means whoever drove the console is gone: stop like `stop`. /dev/null (systemd,
+        // backgrounded shells) is a character device and ends at once, so it leaves the server running.
+        struct stat st{};
+        bool stop_on_eof = fstat(0, &st) == 0 && !S_ISCHR(st.st_mode);
+        console::run(server_dir + "/.console_history", [](const std::string& raw) {
+            std::string line = raw;
+            line.erase(0, line.find_first_not_of(' '));
+            while (!line.empty() && line.back() == ' ') line.pop_back();
+            if (!line.empty() && line[0] == '/') line.erase(0, 1);  // Paper accepts both
+            if (line.empty()) return;
+            run_on_tick([line] { if (!plugins::console_command(line)) run_command(nullptr, line); });
+        }, [stop_on_eof] { if (stop_on_eof) shutdown_requested = 1; });
     }).detach();
 
     std::thread([] {  // autosave every 5 s; on stop/Ctrl+C save everything and exit
@@ -176,10 +234,14 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             if (shutdown_requested == 1) {
                 shutdown_requested = 2;
+                log_info("Stopping server");
                 plugins::stop();  // onDisable before the world is saved
                 request_stop();  // saves on the tick thread, then exits
             }
-            if (tick % 25 == 24) world.save_dirty();
+            if (tick % 25 == 24 && !autosave_off && shutdown_requested == 0) {
+                world.save_dirty();
+                run_on_tick(save_level);
+            }
         }
     }).detach();
 
