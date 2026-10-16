@@ -1,6 +1,6 @@
 #pragma once
 #include "gen/ids.hpp"
-#include "protocol.hpp"
+#include "net.hpp"
 #include "light/light.hpp"
 
 #include <algorithm>
@@ -12,13 +12,124 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <future>
+#include <thread>
+#include <cmath>
+#include <iterator>
+#include <string>
+#include <vector>
+
+#include <zlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 // Overworld dimension: y -64..319, 24 sections of 16x16x16.
 inline constexpr int MIN_Y = -64, HEIGHT = 384, SECTIONS = HEIGHT / 16;
 
+// Vanilla PalettedContainer: one value (bits 0), a palette of up to 2^MAX_BITS ids packed MIN_BITS..MAX_BITS
+// per entry, or raw global ids (GLOBAL_BITS). Entries never span longs, so the in-memory longs ARE the
+// network/disk encoding. N = 4096 (blocks) or 64 (biomes); index = (y*16 + z)*16 + x (or 4x4x4 cells).
+template <int N, int MIN_BITS, int MAX_BITS, int GLOBAL_BITS>
+struct Paletted {
+    std::vector<uint16_t> palette{0};  // empty in global mode
+    std::vector<uint64_t> data;
+    uint8_t bits = 0;
+
+    uint16_t get(int i) const {
+        if (!bits) return palette[0];
+        int per = 64 / bits;
+        uint16_t v = uint16_t((data[size_t(i / per)] >> ((i % per) * bits)) & ((1u << bits) - 1));
+        return bits > MAX_BITS ? v : palette[v];
+    }
+    void set(int i, uint16_t v) {
+        if (!bits && palette[0] == v) return;
+        uint16_t idx = v;
+        if (bits <= MAX_BITS) {
+            auto it = std::find(palette.begin(), palette.end(), v);
+            idx = uint16_t(it - palette.begin());
+            if (it == palette.end()) {
+                palette.push_back(v);
+                if (palette.size() > (bits ? 1u << bits : 1u)) {
+                    resize(palette.size());
+                    if (bits > MAX_BITS) idx = v;
+                }
+            }
+        }
+        put(i, idx);
+    }
+    void fill(uint16_t v) { palette.assign(1, v), data.clear(), data.shrink_to_fit(), bits = 0; }
+    // Rebuilds with only the values in use (generation leaves stale palette entries behind).
+    void compact() {
+        if (!bits) return;
+        std::array<uint16_t, N> all;
+        for (int i = 0; i < N; i++) all[i] = get(i);
+        std::vector<uint16_t> used;
+        for (uint16_t v : all)
+            if (std::find(used.begin(), used.end(), v) == used.end() && used.size() <= (1u << MAX_BITS)) used.push_back(v);
+        if (used.size() == 1) return fill(used[0]);
+        fill(used[0]);
+        for (int i = 0; i < N; i++) set(i, all[i]);
+    }
+    void write(Writer& w) const {
+        w.u8(bits);
+        if (!bits) { w.varint(palette[0]); return; }
+        if (bits <= MAX_BITS) {
+            w.varint(int32_t(palette.size()));
+            for (uint16_t v : palette) w.varint(v);
+        }
+        size_t at = w.b.size();
+        w.b.resize(at + data.size() * 8);
+        for (uint64_t l : data)
+            for (int k = 7; k >= 0; k--) w.b[at++] = uint8_t(l >> (k * 8));
+    }
+    void read(Reader& r) {
+        int b = r.u8();
+        if (b == 0) return fill(uint16_t(r.varint()));
+        if (b < MIN_BITS || (b > MAX_BITS && b != GLOBAL_BITS)) throw std::runtime_error("bad paletted bits");
+        bits = uint8_t(b);
+        palette.clear();
+        if (bits <= MAX_BITS)
+            for (int n = r.varint(); n > 0; n--) palette.push_back(uint16_t(r.varint()));
+        data.assign(size_t((N + 64 / bits - 1) / (64 / bits)), 0);
+        for (auto& l : data) l = uint64_t(r.i64());
+    }
+
+private:
+    void put(int i, uint16_t idx) {
+        int per = 64 / bits, sh = (i % per) * bits;
+        uint64_t& l = data[size_t(i / per)];
+        l = (l & ~(uint64_t((1u << bits) - 1) << sh)) | uint64_t(idx) << sh;
+    }
+    void resize(size_t entries) {  // palette already holds the new value; re-pack existing entries
+        std::array<uint16_t, N> all;
+        for (int i = 0; i < N; i++) all[i] = get(i);
+        int nb = std::max(MIN_BITS, int(std::bit_width(entries - 1)));
+        bool global = nb > MAX_BITS;
+        bits = uint8_t(global ? GLOBAL_BITS : nb);
+        data.assign(size_t((N + 64 / bits - 1) / (64 / bits)), 0);
+        if (global) {
+            palette.clear();
+            for (int i = 0; i < N; i++) put(i, all[i]);
+        } else {
+            for (int i = 0; i < N; i++) put(i, uint16_t(std::find(palette.begin(), palette.end(), all[i]) - palette.begin()));
+        }
+    }
+};
+
+inline constexpr int BLOCK_GLOBAL_BITS = std::bit_width(unsigned(BLOCK_STATE_COUNT - 1));
+inline constexpr int BIOME_GLOBAL_BITS = std::bit_width(unsigned(biomes::COUNT - 1));
+
 struct Section {
-    std::array<uint16_t, 4096> blocks{};  // index = (y*16 + z)*16 + x
-    std::array<uint16_t, 64> biomes{};    // 4x4x4 cells, same order
+    Paletted<4096, 4, 8, BLOCK_GLOBAL_BITS> blocks;  // index = (y*16 + z)*16 + x
+    Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
@@ -34,20 +145,28 @@ struct Chunk {
     int cx, cz;
     std::array<Section, SECTIONS> sections;
     std::vector<BlockEntity> block_entities;
-    std::mutex m;        // guards sections against concurrent edit + encode
+    std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
+    bool on_disk = false;
+    std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
+    uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
 
     uint16_t get(int x, int y, int z) const {
-        return sections[(y - MIN_Y) >> 4].blocks[(((y - MIN_Y) & 15) * 16 + z) * 16 + x];
+        return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
     }
     void set(int x, int y, int z, uint16_t s) {
-        sections[(y - MIN_Y) >> 4].blocks[(((y - MIN_Y) & 15) * 16 + z) * 16 + x] = s;
+        sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
+        body.reset();
         if (!block_entities.empty())
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
-    void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes[((qy & 3) * 4 + qz) * 4 + qx] = b; }
-    uint16_t get_biome(int qx, int qy, int qz) const { return sections[qy >> 2].biomes[((qy & 3) * 4 + qz) * 4 + qx]; }
+    void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes.set(((qy & 3) * 4 + qz) * 4 + qx, b); }
+    uint16_t get_biome(int qx, int qy, int qz) const { return sections[qy >> 2].biomes.get(((qy & 3) * 4 + qz) * 4 + qx); }
+};
+using ChunkPtr = std::shared_ptr<Chunk>;
+struct ChunkCancelled : std::runtime_error {  // World::request of a chunk nobody viewed any more
+    ChunkCancelled() : std::runtime_error("chunk request cancelled") {}
 };
 
 enum : uint8_t { STATE_AIR = 1, STATE_FLUID = 2 };
@@ -63,54 +182,26 @@ inline const std::array<uint8_t, BLOCK_STATE_COUNT>& state_flags() {
     return flags;
 }
 
-// Paletted container (single / linear-or-hashmap / global), matches vanilla Strategy.
-template <size_t N>
-inline void write_paletted(Writer& w, const std::array<uint16_t, N>& vals, int min_bits, int max_bits, int global_bits) {
-    std::vector<uint16_t> palette;
-    for (uint16_t v : vals)
-        if (std::find(palette.begin(), palette.end(), v) == palette.end()) {
-            palette.push_back(v);
-            if (int(palette.size()) > (1 << max_bits)) break;
-        }
-    if (palette.size() == 1) {
-        w.u8(0).varint(palette[0]);
-        return;
-    }
-    int bits = std::bit_width(palette.size() - 1);
-    bool global = bits > max_bits;
-    bits = global ? global_bits : std::max(bits, min_bits);
-    w.u8(uint8_t(bits));
-    if (!global) {
-        w.varint(int32_t(palette.size()));
-        for (uint16_t v : palette) w.varint(v);
-    }
-    int per_long = 64 / bits;
-    std::vector<uint64_t> longs((N + per_long - 1) / per_long);
-    for (size_t i = 0; i < N; i++) {
-        uint64_t idx = global ? vals[i] : uint64_t(std::find(palette.begin(), palette.end(), vals[i]) - palette.begin());
-        longs[i / per_long] |= idx << ((i % per_long) * bits);
-    }
-    for (uint64_t l : longs) w.i64(int64_t(l));  // fixed-size: no length prefix
-}
-
-// Body of clientbound level_chunk_with_light (without packet id).
-// Light comes from light::write (call light::ensure_lit first); it is taken before c.m (lock order: light, chunk).
-inline void write_chunk(Writer& w, Chunk& c) {
-    Writer light_data;
-    light::write(light_data, c.cx, c.cz);
-    std::lock_guard lock(c.m);
-    w.i32(c.cx).i32(c.cz);
+// level_chunk_with_light (packet id + body + light), after `reserve` bytes left free at the front. Caller holds c.m;
+// `light` is the light tail from light::write (taken before c.m: lock order is light, then chunk).
+inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const Writer& light) {
+    Writer w;
+    w.b.reserve(80 << 10);
+    w.b.resize(reserve);
+    w.varint(play_cb::level_chunk_with_light).i32(c.cx).i32(c.cz);
 
     // Heightmaps WORLD_SURFACE(1), MOTION_BLOCKING(4), MOTION_BLOCKING_NO_LEAVES(5): 9 bits, 7 per long.
     // ponytail: all three = highest non-air block; split once leaves/fluids/glass matter.
     std::array<uint64_t, 37> hm{};
+    int top = SECTIONS - 1;  // skip all-air sections from the top
+    while (top >= 0 && !c.sections[size_t(top)].blocks.bits && c.sections[size_t(top)].blocks.palette[0] == blocks::air) top--;
     for (int z = 0; z < 16; z++)
         for (int x = 0; x < 16; x++) {
             int h = 0;
-            for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--)
+            for (int y = MIN_Y + top * 16 + 15; y >= MIN_Y; y--)
                 if (c.get(x, y, z) != blocks::air) { h = y - MIN_Y + 1; break; }
             int i = z * 16 + x;
-            hm[i / 7] |= uint64_t(h) << ((i % 7) * 9);
+            hm[size_t(i / 7)] |= uint64_t(h) << ((i % 7) * 9);
         }
     w.varint(3);
     for (int type : {1, 4, 5}) {
@@ -118,35 +209,123 @@ inline void write_chunk(Writer& w, Chunk& c) {
         for (uint64_t l : hm) w.i64(int64_t(l));
     }
 
-    Writer data;
-    const int block_bits = std::bit_width(unsigned(BLOCK_STATE_COUNT - 1));
-    const int biome_bits = std::bit_width(unsigned(biomes::COUNT - 1));
+    // Section data, written in place behind a 3-byte padded VarInt length (valid for the vanilla reader).
+    size_t len_at = w.b.size();
+    w.b.resize(len_at + 3);
     for (auto& s : c.sections) {
         int16_t non_air = 0, fluids = 0;
-        for (uint16_t b : s.blocks) {
-            uint8_t f = state_flags()[b];
-            non_air += !(f & STATE_AIR);
-            fluids += (f & STATE_FLUID) != 0;
+        const auto& f = state_flags();
+        if (!s.blocks.bits) {
+            uint8_t fl = f[s.blocks.palette[0]];
+            non_air = (fl & STATE_AIR) ? 0 : 4096, fluids = (fl & STATE_FLUID) ? 4096 : 0;
+        } else {
+            for (int i = 0; i < 4096; i++) {
+                uint8_t fl = f[s.blocks.get(i)];
+                non_air += !(fl & STATE_AIR);
+                fluids += (fl & STATE_FLUID) != 0;
+            }
         }
         // The client skips all fluid checks (swimming, buoyancy) in sections whose fluid count is 0.
-        data.i16(non_air).i16(fluids);
-        write_paletted(data, s.blocks, 4, 8, block_bits);
-        write_paletted(data, s.biomes, 1, 3, biome_bits);
+        w.i16(non_air).i16(fluids);
+        s.blocks.write(w);
+        s.biomes.write(w);
     }
-    w.byte_array(data.b);
+    size_t n = w.b.size() - len_at - 3;
+    w.b[len_at] = uint8_t(n & 0x7F) | 0x80, w.b[len_at + 1] = uint8_t((n >> 7) & 0x7F) | 0x80, w.b[len_at + 2] = uint8_t(n >> 14);
     w.varint(int32_t(c.block_entities.size()));
     for (auto& e : c.block_entities) {
         w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
         w.bytes(e.nbt.data(), e.nbt.size());
     }
-
-    w.bytes(light_data.b);
+    w.bytes(light.b);
+    return std::move(w.b);
 }
+
+// The chunk's packet as a ready frame for the current network settings (net.hpp), cached in the chunk until
+// it changes. Compressed (~3 KB) frames stay cached; uncompressed ones (~75 KB) are dropped at autosave.
+inline std::shared_ptr<const std::vector<uint8_t>> chunk_frame(Chunk& c) {
+    Writer light;
+    std::unique_lock lock(c.m);
+    while (!c.body) {  // light first (its lock comes before c.m); retry if it changed meanwhile
+        lock.unlock();
+        light.b.clear();
+        uint32_t v = light::write(light, c);
+        lock.lock();
+        if (v == c.light_version) break;
+    }
+    if (c.body) return c.body;
+    std::vector<uint8_t> f;
+    if (compression_threshold >= 0) {
+        auto pk = chunk_packet(c, 0, light);
+        frame_packet(f, pk.data(), pk.size(), true);
+        f.shrink_to_fit();
+    } else {
+        f = chunk_packet(c, 3, light);  // frame length in place: no copy of the packet
+        size_t n = f.size() - 3;
+        f[0] = uint8_t(n & 0x7F) | 0x80, f[1] = uint8_t((n >> 7) & 0x7F) | 0x80, f[2] = uint8_t(n >> 14);
+    }
+    return c.body = std::make_shared<const std::vector<uint8_t>>(std::move(f));
+}
+
+// Body of clientbound level_chunk_with_light (without packet id).
+inline void write_chunk(Writer& w, Chunk& c) {
+    Writer light;
+    light::write(light, c);
+    std::lock_guard lock(c.m);
+    auto pk = chunk_packet(c, 0, light);
+    w.bytes(pk.data() + 1, pk.size() - 1);  // packet id is one byte
+}
+
+// Worker pool for chunk load/generate/encode, one thread per core of the CPU quota (cgroup cpu.max) or core
+// count, max 4. Workers run at nice +5 (Linux) so the tick thread preempts them. `worker-threads` in
+// server.properties overrides (World::start).
+struct ChunkPool {
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<std::function<void()>> q;
+    std::vector<std::thread> threads;
+
+    static int auto_size() {
+        double cpus = std::thread::hardware_concurrency();
+        std::ifstream f("/sys/fs/cgroup/cpu.max");  // "150000 100000" in a --cpus=1.5 container
+        std::string quota;
+        double period;
+        if (f >> quota >> period && quota != "max" && period > 0) cpus = std::min(cpus, std::stod(quota) / period);
+        return std::clamp(int(std::ceil(cpus - 0.01)), 1, 4);
+    }
+    void start(int n) {
+        for (int i = 0; i < n; i++)
+            threads.emplace_back([this] {
+#ifdef __linux__
+                setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 5);
+#endif
+                for (;;) {
+                    std::function<void()> f;
+                    {
+                        std::unique_lock lock(m);
+                        cv.wait(lock, [&] { return !q.empty(); });
+                        f = std::move(q.front());
+                        q.pop_front();
+                    }
+                    f();
+                }
+            });
+        for (auto& t : threads) t.detach();
+    }
+    void submit(std::function<void()> f) {
+        {
+            std::lock_guard lock(m);
+            q.push_back(std::move(f));
+        }
+        cv.notify_one();
+    }
+};
 
 inline void generate_flat(Chunk& c);
 
-// On-disk chunk: magic + raw little-endian sections (blocks then biomes).
-// ponytail: uncompressed ~200 KB per modified chunk; switch to Anvil region files (zlib NBT) for vanilla compatibility.
+// On-disk chunk: c.<x>.<z>.bin = "CPP2", raw size (u32 LE), then zlib of the 24 sections in network form
+// (blocks then biomes paletted containers). "CPP1" (uncompressed flat arrays) is still read.
+// ponytail: one file per chunk; switch to Anvil region files (NBT, block names) for vanilla compatibility.
 inline std::string world_dir = "world";  // server.properties level-name
 
 // <world_dir>/level.dat: per-world settings as key=value text lines (vanilla keeps these in level.dat NBT).
@@ -175,113 +354,205 @@ inline void write_level_data(const std::map<std::string, std::string>& changes) 
 inline std::string chunk_path(int cx, int cz) {
     return world_dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
 }
-inline constexpr uint32_t CHUNK_MAGIC = 0x43505031;  // "CPP1"
+inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
 
 inline bool load_chunk(Chunk& c) {
     std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
-    uint32_t magic = 0;
-    if (!f.read(reinterpret_cast<char*>(&magic), 4) || magic != CHUNK_MAGIC) return false;
-    for (auto& s : c.sections) {
-        f.read(reinterpret_cast<char*>(s.blocks.data()), sizeof s.blocks);
-        f.read(reinterpret_cast<char*>(s.biomes.data()), sizeof s.biomes);
-    }
-    if (!f) return false;
-    uint32_t n = 0;  // block entities (optional trailer): count, then x z y type len nbt
-    if (f.read(reinterpret_cast<char*>(&n), 4))
-        for (uint32_t i = 0; i < n && f; i++) {
-            BlockEntity e;
-            uint32_t len = 0;
-            f.read(reinterpret_cast<char*>(&e.x), 1).read(reinterpret_cast<char*>(&e.z), 1);
-            f.read(reinterpret_cast<char*>(&e.y), 2).read(reinterpret_cast<char*>(&e.type), 4).read(reinterpret_cast<char*>(&len), 4);
-            e.nbt.resize(len);
-            f.read(reinterpret_cast<char*>(e.nbt.data()), len);
-            if (f) c.block_entities.push_back(std::move(e));
+    uint32_t magic = 0, raw = 0;
+    if (!f.read(reinterpret_cast<char*>(&magic), 4)) return false;
+    if (magic == CHUNK_MAGIC_V1) {
+        std::vector<uint16_t> b(4096 + 64);
+        for (auto& s : c.sections) {
+            if (!f.read(reinterpret_cast<char*>(b.data()), std::streamsize(b.size() * 2))) return false;
+            for (int i = 0; i < 4096; i++) s.blocks.set(i, b[size_t(i)]);
+            for (int i = 0; i < 64; i++) s.biomes.set(i, b[size_t(4096 + i)]);
+            s.blocks.compact(), s.biomes.compact();
         }
-    return true;
+        return c.on_disk = true;
+    }
+    if (magic != CHUNK_MAGIC || !f.read(reinterpret_cast<char*>(&raw), 4) || raw > (4u << 20)) return false;
+    std::vector<uint8_t> z(std::istreambuf_iterator<char>(f), {}), out(raw);
+    uLongf n = raw;
+    if (uncompress(out.data(), &n, z.data(), uLong(z.size())) != Z_OK || n != raw) return false;
+    Reader r(out);
+    for (auto& s : c.sections) s.blocks.read(r), s.biomes.read(r);
+    if (r.i < out.size())  // block entities: count, then x z y type nbt-length nbt
+        for (int n = r.varint(); n > 0; n--) {
+            BlockEntity e;
+            e.x = r.u8(), e.z = r.u8(), e.y = int16_t(r.varint()), e.type = r.varint();
+            int len = r.varint();
+            e.nbt.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + size_t(len)));
+            r.i += size_t(len);
+            c.block_entities.push_back(std::move(e));
+        }
+    return c.on_disk = true;
 }
 
 inline void save_chunk(Chunk& c) {
     std::filesystem::create_directories(world_dir + "/chunks");
     std::string path = chunk_path(c.cx, c.cz), tmp = path + ".tmp";
+    Writer w;
     {
         std::lock_guard lock(c.m);
-        std::ofstream f(tmp, std::ios::binary);
-        f.write(reinterpret_cast<const char*>(&CHUNK_MAGIC), 4);
-        for (auto& s : c.sections) {
-            f.write(reinterpret_cast<const char*>(s.blocks.data()), sizeof s.blocks);
-            f.write(reinterpret_cast<const char*>(s.biomes.data()), sizeof s.biomes);
-        }
-        uint32_t n = uint32_t(c.block_entities.size());
-        f.write(reinterpret_cast<const char*>(&n), 4);
-        for (auto& e : c.block_entities) {
-            uint32_t len = uint32_t(e.nbt.size());
-            f.write(reinterpret_cast<const char*>(&e.x), 1).write(reinterpret_cast<const char*>(&e.z), 1);
-            f.write(reinterpret_cast<const char*>(&e.y), 2).write(reinterpret_cast<const char*>(&e.type), 4);
-            f.write(reinterpret_cast<const char*>(&len), 4).write(reinterpret_cast<const char*>(e.nbt.data()), len);
-        }
+        for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
+        w.varint(int32_t(c.block_entities.size()));
+        for (auto& e : c.block_entities)
+            w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
         c.dirty = false;
     }
+    std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
+    uLongf n = uLongf(z.size());
+    compress2(z.data(), &n, w.b.data(), uLong(w.b.size()), 1);  // level 1: ~3x faster than 6, barely bigger
+    {
+        std::ofstream f(tmp, std::ios::binary);
+        uint32_t raw = uint32_t(w.b.size());
+        f.write(reinterpret_cast<const char*>(&CHUNK_MAGIC), 4).write(reinterpret_cast<const char*>(&raw), 4);
+        f.write(reinterpret_cast<const char*>(z.data()), std::streamsize(n));
+    }
     std::filesystem::rename(tmp, path);  // atomic replace: a crash never leaves a half-written chunk
+    c.on_disk = true;
 }
 
-// Chunk cache. Chunks are never unloaded, so references stay valid.
-// ponytail: unbounded memory (~200 KB/chunk); add unloading once worlds get big.
+// Chunk cache with in-flight futures: every chunk is loaded/generated exactly once, on the worker pool
+// (request) or inline (get_ptr) by whoever asks first; later askers share the future. Chunks no player views
+// are saved (if dirty or never stored) and dropped by save_dirty(), but only when nothing else holds them.
 struct World {
+    using Key = std::pair<int, int>;
     std::mutex m;
-    std::map<std::pair<int, int>, std::unique_ptr<Chunk>> chunks;
+    std::map<Key, ChunkPtr> chunks;
+    std::map<Key, std::shared_future<ChunkPtr>> inflight;
+    std::map<Key, int> viewers;  // players whose view square contains the chunk (ViewTicket)
+    ChunkPool pool;
+    bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
 
-    Chunk& get(int cx, int cz) {
-        {
-            std::lock_guard lock(m);
-            auto it = chunks.find({cx, cz});
-            if (it != chunks.end()) return *it->second;
-        }
-        // Load/generate outside the map lock; if another thread raced us, keep its chunk.
-        // ponytail: racing threads may both generate the same chunk; add an in-flight set if that shows up.
-        auto c = std::make_unique<Chunk>();
-        c->cx = cx;
-        c->cz = cz;
-        if (!load_chunk(*c)) generator(*c);
-        std::lock_guard lock(m);
-        auto& slot = chunks[{cx, cz}];
-        if (!slot) slot = std::move(c);
-        return *slot;
+    void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }
+
+    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded.
+    std::shared_future<ChunkPtr> request(int cx, int cz) {
+        std::shared_ptr<std::promise<ChunkPtr>> job;
+        auto f = find_or_claim(cx, cz, job);
+        if (job)
+            pool.submit([this, cx, cz, job] {
+                if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
+                produce(cx, cz, *job, true);
+            });
+        return f;
     }
+    // Sync: loads/generates on the calling thread unless another thread already is.
+    ChunkPtr get_ptr(int cx, int cz) {
+        std::shared_ptr<std::promise<ChunkPtr>> job;
+        auto f = find_or_claim(cx, cz, job);
+        if (job) produce(cx, cz, *job, false);
+        return f.get();
+    }
+    // Reference stays valid while a player views the chunk (or the caller holds a ChunkPtr): unloading only
+    // happens in save_dirty(). Prefer get_ptr() off the tick thread.
+    Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
 
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
-        Chunk& c = get(x >> 4, z >> 4);
-        std::lock_guard lock(c.m);
-        return c.get(x & 15, y, z & 15);
+        ChunkPtr c = get_ptr(x >> 4, z >> 4);
+        std::lock_guard lock(c->m);
+        return c->get(x & 15, y, z & 15);
     }
 
     bool set_block(int x, int y, int z, uint16_t state) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
-        Chunk& c = get(x >> 4, z >> 4);
+        ChunkPtr c = get_ptr(x >> 4, z >> 4);
         std::lock_guard light_lock(light::mutex());  // the light engine reads chunks under this lock
         uint16_t old;
         {
-            std::lock_guard lock(c.m);
-            old = c.get(x & 15, y, z & 15);
-            c.set(x & 15, y, z & 15, state);
-            c.dirty = true;
+            std::lock_guard lock(c->m);
+            old = c->get(x & 15, y, z & 15);
+            c->set(x & 15, y, z & 15, state);
+            c->dirty = true;
         }
         light::block_changed(x, y, z, old, state);
         return true;
     }
 
+    // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
     int save_dirty() {
-        std::vector<Chunk*> list;
+        std::vector<ChunkPtr> dirty, idle;
         {
             std::lock_guard lock(m);
-            for (auto& [k, c] : chunks)
-                if (c->dirty) list.push_back(c.get());
+            for (auto& [k, c] : chunks) {
+                if (compression_threshold < 0) {
+                    std::lock_guard cl(c->m);  // uncompressed frames are ~75 KB: only for the sends right after generation
+                    c->body.reset();
+                }
+                if (c->dirty) dirty.push_back(c);
+                else if (!viewed(k) && c.use_count() == 1) idle.push_back(c);
+            }
         }
-        for (Chunk* c : list) save_chunk(*c);
-        return int(list.size());
+        int saved = int(dirty.size());
+        for (auto& c : dirty) save_chunk(*c);
+        for (auto& c : idle)
+            if (cache_generated && !c->on_disk) save_chunk(*c);
+        std::lock_guard lock(m);
+        for (auto& c : dirty) idle.push_back(std::move(c));
+        for (auto& c : idle) {
+            Key k{c->cx, c->cz};
+            auto it = chunks.find(k);  // use_count 2 = map + `idle`: nobody else picked it up meanwhile
+            if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
+                chunks.erase(it);
+        }
+#ifdef __GLIBC__
+        malloc_trim(0);  // hand freed chunk memory (and the join burst buffers) back to the OS
+#endif
+        return saved;
     }
+    size_t loaded() {
+        std::lock_guard lock(m);
+        return chunks.size();
+    }
+
+    // View square bookkeeping (ViewTicket): +1/-1 for every chunk of the square.
+    void view(int cx, int cz, int r, int delta) {
+        std::lock_guard lock(m);
+        for (int x = cx - r; x <= cx + r; x++)
+            for (int z = cz - r; z <= cz + r; z++)
+                if ((viewers[{x, z}] += delta) <= 0) viewers.erase({x, z});
+    }
+
+private:
+    bool viewed(const Key& k) const { return viewers.count(k) != 0; }
+    bool cancel_unviewed(int cx, int cz, std::promise<ChunkPtr>& job) {
+        {
+            std::lock_guard lock(m);
+            if (viewed({cx, cz})) return false;
+            inflight.erase({cx, cz});
+        }
+        job.set_exception(std::make_exception_ptr(ChunkCancelled()));
+        return true;
+    }
+
+    std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job) {
+        std::lock_guard lock(m);
+        if (auto it = chunks.find({cx, cz}); it != chunks.end()) {
+            std::promise<ChunkPtr> p;
+            p.set_value(it->second);
+            return p.get_future().share();
+        }
+        if (auto it = inflight.find({cx, cz}); it != inflight.end()) return it->second;
+        job = std::make_shared<std::promise<ChunkPtr>>();
+        return inflight[{cx, cz}] = job->get_future().share();
+    }
+    void produce(int cx, int cz, std::promise<ChunkPtr>& job, bool encode);
+};
+
+// Keeps a player's view square counted in World::viewers; released when the player is destroyed.
+struct ViewTicket {
+    World* w = nullptr;
+    int cx = 0, cz = 0, r = -1;
+    void move(World& world, int ncx, int ncz, int nr) {
+        if (w) w->view(cx, cz, r, -1);
+        w = &world, cx = ncx, cz = ncz, r = nr;
+        w->view(cx, cz, r, +1);
+    }
+    ~ViewTicket() { if (w) w->view(cx, cz, r, -1); }
 };
 
 // Superflat: bedrock, 2 dirt, grass, plains.
@@ -294,4 +565,30 @@ inline void generate_flat(Chunk& c) {
             c.set(x, -62, z, blocks::dirt);
             c.set(x, -61, z, blocks::grass_block);
         }
+}
+
+inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool encode) {
+    try {
+        auto c = std::make_shared<Chunk>();
+        c->cx = cx, c->cz = cz;
+        bool loaded = load_chunk(*c);
+        if (!loaded) {
+            generator(*c);
+            for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
+        }
+        light::produced(*c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
+        if (encode) chunk_frame(*c);
+        {
+            std::lock_guard lock(m);
+            chunks[{cx, cz}] = c;
+            inflight.erase({cx, cz});
+        }
+        job.set_value(c);
+    } catch (...) {
+        {
+            std::lock_guard lock(m);
+            inflight.erase({cx, cz});
+        }
+        job.set_exception(std::current_exception());
+    }
 }

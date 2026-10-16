@@ -8,8 +8,10 @@
 //    vanilla. Light of a chunk whose neighbours light later changes; take_changes() reports it.
 //  * Without a pipeline (flat worlds) ensure_lit lights lazily: it generates the 5x5 around the chunk, then
 //    initializes and lights the 3x3 (light reaches < 16 blocks, so the chunk's light is then final).
-//  * ensure_lit(cx, cz) before a chunk is sent. With a pipeline it also covers chunks loaded from disk: it
-//    lights the generated version and applies the saved edits as block changes (light is not persisted).
+//  * produced() (World::produce, worker) lights the chunk's 3x3 through the pipeline; for a chunk loaded from
+//    disk it lights the generated version and applies the saved edits as block changes (light is not
+//    persisted). ensure_lit() before a send is then a check (flat worlds: the lazy lighting above).
+//  * Light changes reset the chunk's cached frame (Chunk::body) and bump Chunk::light_version.
 //  * World::set_block calls block_changed() with mutex() held; the work is queued (checkBlock) and runs on
 //    the next take_changes() (once per tick) or write().
 #include <cstdint>
@@ -24,8 +26,9 @@ namespace worldgen { class Pipeline; }
 namespace light {
 void attach(World& world, worldgen::Pipeline& pipeline);  // before the first chunk is generated
 std::mutex& mutex();  // guards the engine and every block write to a chunk the engine may read
-void ensure_lit(World& world, int cx, int cz);  // any thread; call without mutex() held
-void write(Writer& w, int cx, int cz);          // light half of level_chunk_with_light (ensure_lit first)
+void produced(Chunk& c, bool loaded);       // World::produce, before the chunk is published (worker thread)
+void ensure_lit(World& world, Chunk& c);    // before sending; any thread, without mutex() or c.m held
+uint32_t write(Writer& w, Chunk& c);        // light tail of level_chunk_with_light; returns c.light_version
 void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state);  // mutex() held
 
 struct Change {
