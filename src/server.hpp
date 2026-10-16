@@ -29,7 +29,8 @@ inline std::map<std::string, std::string> props = {
     {"level-name", "world"},
     {"level-seed", ""},
     {"level-type", "normal"},  // normal | flat
-    {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
+    {"worldgen-stages", "surface"},
+    {"network-compression-threshold", "256"},  // like vanilla; -1 disables (docs/performance.md)  // noise | surface (debug: stop after a vanilla worldgen stage)
 };
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
@@ -74,8 +75,13 @@ struct Player {
     std::vector<std::pair<std::pair<int, int>, std::shared_future<ChunkPtr>>> chunk_queue;  // nearest first
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
-    void send(const Writer& body) { out.push(body.b); }
-    void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(b); }
+    void send(const Writer& body) {
+        thread_local std::vector<uint8_t> f;
+        f.clear();
+        frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);  // net.hpp
+        out.push_framed(f);
+    }
+    void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
         Writer w;
         w.varint(play_cb::system_chat);
@@ -173,6 +179,7 @@ inline void deliver_chunks(Player& p);
 
 inline void setup_world() {
     world.start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
+    compression_threshold = std::stoi(props["network-compression-threshold"]);
     on_player_sync(deliver_chunks);
     auto level = read_level_data();
     std::string type, seed_str;
@@ -324,11 +331,7 @@ inline int menu_to_inv(int slot) {
 
 inline int view_distance() { return std::stoi(props["view-distance"]); }
 
-inline void push_chunk(Player& p, Chunk& c) {
-    auto body = chunk_body(c, play_cb::level_chunk_with_light);
-    p.out.push_framed(*body);
-    p.out.push_framed(chunk_light_tail());
-}
+inline void push_chunk(Player& p, Chunk& c) { p.out.push_framed(*chunk_frame(c)); }
 inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *world.get_ptr(cx, cz)); }
 
 // Tick thread (on_player_sync): send queued chunks whose generation finished, nearest first, a bounded batch per tick.

@@ -48,6 +48,8 @@ def rss():  # MiB
 def cpu_ticks():
     f = proc("stat").rsplit(")", 1)[1].split()
     return int(f[11]) + int(f[12])  # utime + stime (USER_HZ = 100)
+def tx_bytes():  # container network namespace = only the server
+    return sum(int(l.split()[9]) for l in proc("net/dev").splitlines()[2:] if not l.strip().startswith("lo:"))
 def cpu_pct(seconds):
     t0, c0 = time.time(), cpu_ticks()
     time.sleep(seconds)
@@ -65,12 +67,13 @@ try:
     row("idle RSS, 0 players", "%.1f MiB" % rss()[0])
     row("CPU idle, 0 players", f"{cpu_pct(10):.1f} %")
 
-    t0 = time.time()
+    t0, tx0 = time.time(), tx_bytes()
     c, n = login("Bench", "127.0.0.1", args.port, view=args.view)
     join = time.time() - t0
     side = 2 * args.view + 1
     assert n == side * side, n
     row(f"join, {n} chunks (view {args.view})", f"{join:.2f} s ({1000 * join / n:.1f} ms/chunk)")
+    row("join: bytes sent", "%.1f MiB" % ((tx_bytes() - tx0) / 2**20))
     row("RSS after join", "%.1f MiB" % rss()[0])
 
     # Reader thread: drain packets, track the client's chunk set.
