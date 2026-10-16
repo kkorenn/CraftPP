@@ -1,6 +1,7 @@
 #pragma once
 // Shared server state: config, players, broadcast, persistence, chunk streaming.
 #include "gen/ids.hpp"
+#include "log.hpp"
 #include "net.hpp"
 #include "world.hpp"
 #include "game/player_state.hpp"
@@ -20,15 +21,16 @@
 #include <random>
 #include <thread>
 
+// Filled from server.properties by load_properties (paper.hpp), which also supplies vanilla's defaults.
 inline std::map<std::string, std::string> props = {
-    {"motd", "A CraftPP Server"},
+    {"motd", "A Minecraft Server"},
     {"server-port", "25565"},
     {"max-players", "20"},
-    {"view-distance", "8"},
-    {"gamemode", "creative"},
+    {"view-distance", "10"},
+    {"gamemode", "survival"},
     {"level-name", "world"},
     {"level-seed", ""},
-    {"level-type", "normal"},  // normal | flat
+    {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
     {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
 };
 inline std::atomic<int> next_entity_id{1};
@@ -70,6 +72,7 @@ struct Player {
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
     Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread
+    std::string quit_reason;   // logged as "<name> lost connection: <reason>" (empty = "Disconnected")
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
     void send(const Writer& body) { out.push(body.b); }
@@ -170,14 +173,14 @@ inline void setup_world() {
     std::string type, seed_str;
     if (level.count("level-type") && level.count("level-seed")) {
         type = level["level-type"], seed_str = level["level-seed"];
-        printf("Using level-type=%s level-seed=%s from %s (server.properties values ignored)\n", type.c_str(),
-               seed_str.c_str(), level_data_path().c_str());
     } else {
         std::error_code ec;
         bool legacy = std::filesystem::is_directory(world_dir + "/chunks", ec) &&
                       !std::filesystem::is_empty(world_dir + "/chunks", ec);
-        type = legacy ? "flat" : props["level-type"] == "flat" ? "flat" : "normal";
-        if (legacy) printf("Existing world without level.dat: keeping it flat\n");
+        std::string want = props["level-type"];
+        for (auto& ch : want) ch = char(tolower((unsigned char)ch));
+        type = legacy || want == "flat" || want == "minecraft:flat" ? "flat" : "normal";
+        if (legacy) log_warn("Existing world without level.dat: keeping it flat");
         seed_str = std::to_string(parse_seed(props["level-seed"]));
         write_level_data({{"level-type", type}, {"level-seed", seed_str}});
     }
@@ -186,7 +189,6 @@ inline void setup_world() {
     int64_t seed = parse_seed(seed_str);
     auto gen = std::make_shared<worldgen::TerrainGenerator>(seed, "vanilla/src/data", props["worldgen-stages"] != "noise");
     world.generator = [gen](Chunk& c) { gen->generate(c); };
-    printf("Level seed %lld\n", (long long)seed);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -195,7 +197,6 @@ inline void setup_world() {
         write_level_data({{"spawn-x", std::to_string(world_spawn.x)}, {"spawn-y", std::to_string(world_spawn.y)},
                           {"spawn-z", std::to_string(world_spawn.z)}});
     }
-    printf("World spawn %d %d %d\n", world_spawn.x, world_spawn.y, world_spawn.z);
 }
 
 
@@ -220,8 +221,8 @@ inline void broadcast(const Writer& body, const Player* except = nullptr) {
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
-    printf("[chat] %s\n", text.c_str());
-    fflush(stdout);
+    char code = logging::color_code(color);
+    log_info("%s%s", code ? (std::string("\xC2\xA7") + code).c_str() : "", text.c_str());
     Writer w;
     w.varint(play_cb::system_chat);
     text_component(w, text, color);
@@ -299,8 +300,7 @@ inline void save_player(const Player& p) {
 
 inline void save_all() {
     for (auto& p : snapshot()) save_player(*p);
-    int n = world.save_dirty();
-    if (n) { printf("Saved %d chunk(s)\n", n); fflush(stdout); }
+    world.save_dirty();
 }
 
 // Creative-menu slot number -> Inventory index (-1 = not a player inventory slot).

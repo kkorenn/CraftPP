@@ -73,8 +73,9 @@ def run_craftpp(center):
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
-                           f"level-name=build/compare-world\nlevel-type=normal\n"
+                           f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
                            f"worldgen-stages={stage}\n")
+    open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
     p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(100):

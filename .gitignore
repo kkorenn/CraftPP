@@ -7,3 +7,17 @@ logs/
 compile_commands.json
 tools/vineflower.jar
 .DS_Store
+# Paper-style files the server creates beside server.properties on first run
+/eula.txt
+/bukkit.yml
+/spigot.yml
+/commands.yml
+/config/
+/plugins/
+/usercache.json
+/version_history.json
+/ops.json
+/banned-players.json
+/banned-ips.json
+/whitelist.json
+/.console_history
