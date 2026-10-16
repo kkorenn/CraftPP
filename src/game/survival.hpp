@@ -443,7 +443,15 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
         if (dy < 0) p.g.fall_distance -= dy;
         if (p.on_ground) {
             if (p.g.fall_distance > 0) {
-                int dmg = int(std::floor(p.g.fall_distance + 1.0E-6 - 3.0));
+                // Block.fallOn of the block landed on (getOnPos, 0.2 below the feet): damage multiplier.
+                // ponytail: pointed dripstone, farmland trampling and turtle eggs not handled.
+                const std::string& on = block_of(world.get_block(fx, int(std::floor(p.y - 0.2)), fz)).name;
+                float mult = on == "minecraft:hay_block" || on == "minecraft:honey_block" ? 0.2f
+                           : on == "minecraft:slime_block" && !p.g.sneaking ? 0.0f : 1.0f;
+                double dist = p.g.fall_distance;
+                if ((on.size() > 4 && on.compare(on.size() - 4, 4, "_bed") == 0) || on == "minecraft:shelf_mushroom")
+                    dist *= 1.0f - 0.5f;  // Properties.fallDistanceReduction(0.5F)
+                int dmg = int(std::floor((dist + 1.0E-6 - 3.0) * mult));
                 if (dmg > 0) hurt(p, float(dmg), "fall");
             }
             p.g.fall_distance = 0;
@@ -451,8 +459,18 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
     }
     if (dy > 0) p.g.fall_distance = 0;  // handlePlayerPositionChange: movedUpwards -> resetFallDistance
     if (was_on_ground && !p.on_ground && dy > 0) add_exhaustion(p, p.g.sprinting ? 0.2f : 0.05f);  // jumpFromGround
-    double h = std::sqrt((p.x - ox) * (p.x - ox) + (p.z - oz) * (p.z - oz));
-    if (p.g.sprinting && h > 0 && h < 10) add_exhaustion(p, 0.1f * float(h));
+    // ServerPlayer.checkMovementStatistics (food exhaustion part)
+    double dx = p.x - ox, dz = p.z - oz;
+    if (dx * dx + dy * dy + dz * dz < 1.0E-10) return;  // didNotMove
+    auto cm = [](double d) { return int(std::floor(float(std::sqrt(d)) * 100.0f + 0.5f)); };  // Math.round(float)
+    bool eye_water = eye_in_water(p), feet_water = block_index(feet) == block_index(blocks::water);
+    if (eye_water) {  // isSwimming or isEyeInFluid(WATER): same rate
+        if (int d = cm(dx * dx + dy * dy + dz * dz); d > 0) add_exhaustion(p, 0.01f * float(d) * 0.01f);
+    } else if (feet_water) {
+        if (int d = cm(dx * dx + dz * dz); d > 0) add_exhaustion(p, 0.01f * float(d) * 0.01f);
+    } else if (!in_sorted(tag_climbable, bi) && p.on_ground && p.g.sprinting) {
+        if (int d = cm(dx * dx + dz * dz); d > 0) add_exhaustion(p, 0.1f * float(d) * 0.01f);
+    }
 }
 
 inline void vitals_tick(Player& p) {

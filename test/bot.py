@@ -251,8 +251,11 @@ if __name__ == "__main__":
     print("streaming + movement ok")
 
     a.send(PLAY_SB["chat"], string("hello") + struct.pack(">qq", 0, 0) + b"\x00" + varint(0) + bytes(3) + b"\x00")
-    msg = text_of(wait(b, PLAY_CB["system_chat"], lambda x: b"hello" in x.d))
-    assert msg == "<Alice> hello", msg
+    pc = wait(b, PLAY_CB["player_chat"])  # unsigned player chat, chat type minecraft:chat
+    pc.varint(); pc.take(16); pc.varint()
+    assert pc.u8() == 0 and pc.str() == "hello"
+    pc.take(16); assert pc.varint() == 0 and pc.u8() == 0 and pc.varint() == 0 and pc.varint() == 1
+    assert text_of(pc) == "Alice"
     a.send(PLAY_SB["chat_command"], string("list"))
     lst = wait(a, PLAY_CB["system_chat"], lambda x: b"commands.list.players" in x.d).d  # translatable, like vanilla
     assert b"Alice" in lst and b"Bob" in lst, lst

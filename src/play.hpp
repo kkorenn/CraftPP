@@ -179,7 +179,7 @@ inline void register_core_handlers() {
     on(play_sb::chat, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string msg = in.str(256);
-        broadcast_message("<" + p.name + "> " + msg);
+        broadcast_player_chat(p, msg);
     });
     on(play_sb::chat_command, [](Player& p, Reader& in, int id) {
         (void)id;
