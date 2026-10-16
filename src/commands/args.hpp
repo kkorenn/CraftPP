@@ -212,7 +212,7 @@ inline Source console_source() {
 }
 
 // ---------- coordinates ----------
-struct Vec3 { double x, y, z; };
+#include "../game/vec.hpp"  // Vec3
 struct Coord { double v = 0; bool rel = false; };
 struct Coords {
     Coord c[3];

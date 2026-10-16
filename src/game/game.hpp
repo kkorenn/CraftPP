@@ -78,6 +78,7 @@ inline void request_stop() {
         std::string level = props["level-name"];
         log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
+        mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
         log_info("ThreadedAnvilChunkStorage: All dimensions are saved");
