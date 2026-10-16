@@ -67,6 +67,7 @@ inline const char* dir_name(bs::Dir d) {
   return n[d];
 }
 bs::Dir dir_by_name(const std::string& n);
+inline thread_local bool debug_log = false;  // CRAFTPP_FEATURE_LOG chunk being decorated
 inline bs::Dir random_dir(RandomSource& r) { return ALL_DIRS[r.nextInt(6)]; }             // Direction.getRandom
 inline bs::Dir random_horizontal(RandomSource& r) { return HORIZONTAL[r.nextInt(4)]; }  // Plane.HORIZONTAL.getRandomDirection
 inline int java_round(float v) { return Mth::floor((double)v + 0.5); }                    // Math.round(float)
@@ -233,6 +234,10 @@ void register_basic_features(ParserMap& out);  // feature_basic.cpp
 void register_tree_features(ParserMap& out);   // feature_tree.cpp
 void register_cave_features(ParserMap& out);   // feature_cave.cpp
 void register_misc_features(ParserMap& out);   // feature_misc.cpp
+// Extra feature types registered by other subsystems before the Overworld is built (static init or setup):
+// e.g. the structures agent adds "template" and "fossil" (StructureTemplate.placeInWorld + processors), which
+// this branch leaves unimplemented (they place nothing and are reported once at load).
+ParserMap& extra_feature_parsers();
 
 }  // namespace feat
 

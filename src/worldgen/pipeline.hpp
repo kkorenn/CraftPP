@@ -23,17 +23,20 @@
 // HOOKS for other agents (set before the first ensure, never while generating):
 //   pipeline.set_step(Status::STRUCTURE_STARTS, fn)      fn(Region&) fills r.center().structure_data
 //   pipeline.set_step(Status::STRUCTURE_REFERENCES, fn)  reads neighbours' structure_data (radius 8)
-//   pipeline.structure_placer = fn                       called by the features step once per decoration step,
+//   overworld.features->structure_placer = fn            called by the features step once per decoration step,
 //                                                        before that step's features (ChunkGenerator.
 //                                                        applyBiomeDecoration: structures first, same random);
 //                                                        signature in features.hpp (StructurePlacer)
+//   feat::extra_feature_parsers()["template"] = parser   feature types implemented elsewhere (template, fossil
+//                                                        need StructureTemplate); fill before building Overworld
 //   pipeline.set_step(Status::INITIALIZE_LIGHT, fn) / set_step(Status::LIGHT, fn, /*lock_radius*/ 1)
 //                                                        light data goes in ProtoChunk::light_data; blocks of
 //                                                        chunks at >= INITIALIZE_LIGHT can still change (features
 //                                                        of a neighbour write radius 1): set on_block_changed to
 //                                                        hear about them (ProtoChunk::set calls it from that status on)
-// A step that is not set is a pass-through. The default steps (biomes, terrain, features) are set by
-// worldgen::Overworld (overworld.hpp).
+// A step that is not set is a pass-through. The default steps (biomes, terrain, features, full) are set by
+// worldgen::Overworld (overworld.hpp). FULL runs with lock radius 1: post-processing and the leaf ticks
+// worldgen scheduled may write into neighbours (never into chunks already taken by the World).
 //
 // MEMORY. Block storage (a Chunk) is allocated when a chunk reaches BIOMES; below that a ProtoChunk is ~100
 // bytes + its structure_data. take() copies the FULL chunk out to the World. A taken FULL chunk frees its block

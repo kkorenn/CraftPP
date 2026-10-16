@@ -38,6 +38,11 @@ struct BiomeCtx : material::MaterialContext {
 };
 }  // namespace
 
+ParserMap& extra_feature_parsers() {
+  static ParserMap m;
+  return m;
+}
+
 bs::Dir dir_by_name(const std::string& n0) {
   std::string n = strip_ns(n0);
   for (int d = 0; d < 6; d++)
@@ -137,7 +142,11 @@ bool Placed::place(Level& l, RandomSource& r, const P& origin, bool biomeCheck) 
     if (mi + 1 < int(mods.size())) {
       for (size_t i = out.size(); i-- > 0;) stack.push_back({out[i], mi + 1});
     } else {
-      for (auto& p : out) placedAny |= feature->place(l, r, p);
+      for (auto& p : out) {
+        bool ok = feature->place(l, r, p);
+        if (debug_log && !name.empty()) fprintf(stderr, "  %s at %d %d %d -> %d\n", name.c_str(), p.x, p.y, p.z, ok);
+        placedAny |= ok;
+      }
     }
   }
   return placedAny;
@@ -885,6 +894,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   register_tree_features(parsers);
   register_cave_features(parsers);
   register_misc_features(parsers);
+  for (auto& [k, v] : extra_feature_parsers()) parsers[k] = v;
   loader = std::make_unique<Loader>(*this, root);
 
   // Biomes in registry order (biomes:: ids) and the biome source's possible biomes in parameter-list order.
@@ -1044,6 +1054,7 @@ void Features::decorate(Region& r) const {
     idx.erase(std::unique(idx.begin(), idx.end()), idx.end());
     static const char* dbg = getenv("CRAFTPP_FEATURE_LOG");  // "cx,cz": log the features of that chunk
     bool log = dbg && std::to_string(r.cx) + "," + std::to_string(r.cz) == dbg;
+    debug_log = log;
     for (int i : idx) {
       random.setFeatureSeed(decorationSeed, i, step);
       bool ok = steps[size_t(step)][size_t(i)]->place(level, random, origin, true);
