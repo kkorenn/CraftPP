@@ -203,6 +203,7 @@ inline Source source_for(const PlayerPtr& p) {
     s.x = p->x; s.y = p->y; s.z = p->z;
     s.yaw = p->yaw; s.pitch = p->pitch;
     s.level = perm_level(*p);
+    s.dimension = p->level->id;
     return s;
 }
 inline Source console_source() {

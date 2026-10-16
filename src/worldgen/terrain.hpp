@@ -33,7 +33,7 @@ class Aquifer {
     bool operator==(const FluidStatus& o) const { return level == o.level && type == o.type; }
   };
   struct Location { int x, y, z; bool set = false; };
-  static FluidStatus globalFluid(int y);
+  FluidStatus globalFluid(int y) const;
   int getIndex(int gx, int gy, int gz) const;
   const FluidStatus& status(int index);
   FluidStatus computeFluid(int x, int y, int z);
@@ -41,6 +41,8 @@ class Aquifer {
   int maxSurfaceLevel(int minX, int minZ, int maxX, int maxZ);
   double calculatePressure(int x, int y, int z, double& barrier, const FluidStatus& a, const FluidStatus& b);
 
+  TerrainGenerator& g;
+  bool enabled;  // false: Aquifer.createDisabled (no aquifers section: nether, end)
   df::Bound barrier, floodedness, spread, lava, exclusion, surface;
   const PositionalRandomFactory& random;
   std::vector<FluidStatus> statusCache;
@@ -52,7 +54,10 @@ class Aquifer {
 
 class TerrainGenerator {
  public:
-  static constexpr int MIN_Y = -64, HEIGHT = 384, SEA_LEVEL = 63;
+  // Noise range (noise_settings noise, clamped to the chunk), chunk layout (dimension type), settings values.
+  int MIN_Y = -64, HEIGHT = 384, SEA_LEVEL = 63, chunkMinY = -64, chunkHeight = 384;
+  int defaultBlock, defaultFluid;
+  bool endBiomes = false;  // TheEndBiomeSource instead of multi-noise
 
   // NoiseChunk: the caching sampler context + aquifer of one chunk's noise stage. Later stages that vanilla
   // runs on noiseChunk.cachingSamplers() (material rules) must sample through `ctx` to stay exact.
@@ -63,11 +68,13 @@ class TerrainGenerator {
   };
 
   // surface=false stops after the noise stage (no material rules: bedrock, ore veins, surface blocks).
-  explicit TerrainGenerator(int64_t seed, const std::string& dataRoot = "vanilla/src/data", bool surface = true);
+  // settings: noise_settings name (overworld, nether, end); chunkMinY/chunkHeight: the dimension type's layout.
+  explicit TerrainGenerator(int64_t seed, const std::string& dataRoot = "vanilla/src/data", bool surface = true,
+                            const std::string& settings = "overworld", int chunkMinY = -64, int chunkHeight = 384);
   ~TerrainGenerator();
   void generate(Chunk& c);  // biomes, noise fill, material rules
   void createBiomes(Chunk& c);
-  void chunkBiomes(int cx, int cz, const BiomeSource& source, std::vector<uint16_t>& out);
+  void chunkBiomes(int cx, int cz, const BiomeSource* source, std::vector<uint16_t>& out);
   std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c);
   std::unique_ptr<NoiseChunk> createNoiseChunk(const DensityVolume& volume);
   // getBaseHeight(x, z, WORLD_SURFACE_WG): y above the top non-air noise-stage block, or MIN_Y.
@@ -81,7 +88,7 @@ class TerrainGenerator {
   df::NodeP aqBarrier, aqFloodedness, aqSpread, aqLava, aqExclusion, aqSurfaceLevel;
   const PositionalRandomFactory* aquiferRandom;
   std::vector<std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>>> spawnTarget;
-  BiomeSource biomeSource, neighbourBiomeSource;
+  std::unique_ptr<BiomeSource> biomeSource, neighbourBiomeSource;  // null for the end
   std::unique_ptr<material::MaterialSystem> materials;
 };
 

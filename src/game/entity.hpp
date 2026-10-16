@@ -75,9 +75,10 @@ inline int view_dist_cached() {
     static int v = view_distance();
     return v;
 }
+// In the current level (cur_level) and within the player's view.
 inline bool sees_chunk(const Player& p, int cx, int cz) {
     int v = view_dist_cached();
-    return std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
+    return p.level == cur_level && std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
 }
 // Sends to every player whose view contains (x, z).
 inline void broadcast_near(double x, double z, const Writer& w, const Player* except = nullptr) {
@@ -88,7 +89,7 @@ inline void broadcast_near(double x, double z, const Writer& w, const Player* ex
 
 // ---------- collision ----------
 inline bool solid_at(int x, int y, int z) {
-    if (y < MIN_Y) return false;
+    if (y < world.min_y()) return false;
     return block_of(world.get_block(x, y, z)).collision;
 }
 
@@ -138,6 +139,7 @@ struct ItemEntity {
     bool on_ground = false, removed = false, dirty_item = false;
     float yaw;
     std::vector<int> watchers;  // player eids that have this entity spawned
+    World* level = cur_level;
 };
 inline std::vector<ItemEntity> item_entities;
 inline constexpr double ITEM_HALF_W = 0.125, ITEM_H = 0.25;
@@ -194,7 +196,7 @@ inline void item_merge(ItemEntity& a) {  // ItemEntity.mergeWithNeighbours
     };
     if (!mergable(a)) return;
     for (auto& b : item_entities) {
-        if (&b == &a || !mergable(b) || !b.stack.same(a.stack)) continue;
+        if (&b == &a || b.level != a.level || !mergable(b) || !b.stack.same(a.stack)) continue;
         if (std::abs(b.x - a.x) >= 0.5 + 2 * ITEM_HALF_W || std::abs(b.z - a.z) >= 0.5 + 2 * ITEM_HALF_W ||
             std::abs(b.y - a.y) >= ITEM_H)
             continue;
@@ -239,14 +241,14 @@ inline void tick_item(ItemEntity& e) {
     bool moved = std::floor(ox) != std::floor(e.x) || std::floor(oy) != std::floor(e.y) || std::floor(oz) != std::floor(e.z);
     if (e.tick_count % (moved ? 2 : 40) == 0) item_merge(e);
     if (++e.age >= 6000) e.removed = true;
-    if (e.y < MIN_Y - 64) e.removed = true;
+    if (e.y < e.level->min_y - 64) e.removed = true;
 }
 
 // Player touching items (Player.aiStep touch box: player bbox inflated 1, 0.5, 1).
 inline void item_pickups(Player& p) {
     if (p.g.dead || p.gamemode == 3) return;
     for (auto& e : item_entities) {
-        if (e.removed || e.pickup_delay > 0) continue;
+        if (e.removed || e.pickup_delay > 0 || e.level != p.level) continue;
         if (std::abs(e.x - p.x) > 1.3 + ITEM_HALF_W || std::abs(e.z - p.z) > 1.3 + ITEM_HALF_W) continue;
         if (e.y + ITEM_H < p.y - 0.5 || e.y > p.y + 1.8 + 0.5) continue;
         int before = e.stack.count;
@@ -264,6 +266,7 @@ inline void item_pickups(Player& p) {
 inline void track_items() {
     static std::vector<int> gone;
     for (auto& e : item_entities) {
+        InLevel in_level(e.level);
         int cx = int(std::floor(e.x)) >> 4, cz = int(std::floor(e.z)) >> 4;
         bool moved = e.x != e.sx || e.y != e.sy || e.z != e.sz;
         bool sync = moved && (e.tick_count % 20 == 0 || (e.on_ground && std::abs(e.vy) < 1e-3));
@@ -293,9 +296,22 @@ inline void track_items() {
     }
 }
 
+inline bool level_occupied(const World* w) {
+    for (auto& p : players)
+        if (p->level == w) return true;
+    return false;
+}
 inline void tick_entities() {
-    for (size_t i = 0; i < item_entities.size(); i++) tick_item(item_entities[i]);  // index: merging never adds
-    for (auto& p : players) item_pickups(*p);
+    for (size_t i = 0; i < item_entities.size(); i++) {  // index: merging never adds
+        ItemEntity& e = item_entities[i];
+        if (!level_occupied(e.level)) continue;  // ServerLevel with no players: entities don't tick
+        InLevel in_level(e.level);
+        tick_item(e);
+    }
+    for (auto& p : players) {
+        InLevel in_level(p->level);
+        item_pickups(*p);
+    }
     track_items();
 }
 

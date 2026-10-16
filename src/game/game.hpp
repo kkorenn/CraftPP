@@ -3,6 +3,7 @@
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
+#include "portal.hpp"
 #include "../plugins/plugins.hpp"
 
 #include <unistd.h>
@@ -19,13 +20,14 @@ inline void register_player(const PlayerPtr& pp) {
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
     p.send(info_add(all));
-    for (auto& q : players) p.send(spawn_entity(*q));
+    for (auto& q : players)
+        if (q->level == p.level) p.send(spawn_entity(*q));
     {
         std::lock_guard lock(players_mtx);
         players.push_back(pp);
     }
     broadcast(info_add({pp}), &p);
-    broadcast(spawn_entity(p), &p);
+    broadcast_level(spawn_entity(p), p.level, &p);
     plugins::announce_join(p);  // PlayerJoinEvent may rewrite/suppress it
 }
 
@@ -51,6 +53,8 @@ inline void keepalive_tick(Player& p) {
 inline void start_game() {
     game_init();
     register_game_handlers();
+    dimensions_init();  // after the game handlers: wraps client_command
+    portal::init();     // wraps use_item_on
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }

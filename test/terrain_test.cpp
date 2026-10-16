@@ -48,5 +48,31 @@ int main() {
     assert(c->get(0, MIN_Y, 0) == blocks::bedrock);
   }
   ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / N;
-  printf("noise + surface: %.1f ms/chunk\nterrain ok\n", ms);
+  printf("noise + surface: %.1f ms/chunk\n", ms);
+
+  // Nether + end (dimension layout 0..255): default blocks, lava sea, biomes from their sources.
+  for (const char* dim : {"nether", "end"}) {
+    t0 = std::chrono::steady_clock::now();
+    worldgen::TerrainGenerator g(12345, "vanilla/src/data", true, dim, 0, 256);
+    double init = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    int solid = 0, lava = 0;
+    for (int i = 0; i < N; i++) {
+      Chunk c(0, 256);
+      c.cx = dim[0] == 'n' ? i : 70 + i, c.cz = -i;
+      g.generate(c);
+      for (int y = 0; y < 256; y++)
+        for (int z = 0; z < 16; z++)
+          for (int x = 0; x < 16; x++) {
+            uint16_t b = c.get(x, y, z);
+            if (y >= 128) assert(b == blocks::air);
+            solid += b != blocks::air && b != blocks::lava, lava += b == blocks::lava;
+          }
+      if (dim[0] == 'n') assert(c.get(0, 0, 0) == blocks::bedrock && c.get(0, 127, 0) == blocks::bedrock);
+    }
+    ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / N;
+    printf("%s: init %.0f ms, %.1f ms/chunk, %d solid, %d lava\n", dim, init, ms, solid, lava);
+    assert(solid > 0 && (dim[0] == 'e' || lava > 0));
+  }
+  printf("terrain ok\n");
 }

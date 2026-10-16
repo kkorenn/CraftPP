@@ -690,7 +690,7 @@ std::string api(const std::string& m, const Json& a) {
     }
     if (m == "world.spawn") return "{\"x\":" + std::to_string(world_spawn.x) + ",\"y\":" + std::to_string(world_spawn.y) +
                                    ",\"z\":" + std::to_string(world_spawn.z) + "}";
-    if (m == "world.save") { world.save_dirty(); return "null"; }
+    if (m == "world.save") { world->save_dirty(); return "null"; }
     if (m == "world.lightAt") return "{\"sky\":15,\"block\":0}";  // matches what CraftPP sends: full sky light everywhere
     if (m == "world.border")  // CraftPP sends no border packets, so clients use the vanilla default
         return "{\"centerX\":0,\"centerZ\":0,\"size\":59999968,\"damageAmount\":0.2,\"damageBuffer\":5,\"warningDistance\":5,\"warningTime\":15}";

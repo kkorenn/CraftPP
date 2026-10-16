@@ -18,7 +18,7 @@ inline void read_block_pos(Reader& in, int& x, int& y, int& z) {
 }
 
 inline void change_block(int x, int y, int z, int state) {
-    if (world.set_block(x, y, z, uint16_t(state))) broadcast(block_update(x, y, z, state));
+    if (world.set_block(x, y, z, uint16_t(state))) broadcast_level(block_update(x, y, z, state), cur_level);
 }
 
 inline int pick_item(int state) {

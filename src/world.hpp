@@ -10,9 +10,12 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <atomic>
 #include <mutex>
+#include <set>
+#include <tuple>
 
-// Overworld dimension: y -64..319, 24 sections of 16x16x16.
+// Overworld dimension: y -64..319, 24 sections of 16x16x16. Other dimensions: Chunk::min_y / sections.size().
 inline constexpr int MIN_Y = -64, HEIGHT = 384, SECTIONS = HEIGHT / 16;
 
 struct Section {
@@ -21,16 +24,19 @@ struct Section {
 };
 
 struct Chunk {
-    int cx, cz;
-    std::array<Section, SECTIONS> sections;
+    int cx = 0, cz = 0;
+    int min_y;  // dimension type min_y
+    std::vector<Section> sections;
     std::mutex m;        // guards sections against concurrent edit + encode
     bool dirty = false;  // modified since last save
 
+    explicit Chunk(int min_y = MIN_Y, int height = HEIGHT) : min_y(min_y), sections(size_t(height / 16)) {}
+    int height() const { return int(sections.size()) * 16; }
     uint16_t get(int x, int y, int z) const {
-        return sections[(y - MIN_Y) >> 4].blocks[(((y - MIN_Y) & 15) * 16 + z) * 16 + x];
+        return sections[(y - min_y) >> 4].blocks[(((y - min_y) & 15) * 16 + z) * 16 + x];
     }
     void set(int x, int y, int z, uint16_t s) {
-        sections[(y - MIN_Y) >> 4].blocks[(((y - MIN_Y) & 15) * 16 + z) * 16 + x] = s;
+        sections[(y - min_y) >> 4].blocks[(((y - min_y) & 15) * 16 + z) * 16 + x] = s;
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
     void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes[((qy & 3) * 4 + qz) * 4 + qx] = b; }
@@ -80,7 +86,7 @@ inline void write_paletted(Writer& w, const std::array<uint16_t, N>& vals, int m
 }
 
 // Body of clientbound level_chunk_with_light (without packet id).
-inline void write_chunk(Writer& w, Chunk& c) {
+inline void write_chunk(Writer& w, Chunk& c, bool skylight = true) {
     std::lock_guard lock(c.m);
     w.i32(c.cx).i32(c.cz);
 
@@ -90,8 +96,8 @@ inline void write_chunk(Writer& w, Chunk& c) {
     for (int z = 0; z < 16; z++)
         for (int x = 0; x < 16; x++) {
             int h = 0;
-            for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--)
-                if (c.get(x, y, z) != blocks::air) { h = y - MIN_Y + 1; break; }
+            for (int y = c.min_y + c.height() - 1; y >= c.min_y; y--)
+                if (c.get(x, y, z) != blocks::air) { h = y - c.min_y + 1; break; }
             int i = z * 16 + x;
             hm[i / 7] |= uint64_t(h) << ((i % 7) * 9);
         }
@@ -104,31 +110,56 @@ inline void write_chunk(Writer& w, Chunk& c) {
     Writer data;
     const int block_bits = std::bit_width(unsigned(BLOCK_STATE_COUNT - 1));
     const int biome_bits = std::bit_width(unsigned(biomes::COUNT - 1));
+    std::vector<std::pair<int, int>> portals;  // (index in sections, block index): end portal block entities
     for (auto& s : c.sections) {
         int16_t non_air = 0, fluids = 0;
+        bool portal = false;
         for (uint16_t b : s.blocks) {
             uint8_t f = state_flags()[b];
             non_air += !(f & STATE_AIR);
             fluids += (f & STATE_FLUID) != 0;
+            portal |= b == blocks::end_portal || b == blocks::end_gateway;
         }
+        if (portal)
+            for (int i = 0; i < 4096; i++)
+                if (s.blocks[i] == blocks::end_portal || s.blocks[i] == blocks::end_gateway) portals.push_back({int(&s - &c.sections[0]), i});
         // The client skips all fluid checks (swimming, buoyancy) in sections whose fluid count is 0.
         data.i16(non_air).i16(fluids);
         write_paletted(data, s.blocks, 4, 8, block_bits);
         write_paletted(data, s.biomes, 1, 3, biome_bits);
     }
     w.byte_array(data.b);
-    w.varint(0);  // block entities
+    // Block entities: only the end portal / gateway, which the client needs to render them (empty NBT).
+    // ponytail: no other block entities (chests, signs...) exist yet.
+    w.varint(int32_t(portals.size()));
+    for (auto [si, i] : portals) {
+        uint16_t state = c.sections[size_t(si)].blocks[size_t(i)];
+        w.u8(uint8_t((i & 15) << 4 | ((i >> 4) & 15))).i16(int16_t(c.min_y + si * 16 + (i >> 8)));
+        w.varint(state == blocks::end_portal ? block_entity_types::end_portal : block_entity_types::end_gateway);
+        w.u8(0x0A).u8(0x00);
+    }
 
-    // Light: full sky light everywhere, no block light. 26 sections (one below + one above).
-    // ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
-    w.varint(4).u8(0xFF).u8(0xFF).u8(0xFF).u8(0x03);  // sky mask (BitSet as LE bytes)
-    w.varint(0);                                       // block mask
-    w.varint(0);                                       // empty sky mask
-    w.varint(0);                                       // empty block mask
+    // Light: full sky light everywhere (no-skylight dimensions: full block light instead), sections + 2 (one
+    // below + one above). ponytail: no light engine; caves are lit. Add real sky/block light propagation.
+    int n = int(c.sections.size()) + 2;
+    std::vector<uint8_t> mask;  // BitSet.toByteArray: bits 0..n-1, little-endian bytes
+    for (int i = 0; i < n; i += 8) mask.push_back(uint8_t(n - i >= 8 ? 0xFF : (1 << (n - i)) - 1));
+    auto write_mask = [&](bool set) {
+        w.varint(set ? int32_t(mask.size()) : 0);
+        if (set)
+            for (uint8_t b : mask) w.u8(b);
+    };
+    write_mask(skylight);   // sky mask
+    write_mask(!skylight);  // block mask
+    w.varint(0);            // empty sky mask
+    w.varint(0);            // empty block mask
     static const std::vector<uint8_t> full(2048, 0xFF);
-    w.varint(SECTIONS + 2);
-    for (int i = 0; i < SECTIONS + 2; i++) w.byte_array(full);
-    w.varint(0);
+    for (int light = 0; light < 2; light++) {  // sky arrays, then block arrays
+        bool set = (light == 0) == skylight;
+        w.varint(set ? n : 0);
+        if (set)
+            for (int i = 0; i < n; i++) w.byte_array(full);
+    }
 }
 
 inline void generate_flat(Chunk& c);
@@ -160,13 +191,13 @@ inline void write_level_data(const std::map<std::string, std::string>& changes) 
     std::filesystem::rename(path + ".tmp", path);
 }
 
-inline std::string chunk_path(int cx, int cz) {
-    return world_dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
+inline std::string chunk_path(const std::string& dir, int cx, int cz) {
+    return dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
 }
 inline constexpr uint32_t CHUNK_MAGIC = 0x43505031;  // "CPP1"
 
-inline bool load_chunk(Chunk& c) {
-    std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
+inline bool load_chunk(const std::string& dir, Chunk& c) {
+    std::ifstream f(chunk_path(dir, c.cx, c.cz), std::ios::binary);
     uint32_t magic = 0;
     if (!f.read(reinterpret_cast<char*>(&magic), 4) || magic != CHUNK_MAGIC) return false;
     for (auto& s : c.sections) {
@@ -176,9 +207,9 @@ inline bool load_chunk(Chunk& c) {
     return bool(f);
 }
 
-inline void save_chunk(Chunk& c) {
-    std::filesystem::create_directories(world_dir + "/chunks");
-    std::string path = chunk_path(c.cx, c.cz), tmp = path + ".tmp";
+inline void save_chunk(const std::string& dir, Chunk& c) {
+    std::filesystem::create_directories(dir + "/chunks");
+    std::string path = chunk_path(dir, c.cx, c.cz), tmp = path + ".tmp";
     {
         std::lock_guard lock(c.m);
         std::ofstream f(tmp, std::ios::binary);
@@ -192,13 +223,35 @@ inline void save_chunk(Chunk& c) {
     std::filesystem::rename(tmp, path);  // atomic replace: a crash never leaves a half-written chunk
 }
 
-// Chunk cache. Chunks are never unloaded, so references stay valid.
-// ponytail: unbounded memory (~200 KB/chunk); add unloading once worlds get big.
+inline bool is_nether_portal(uint16_t s) { return s == blocks::nether_portal || s == blocks::nether_portal + 1; }
+
+// One dimension (vanilla ServerLevel): chunk cache, layout, save folder. Chunks stay loaded until unload_all()
+// (called only for a dimension nobody is in), so references stay valid while a player is there.
+// ponytail: unbounded memory (~130-200 KB/chunk) while occupied; the perf branch adds per-chunk unloading.
 struct World {
-    std::mutex m;
+    std::mutex m;       // guards `chunks` and `portals`
+    std::mutex save_m;  // serializes save_dirty (autosave thread) with unload_all (tick thread)
     std::map<std::pair<int, int>, std::unique_ptr<Chunk>> chunks;
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
+    std::string id = "minecraft:overworld";  // level key
+    int type = 0;                            // dimension_type registry id (dimension_types::)
+    int min_y = MIN_Y, height = HEIGHT, sea_level = 63, logical_height = HEIGHT;
+    double coordinate_scale = 1;
+    bool skylight = true, ceiling = false;
+    std::string dir = "world";               // save folder (chunks/, portals.txt)
+    std::atomic<int> joining{0};             // network threads streaming a join into this level
+
+    // Nether portal blocks (vanilla PoiManager NETHER_PORTAL records), kept by set_block, saved with the chunks.
+    std::set<std::tuple<int, int, int>> portals;
+    bool portals_dirty = false;
+
+    int max_y() const { return min_y + height; }  // exclusive
+    void open(std::string level_id, int dim_type, int miny, int h, std::string folder) {
+        id = std::move(level_id), type = dim_type, min_y = miny, height = h, dir = std::move(folder);
+        std::ifstream f(dir + "/portals.txt");
+        for (int x, y, z; f >> x >> y >> z;) portals.insert({x, y, z});
+    }
 
     Chunk& get(int cx, int cz) {
         {
@@ -208,43 +261,120 @@ struct World {
         }
         // Load/generate outside the map lock; if another thread raced us, keep its chunk.
         // ponytail: racing threads may both generate the same chunk; add an in-flight set if that shows up.
-        auto c = std::make_unique<Chunk>();
+        auto c = std::make_unique<Chunk>(min_y, height);
         c->cx = cx;
         c->cz = cz;
-        if (!load_chunk(*c)) generator(*c);
+        if (!load_chunk(dir, *c)) generator(*c);
         std::lock_guard lock(m);
         auto& slot = chunks[{cx, cz}];
         if (!slot) slot = std::move(c);
         return *slot;
     }
 
+    // Block if the chunk is loaded, else air (vanilla neighbour updates never load chunks).
+    uint16_t peek_block(int x, int y, int z) {
+        if (y < min_y || y >= max_y()) return blocks::air;
+        Chunk* c;
+        {
+            std::lock_guard lock(m);
+            auto it = chunks.find({x >> 4, z >> 4});
+            if (it == chunks.end()) return blocks::air;
+            c = it->second.get();
+        }
+        std::lock_guard lock(c->m);
+        return c->get(x & 15, y, z & 15);
+    }
+
     uint16_t get_block(int x, int y, int z) {
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
+        if (y < min_y || y >= max_y()) return blocks::air;
         Chunk& c = get(x >> 4, z >> 4);
         std::lock_guard lock(c.m);
         return c.get(x & 15, y, z & 15);
     }
 
     bool set_block(int x, int y, int z, uint16_t state) {
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
+        if (y < min_y || y >= max_y()) return false;
         Chunk& c = get(x >> 4, z >> 4);
         std::lock_guard lock(c.m);
+        uint16_t old = c.get(x & 15, y, z & 15);
         c.set(x & 15, y, z & 15, state);
         c.dirty = true;
+        if (is_nether_portal(old) != is_nether_portal(state)) {
+            std::lock_guard pl(m);
+            if (is_nether_portal(state)) portals.insert({x, y, z});
+            else portals.erase({x, y, z});
+            portals_dirty = true;
+        }
         return true;
     }
 
     int save_dirty() {
+        std::lock_guard sl(save_m);
         std::vector<Chunk*> list;
         {
             std::lock_guard lock(m);
             for (auto& [k, c] : chunks)
                 if (c->dirty) list.push_back(c.get());
         }
-        for (Chunk* c : list) save_chunk(*c);
+        for (Chunk* c : list) save_chunk(dir, *c);
+        std::lock_guard pl(m);
+        if (portals_dirty) {  // ponytail: whole set rewritten; fine for hundreds of portal blocks
+            portals_dirty = false;
+            std::filesystem::create_directories(dir);
+            std::ofstream f(dir + "/portals.txt.tmp");
+            for (auto& [x, y, z] : portals) f << x << ' ' << y << ' ' << z << '\n';
+            f.close();
+            std::filesystem::rename(dir + "/portals.txt.tmp", dir + "/portals.txt");
+        }
         return int(list.size());
     }
+
+    // Saves and drops every chunk. Only when no player is in (or joining) this level: nothing holds a Chunk&.
+    int unload_all() {
+        save_dirty();
+        std::lock_guard sl(save_m);
+        std::lock_guard lock(m);
+        int n = int(chunks.size());
+        chunks.clear();
+        return n;
+    }
 };
+
+// ---------- dimensions ----------
+// One World per vanilla level. Game code reaches the level it acts in through `world` (below): the tick thread
+// points cur_level at the acting player's / command source's / ticking entity's level (InLevel), other threads
+// default to the overworld. Code that knows its level explicitly (chunk streaming, spawn search) uses the World.
+enum Dim { DIM_OVERWORLD, DIM_NETHER, DIM_END, DIM_COUNT };
+inline World worlds[DIM_COUNT];
+inline thread_local World* cur_level = &worlds[DIM_OVERWORLD];
+inline World* level_by_id(const std::string& id) {
+    for (auto& w : worlds)
+        if (w.id == id) return &w;
+    return nullptr;
+}
+inline int dim_of(const World* w) { return int(w - worlds); }
+struct InLevel {  // RAII: run a block of game code in level `w`
+    World* prev;
+    explicit InLevel(World* w) : prev(cur_level) { cur_level = w; }
+    ~InLevel() { cur_level = prev; }
+};
+inline struct LevelProxy {
+    World* operator->() const { return cur_level; }
+    World& operator*() const { return *cur_level; }
+    Chunk& get(int cx, int cz) const { return cur_level->get(cx, cz); }
+    uint16_t get_block(int x, int y, int z) const { return cur_level->get_block(x, y, z); }
+    // Game edits: fire on_block_changed (portal ignition / collapse: game/portal.hpp) after a real change.
+    bool set_block(int x, int y, int z, uint16_t s) const;
+    int min_y() const { return cur_level->min_y; }
+    int max_y() const { return cur_level->max_y(); }  // exclusive
+} world;
+inline void (*on_block_changed)(int x, int y, int z, uint16_t old_state, uint16_t new_state) = nullptr;
+inline bool LevelProxy::set_block(int x, int y, int z, uint16_t s) const {
+    uint16_t old = cur_level->get_block(x, y, z);
+    if (!cur_level->set_block(x, y, z, s)) return false;
+    if (old != s && on_block_changed) on_block_changed(x, y, z, old, s);
+    return true;
+}
 
 // Superflat: bedrock, 2 dirt, grass, plains.
 inline void generate_flat(Chunk& c) {
