@@ -57,7 +57,7 @@ try:
         if time.time() - t0 > 600: raise TimeoutError(open(f"{work}/server.log").read())
         time.sleep(0.1)
     row("startup (spawn search + generator init)", f"{time.time() - t0:.1f} s")
-    time.sleep(3)
+    time.sleep(6)  # past the first autosave (5 s), which trims the heap
     row("idle RSS, 0 players", "%.1f MiB" % rss()[0])
     row("CPU idle, 0 players", f"{cpu_pct(10):.1f} %")
 
