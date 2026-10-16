@@ -82,6 +82,6 @@ else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
 # Mob roster checks: trading / breeding / taming logic (runs from the repo root, needs data/*.json).
-add_executable(roster_test test/roster_test.cpp src/plugins/plugins.cpp)
+add_executable(roster_test test/roster_test.cpp src/plugins/plugins.cpp ${CRAFTPP_MOB_SOURCES})
 target_include_directories(roster_test PRIVATE src)
 target_link_libraries(roster_test PRIVATE craftpp_worldgen)
