@@ -72,6 +72,7 @@ inline const endgen::States& end_states() {
 // Heightmap.Types MOTION_BLOCKING / MOTION_BLOCKING_NO_LEAVES: y above the highest motion-blocking block or
 // fluid. ponytail: blocksMotion approximated by "has collision".
 inline int heightmap(int x, int z, bool no_leaves) {
+    if (!chunk_loaded_at(x, z)) return MIN_Y;  // unloaded columns read as barrier
     for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--) {
         int s = get_block(x, y, z);
         if (is_air(s)) continue;
