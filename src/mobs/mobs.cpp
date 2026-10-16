@@ -96,6 +96,10 @@ static void post_tick() {
         fprintf(stderr, "[mobs] tick %lld entities %zu active %zu mspt %.3f rss %ld KiB heap %ld KiB path nodes %lld searches %lld misses %lld\n",
                 (long long)server_tick, entity_count(), ent_detail::to_tick.size(), mspt_avg, current_rss_kib(), heap_in_use_kib(), (long long)path_nodes_total,
                 (long long)path_searches_total, (long long)path_budget_misses);
+        if (dbg_verbose)
+            for (Entity* e : player_entities())
+                fprintf(stderr, "  player %d pos %.2f %.2f %.2f alive %d gm %d health %.1f\n", e->id, e->pos.x, e->pos.y, e->pos.z,
+                        e->is_alive(), e->as_player()->gamemode, e->as_living()->health());
         if (dbg_verbose) for (Entity* e : ent_detail::to_tick)
             if (Mob* m = e->as_mob()) {
                 std::string run;
@@ -302,6 +306,15 @@ void player_knockback_from(Player& p, const DamageSource& s) {
     if (PlayerEntity* pe = player_entity(p)) pe->deal_default_knockback(s);
 }
 void mobs_save_all() { save_all_entities(); }
+void player_entity_respawned(Player& p) {
+    PlayerEntity* pe = player_entity(p);
+    if (!pe) return;
+    std::vector<Player*> w = pe->trk.watchers;
+    for (Player* q : w) track_remove(*pe, *q);
+    pe->sync();
+    pe->trk.base_x = enc4096(pe->pos.x), pe->trk.base_y = enc4096(pe->pos.y), pe->trk.base_z = enc4096(pe->pos.z);
+    update_players(*pe);
+}
 
 void mobs_init() {
     if (!load_mob_data()) _exit(1);

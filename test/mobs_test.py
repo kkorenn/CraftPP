@@ -25,15 +25,17 @@ def pump(c, seconds, on):
 
 def main(host, port):
     c, _ = login("Sam", host, port)
-    sx, _, sz = c.pos
+    c.send(PLAY_SB["client_command"], varint(0))  # respawn in case an earlier test left Sam dead
+    sx, sz = -40.5, 40.5  # away from blocks other tests place near the origin
     sy = -60.0  # flat world ground
     cmd(c, f"tp Sam {sx} {sy} {sz}")
     cmd(c, "gamerule spawn_mobs false")  # keep the area quiet until the spawning check
     cmd(c, "time set noon")
     cmd(c, "kill @e[type=!player]")
+    pump(c, 1.5, lambda pid, b: False)  # let the respawn / teleport settle (entity views are rebuilt)
 
     # ---- /summon, selectors, gravity + movement packets ----
-    cmd(c, f"summon minecraft:cow {sx + 3} {sy + 4} {sz}")
+    cmd(c, f"summon minecraft:cow {sx + 3} {sy + 8} {sz}")
     cow = {}
     moved = {"dy": 0.0}
     def watch_cow(pid, b):
@@ -47,8 +49,7 @@ def main(host, port):
         elif pid == PLAY_CB["entity_position_sync"] and "id" in cow:
             if b.varint() == cow["id"]:
                 b.varint(); moved["sync_y"] = struct.unpack(">ddd", b.take(24))[1]
-        # (with chunk light gating, the first pairing can arrive after the cow already landed)
-        return "id" in cow and (moved["dy"] < -3.5 or moved.get("sync_y", 1e9) <= sy + 0.01 or cow["y"] <= sy + 0.01)
+        return "id" in cow and (moved["dy"] < -6 or moved.get("sync_y", 1e9) <= sy + 0.01)
     assert pump(c, 10, watch_cow), f"cow fall not seen: {cow} {moved}"
     print(f"summon ok: cow {cow['id']} fell (deltas {moved['dy']:.2f}, sync y {moved.get('sync_y')})")
     # mob AI produces delta packets: wait for a pos/rot/head update of any mob
