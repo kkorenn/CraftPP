@@ -375,17 +375,29 @@ inline void use_item_on(Player& p, int hand, int x, int y, int z, int face) {
     if (p.gamemode != 1 && --slot.count <= 0) slot = {};
 }
 
-// ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
-// "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
-inline void save_player_extra(const Player& p, std::ostream& f) {
+// ---------- persistence (players/data/<uuid>.dat, vanilla LivingEntity / Player / FoodData tags) ----------
+inline void save_player_extra(const Player& p, Nbt& t) {
     auto& g = p.g;
-    f << "vitals " << g.health << ' ' << g.food << ' ' << g.saturation << ' ' << g.exhaustion << ' '
-      << g.fall_distance << ' ' << g.dead << '\n';
-    f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
-    for (size_t i = 0; i < p.inv.size(); i++)
-        if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
+    t.set("Health", Nbt::real(Nbt::Float, g.health));
+    t.set("foodLevel", Nbt::num(Nbt::Int, g.food));
+    t.set("foodSaturationLevel", Nbt::real(Nbt::Float, g.saturation));
+    t.set("foodExhaustionLevel", Nbt::real(Nbt::Float, g.exhaustion));
+    t.set("fall_distance", Nbt::real(Nbt::Double, g.fall_distance));
+    t.set("DeathTime", Nbt::num(Nbt::Short, g.dead ? 1 : 0));
+    t.set("XpLevel", Nbt::num(Nbt::Int, g.xp_level));
+    t.set("XpP", Nbt::real(Nbt::Float, g.xp_progress));
+    t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
 }
-inline void load_player_extra(Player& p, std::istream& f) {
+inline void load_player_extra(Player& p, const Nbt& t) {
+    auto D = [&](const char* k, double d) { const Nbt* n = t.get(k); return n && n->is_num() ? n->as_double() : d; };
+    auto& g = p.g;
+    g.health = float(D("Health", 20)), g.food = int(D("foodLevel", 20));
+    g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
+    g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
+    g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+}
+// Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
+inline void load_player_extra_txt(Player& p, std::istream& f) {
     f.clear();
     for (std::string key; f >> key;) {
         if (key == "vitals") f >> p.g.health >> p.g.food >> p.g.saturation >> p.g.exhaustion >> p.g.fall_distance >> p.g.dead;

@@ -6,7 +6,7 @@ import os, shutil, subprocess, sys, time, socket
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT + "/test")
 from bot import *
-PORT = 25741
+PORT = int(os.environ.get("PORT", 25741))
 props = f"{ROOT}/build/reload.properties"
 open(props, "w").write(f"server-port={PORT}\nlevel-seed=12345\nview-distance=4\nlevel-name=build/reload-world\nlevel-type=normal\nwhite-list=false\n")
 shutil.rmtree(f"{ROOT}/build/reload-world", ignore_errors=True)

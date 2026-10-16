@@ -4,6 +4,8 @@
 #include "log.hpp"
 #include "net.hpp"
 #include "world.hpp"
+#include "gen/command_data.hpp"
+#include "storage/nbt_io.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
 #include "worldgen/overworld.hpp"
@@ -19,6 +21,7 @@
 #include <fstream>
 #include <charconv>
 #include <climits>
+#include <unordered_map>
 #include <random>
 #include <thread>
 
@@ -306,34 +309,111 @@ inline std::string uuid_hex(const Player& p) {
     return buf;
 }
 
-// playerdata/<uuid>.txt: "x y z yaw pitch gamemode selected" then "slot item count" lines.
-inline bool load_player(Player& p) {
+// players/data/<uuid>.dat (vanilla 26.x PlayerDataStorage): gzip NBT like ServerPlayer.saveWithoutId. Old
+// playerdata/<uuid>.txt files ("x y z yaw pitch gamemode selected", "slot item count" lines, extras) are read once.
+inline std::string player_dat(const Player& p) {
+    char b[40];
+    uint64_t h = uint64_t(p.uuid_hi), l = uint64_t(p.uuid_lo);
+    snprintf(b, sizeof b, "%08x-%04x-%04x-%04x-%012llx", unsigned(h >> 32), unsigned(h >> 16 & 0xFFFF), unsigned(h & 0xFFFF),
+             unsigned(l >> 48), (unsigned long long)(l & 0xFFFFFFFFFFFFull));
+    return world_dir + "/players/data/" + b + ".dat";
+}
+inline const char* const EQUIPMENT_SLOTS[5] = {"feet", "legs", "chest", "head", "offhand"};  // inv 36..40
+
+inline Nbt item_nbt(const ItemStack& s) {  // ItemStack.CODEC: {id, count, components}
+    Nbt e = Nbt::compound();
+    e.set("id", Nbt::str(std::string("minecraft:") + gen::ITEM_NAMES[s.item]));
+    e.set("count", Nbt::num(Nbt::Int, s.count));
+    if (s.damage) {
+        Nbt c = Nbt::compound();
+        c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
+        e.set("components", c);
+    }
+    return e;
+}
+inline ItemStack item_from(const Nbt& e) {
+    static const std::unordered_map<std::string, int> ids = [] {
+        std::unordered_map<std::string, int> m;
+        for (int i = 0; i < ITEM_COUNT; i++) m["minecraft:" + std::string(gen::ITEM_NAMES[i])] = i;
+        return m;
+    }();
+    ItemStack s;
+    const Nbt* id = e.get("id");
+    auto it = id ? ids.find(id->s.find(':') == std::string::npos ? "minecraft:" + id->s : id->s) : ids.end();
+    if (it == ids.end() || it->second == 0) return s;
+    s.item = it->second;
+    const Nbt* n = e.get("count");
+    s.count = n && n->is_num() ? int(n->i) : 1;
+    if (const Nbt* c = e.get("components"))
+        if (const Nbt* d = c->get("minecraft:damage"); d && d->is_num()) s.damage = int(d->i);
+    return s;
+}
+
+inline bool load_player_txt(Player& p) {
     std::ifstream f(world_dir + "/playerdata/" + uuid_hex(p) + ".txt");
     if (!(f >> p.x >> p.y >> p.z >> p.yaw >> p.pitch >> p.gamemode >> p.selected)) return false;
     for (int slot, item, count; f >> slot >> item >> count;)
         if (slot >= 0 && slot < int(p.inv.size()) && item >= 0 && item < ITEM_COUNT) p.inv[slot] = {item, count};
-    load_player_extra(p, f);  // game/survival.hpp: vitals, xp, tool damage
+    load_player_extra_txt(p, f);
+    return true;
+}
+
+inline bool load_player(Player& p) {
+    Nbt t;
+    if (!nbtio::read_file(player_dat(p), t)) return load_player_txt(p);
+    auto D = [](const Nbt* n, double d) { return n && n->is_num() ? n->as_double() : d; };
+    if (const Nbt* pos = t.get("Pos"); pos && pos->list.size() == 3)
+        p.x = pos->list[0].d, p.y = pos->list[1].d, p.z = pos->list[2].d;
+    if (const Nbt* r = t.get("Rotation"); r && r->list.size() == 2) p.yaw = float(r->list[0].d), p.pitch = float(r->list[1].d);
+    p.on_ground = D(t.get("OnGround"), 1) != 0;
+    p.gamemode = std::clamp(int(D(t.get("playerGameType"), p.gamemode)), 0, 3);
+    p.selected = std::clamp(int(D(t.get("SelectedItemSlot"), 0)), 0, 8);
+    if (const Nbt* inv = t.get("Inventory"))
+        for (auto& e : inv->list)
+            if (int slot = int(D(e.get("Slot"), -1)); slot >= 0 && slot < 36) p.inv[size_t(slot)] = item_from(e);
+    if (const Nbt* eq = t.get("equipment"))
+        for (int i = 0; i < 5; i++)
+            if (const Nbt* e = eq->get(EQUIPMENT_SLOTS[i])) p.inv[size_t(36 + i)] = item_from(*e);
+    load_player_extra(p, t);  // game/survival.hpp: vitals, xp
     return true;
 }
 
 inline void save_player(const Player& p) {
-    std::filesystem::create_directories(world_dir + "/playerdata");
-    std::string path = world_dir + "/playerdata/" + uuid_hex(p) + ".txt";
-    {
-        std::ofstream f(path + ".tmp");
-        f.precision(17);
-        f << p.x << ' ' << p.y << ' ' << p.z << ' ' << p.yaw << ' ' << p.pitch << ' ' << p.gamemode << ' '
-          << p.selected << '\n';
-        for (size_t i = 0; i < p.inv.size(); i++)
-            if (p.inv[i].item >= 0) f << i << ' ' << p.inv[i].item << ' ' << p.inv[i].count << '\n';
-        save_player_extra(p, f);
+    Nbt t = Nbt::compound();
+    auto list = [](std::initializer_list<Nbt> v) { Nbt l = Nbt::make_list(); l.list = v; return l; };
+    auto Dbl = [](double v) { return Nbt::real(Nbt::Double, v); };
+    auto Flt = [](double v) { return Nbt::real(Nbt::Float, v); };
+    t.set("DataVersion", Nbt::num(Nbt::Int, DATA_VERSION));
+    t.set("Pos", list({Dbl(p.x), Dbl(p.y), Dbl(p.z)}));
+    t.set("Motion", list({Dbl(0), Dbl(0), Dbl(0)}));
+    t.set("Rotation", list({Flt(p.yaw), Flt(p.pitch)}));
+    t.set("OnGround", Nbt::num(Nbt::Byte, p.on_ground));
+    Nbt uuid;
+    uuid.t = Nbt::IntArray;
+    uuid.arr = {int32_t(uint64_t(p.uuid_hi) >> 32), int32_t(p.uuid_hi), int32_t(uint64_t(p.uuid_lo) >> 32), int32_t(p.uuid_lo)};
+    t.set("UUID", uuid);
+    t.set("Dimension", Nbt::str("minecraft:overworld"));
+    t.set("playerGameType", Nbt::num(Nbt::Int, p.gamemode));
+    t.set("SelectedItemSlot", Nbt::num(Nbt::Int, p.selected));
+    Nbt inv = Nbt::make_list(), eq = Nbt::compound();
+    for (int i = 0; i < 41; i++) {
+        const ItemStack& s = p.inv[size_t(i)];
+        if (s.empty() || s.item >= ITEM_COUNT) continue;
+        Nbt e = item_nbt(s);
+        if (i >= 36) { eq.set(EQUIPMENT_SLOTS[i - 36], e); continue; }
+        e.set("Slot", Nbt::num(Nbt::Byte, i));
+        inv.list.push_back(e);
     }
-    std::filesystem::rename(path + ".tmp", path);
+    t.set("Inventory", inv);
+    t.set("equipment", eq);
+    save_player_extra(p, t);
+    std::filesystem::create_directories(world_dir + "/players/data");
+    nbtio::write_file(player_dat(p), t);
 }
 
 inline void save_all() {
     for (auto& p : snapshot()) save_player(*p);
-    world.save_dirty();
+    world.save_dirty(true);
 }
 
 // Creative-menu slot number -> Inventory index (-1 = not a player inventory slot).

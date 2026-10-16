@@ -37,11 +37,13 @@ const char* status_name(Status s) {
   return n[int(s)];
 }
 
+static const char* heightmap_names[] = {"WORLD_SURFACE_WG", "WORLD_SURFACE", "OCEAN_FLOOR_WG", "OCEAN_FLOOR",
+                                        "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES"};
+const char* heightmap_name(Heightmap h) { return heightmap_names[h]; }
+
 Heightmap heightmap_by_name(const std::string& n) {
-  static const char* names[] = {"WORLD_SURFACE_WG", "WORLD_SURFACE", "OCEAN_FLOOR_WG", "OCEAN_FLOOR",
-                                "MOTION_BLOCKING", "MOTION_BLOCKING_NO_LEAVES"};
   for (int i = 0; i < 6; i++)
-    if (n == names[i]) return Heightmap(i);
+    if (n == heightmap_names[i]) return Heightmap(i);
   throw std::runtime_error("unknown heightmap " + n);
 }
 
@@ -68,7 +70,7 @@ void ProtoChunk::set(int x, int y, int z, uint16_t state) {
   if (st >= Status::INITIALIZE_LIGHT && owner->on_block_changed) owner->on_block_changed(*this, x, y, z, old, state);
 }
 
-void ProtoChunk::prime_heightmaps() {
+void prime_heightmaps(const Chunk& c, std::array<std::array<int16_t, 256>, 6>& heightmaps) {
   const auto& op = opaque();
   int top = MIN_Y + HEIGHT - 1;
   for (int z = 0; z < 16; z++)
@@ -76,7 +78,7 @@ void ProtoChunk::prime_heightmaps() {
       uint8_t remaining = 0x3F;
       for (auto& h : heightmaps) h[size_t(z * 16 + x)] = int16_t(MIN_Y);
       for (int y = top; y >= MIN_Y && remaining; y--) {
-        uint8_t hit = op[chunk->get(x, y, z)] & remaining;
+        uint8_t hit = op[c.get(x, y, z)] & remaining;
         if (!hit) continue;
         for (int h = 0; h < 6; h++)
           if ((hit >> h) & 1) heightmaps[size_t(h)][size_t(z * 16 + x)] = int16_t(y + 1);
@@ -84,6 +86,8 @@ void ProtoChunk::prime_heightmaps() {
       }
     }
 }
+
+void ProtoChunk::prime_heightmaps() { worldgen::prime_heightmaps(*chunk, heightmaps); }
 
 // ---------------------------------------------------------------- Pipeline
 Pipeline::Pipeline() {

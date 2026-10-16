@@ -69,6 +69,9 @@ const char* status_name(Status s);
 // Heightmap.Types, vanilla ordinal order.
 enum Heightmap { WORLD_SURFACE_WG, WORLD_SURFACE, OCEAN_FLOOR_WG, OCEAN_FLOOR, MOTION_BLOCKING, MOTION_BLOCKING_NO_LEAVES };
 Heightmap heightmap_by_name(const std::string& name);
+const char* heightmap_name(Heightmap h);  // serialization key, e.g. "MOTION_BLOCKING"
+// Heightmap.primeHeightmaps for all six types (first free y per column, index z * 16 + x).
+void prime_heightmaps(const Chunk& c, std::array<std::array<int16_t, 256>, 6>& out);
 
 class Pipeline;
 

@@ -2,6 +2,7 @@
 #include "gen/ids.hpp"
 #include "net.hpp"
 #include "light/light.hpp"
+#include "storage/region.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +17,7 @@
 #include <deque>
 #include <future>
 #include <thread>
+#include <chrono>
 #include <cmath>
 #include <iterator>
 #include <string>
@@ -148,6 +150,7 @@ struct Chunk {
     std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
     bool on_disk = false;
+    std::chrono::steady_clock::time_point saved_at{};  // last save (World::save_dirty's 10 s cooldown)
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
     std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
@@ -324,111 +327,27 @@ struct ChunkPool {
 
 inline void generate_flat(Chunk& c);
 
-// On-disk chunk: c.<x>.<z>.bin = "CPP2", raw size (u32 LE), then zlib of the 24 sections in network form
-// (blocks then biomes paletted containers). "CPP1" (uncompressed flat arrays) is still read.
-// ponytail: one file per chunk; switch to Anvil region files (NBT, block names) for vanilla compatibility.
 inline std::string world_dir = "world";  // server.properties level-name
 
-// <world_dir>/level.dat: per-world settings as key=value text lines (vanilla keeps these in level.dat NBT).
-// Shared by all subsystems: read the map, change your keys, write it back (other keys are preserved).
-// Keys so far: level-seed, level-type.
-inline std::string level_data_path() { return world_dir + "/level.dat"; }
-inline std::map<std::string, std::string> read_level_data() {
-    std::map<std::string, std::string> kv;
-    std::ifstream f(level_data_path());
-    for (std::string line; std::getline(f, line);)
-        if (auto eq = line.find('='); eq != std::string::npos && line[0] != '#') kv[line.substr(0, eq)] = line.substr(eq + 1);
-    return kv;
-}
-inline void write_level_data(const std::map<std::string, std::string>& changes) {
-    auto kv = read_level_data();
-    auto old = kv;
-    for (auto& [k, v] : changes) kv[k] = v;
-    if (kv == old && std::filesystem::exists(level_data_path())) return;  // unchanged: spare the SD card
-    std::filesystem::create_directories(world_dir);
-    std::string path = level_data_path();
-    {
-        std::ofstream f(path + ".tmp");
-        for (auto& [k, v] : kv) f << k << '=' << v << '\n';
-    }
-    std::filesystem::rename(path + ".tmp", path);
-}
+// Per-world settings (src/storage/level.cpp): a key=value map shared by all subsystems (read it, change your
+// keys, write it back; other keys are kept). Stored in vanilla 26.3 files: level.dat, data/minecraft/*.dat and
+// dimensions/minecraft/overworld/data/minecraft/world_border.dat; keys vanilla has no field for are kept in a
+// "CraftPP" compound of level.dat (vanilla drops it when it rewrites level.dat; values are then rebuilt from
+// the vanilla fields). Keys: level-seed, level-type, spawn-x/y/z, and save_level's (commands/state.hpp).
+std::map<std::string, std::string> read_level_data();  // storage/level.cpp
+void write_level_data(const std::map<std::string, std::string>& changes);
 
-inline std::string chunk_path(int cx, int cz) {
-    return world_dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
-}
-inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
+// Chunks are stored in vanilla Anvil region files (src/storage): <world>/dimensions/minecraft/overworld/
+// region/r.X.Z.mca, chunk NBT as SerializableChunkData. Writes are queued and flushed by World::save_dirty.
+// The previous format (world/chunks/c.X.Z.bin, "CPP1"/"CPP2") is still read; chunks move to regions when saved.
 
-// Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
+// Optional chunk-file sections owned by other subsystems (structures: starts + references), as an opaque blob
+// stored in the chunk NBT under CraftPP.structures. New code should use storage::chunk_hooks() (NBT tags).
 inline std::function<void(const Chunk&, Writer&)> chunk_save_extra;
 inline std::function<void(Chunk&, Reader&)> chunk_load_extra;
 
-inline bool load_chunk(Chunk& c) {
-    std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
-    uint32_t magic = 0, raw = 0;
-    if (!f.read(reinterpret_cast<char*>(&magic), 4)) return false;
-    if (magic == CHUNK_MAGIC_V1) {
-        std::vector<uint16_t> b(4096 + 64);
-        for (auto& s : c.sections) {
-            if (!f.read(reinterpret_cast<char*>(b.data()), std::streamsize(b.size() * 2))) return false;
-            for (int i = 0; i < 4096; i++) s.blocks.set(i, b[size_t(i)]);
-            for (int i = 0; i < 64; i++) s.biomes.set(i, b[size_t(4096 + i)]);
-            s.blocks.compact(), s.biomes.compact();
-        }
-        return c.on_disk = true;
-    }
-    if (magic != CHUNK_MAGIC || !f.read(reinterpret_cast<char*>(&raw), 4) || raw > (4u << 20)) return false;
-    std::vector<uint8_t> z(std::istreambuf_iterator<char>(f), {}), out(raw);
-    uLongf n = raw;
-    if (uncompress(out.data(), &n, z.data(), uLong(z.size())) != Z_OK || n != raw) return false;
-    Reader r(out);
-    for (auto& s : c.sections) s.blocks.read(r), s.biomes.read(r);
-    if (r.i < out.size())  // block entities: count, then x z y type nbt-length nbt
-        for (int n = r.varint(); n > 0; n--) {
-            BlockEntity e;
-            e.x = r.u8(), e.z = r.u8(), e.y = int16_t(r.varint()), e.type = r.varint();
-            int len = r.varint();
-            e.nbt.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + size_t(len)));
-            r.i += size_t(len);
-            c.block_entities.push_back(std::move(e));
-        }
-    if (r.i < out.size()) {  // light (light::save)
-        size_t len = size_t(r.varint());
-        if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
-        r.i += len;
-    }
-    if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
-    return c.on_disk = true;
-}
-
-inline void save_chunk(Chunk& c) {
-    std::filesystem::create_directories(world_dir + "/chunks");
-    std::string path = chunk_path(c.cx, c.cz), tmp = path + ".tmp";
-    Writer w;
-    uint32_t light_version;
-    std::vector<uint8_t> light = light::save(c, light_version);  // before c.m: lock order is light, then chunk
-    {
-        std::lock_guard lock(c.m);
-        for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
-        w.varint(int32_t(c.block_entities.size()));
-        for (auto& e : c.block_entities)
-            w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
-        w.varint(int32_t(light.size())).bytes(light);
-        if (chunk_save_extra) chunk_save_extra(c, w);
-        c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
-    }
-    std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
-    uLongf n = uLongf(z.size());
-    compress2(z.data(), &n, w.b.data(), uLong(w.b.size()), 1);  // level 1: ~3x faster than 6, barely bigger
-    {
-        std::ofstream f(tmp, std::ios::binary);
-        uint32_t raw = uint32_t(w.b.size());
-        f.write(reinterpret_cast<const char*>(&CHUNK_MAGIC), 4).write(reinterpret_cast<const char*>(&raw), 4);
-        f.write(reinterpret_cast<const char*>(z.data()), std::streamsize(n));
-    }
-    std::filesystem::rename(tmp, path);  // atomic replace: a crash never leaves a half-written chunk
-    c.on_disk = true;
-}
+bool load_chunk(Chunk& c);  // false: not stored (or stored as a proto chunk: the generator continues it)
+void save_chunk(Chunk& c);  // queued; storage::flush() writes it
 
 // Chunk cache with in-flight futures: every chunk is loaded/generated exactly once, on the worker pool
 // (request) or inline (get_ptr) by whoever asks first; later askers share the future. Chunks no player views
@@ -494,10 +413,14 @@ struct World {
         return true;
     }
 
-    // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
-    std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
-    int save_dirty() {
+    // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds, then writes
+    // the queued chunks to the region files in one batch. Like vanilla's ChunkMap.saveChunksEagerly, a modified
+    // chunk is written at most every 10 s while it keeps changing; `all` (save-all, shutdown) writes everything.
+    std::function<void()> on_saved;          // after the dirty chunks are written (structure piece state)
+    std::function<void(bool all)> on_flush;  // before the region writes (proto chunk eviction, worldgen)
+    int save_dirty(bool all = false) {
         std::vector<ChunkPtr> dirty, idle;
+        auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard lock(m);
             for (auto& [k, c] : chunks) {
@@ -505,22 +428,27 @@ struct World {
                     std::lock_guard cl(c->m);  // uncompressed frames are ~75 KB: only for the sends right after generation
                     c->body.reset();
                 }
-                if (c->dirty) dirty.push_back(c);
-                else if (!viewed(k) && c.use_count() == 1) idle.push_back(c);
+                bool idle_chunk = !viewed(k) && c.use_count() == 1;
+                if (c->dirty && (all || idle_chunk || now - c->saved_at >= std::chrono::seconds(10))) dirty.push_back(c);
+                else if (idle_chunk) idle.push_back(c);
             }
         }
         int saved = int(dirty.size());
-        for (auto& c : dirty) save_chunk(*c);
+        for (auto& c : dirty) save_chunk(*c), c->saved_at = now;
         if (on_saved) on_saved();
         for (auto& c : idle)
-            if (cache_generated && !c->on_disk) save_chunk(*c);
-        std::lock_guard lock(m);
-        for (auto& c : dirty) idle.push_back(std::move(c));
-        for (auto& c : idle) {
-            Key k{c->cx, c->cz};
-            auto it = chunks.find(k);  // use_count 2 = map + `idle`: nobody else picked it up meanwhile
-            if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
-                chunks.erase(it);
+            if (cache_generated && !c->on_disk) save_chunk(*c), c->saved_at = now;
+        if (on_flush) on_flush(all);
+        storage::flush();
+        {
+            std::lock_guard lock(m);
+            for (auto& c : dirty) idle.push_back(std::move(c));
+            for (auto& c : idle) {
+                Key k{c->cx, c->cz};
+                auto it = chunks.find(k);  // use_count 2 = map + `idle`: nobody else picked it up meanwhile
+                if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
+                    chunks.erase(it);
+            }
         }
 #ifdef __GLIBC__
         malloc_trim(0);  // hand freed chunk memory (and the join burst buffers) back to the OS
