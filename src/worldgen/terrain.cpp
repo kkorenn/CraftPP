@@ -410,6 +410,13 @@ int TerrainGenerator::endBiome(const df::Bound& erosion, int bx, int by, int bz)
          : h < -0.21875 ? biomes::small_end_islands : biomes::end_barrens;
 }
 
+std::vector<int> TerrainGenerator::possibleBiomes() const {
+  if (endBiomes) return {biomes::the_end, biomes::end_highlands, biomes::end_midlands, biomes::small_end_islands, biomes::end_barrens};
+  std::vector<int> out;
+  for (auto& [p, b] : biomeSource->values()) out.push_back(b);
+  return out;
+}
+
 int TerrainGenerator::uncachedBiome(ClimateSampler& s, int qx, int qy, int qz) {
   int x = qx << 2, y = qy << 2, z = qz << 2;
   if (endBiomes) return endBiome(s.f[3], x, y, z);

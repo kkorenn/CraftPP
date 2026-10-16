@@ -94,6 +94,8 @@ class TerrainGenerator {
   void createBiomes(Chunk& c);
   void chunkBiomes(int cx, int cz, const BiomeSource* source, std::vector<uint16_t>& out);
   int endBiome(const df::Bound& erosion, int bx, int by, int bz) const;
+  // BiomeSource.possibleBiomes in its order (multi-noise parameter list order; TheEndBiomeSource's five).
+  std::vector<int> possibleBiomes() const;
   std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c, const df::Sampler* beardifier = nullptr);
   std::unique_ptr<NoiseChunk> createNoiseChunk(const DensityVolume& volume);
   // getBaseHeight(x, z, WORLD_SURFACE_WG): y above the top non-air noise-stage block, or MIN_Y.

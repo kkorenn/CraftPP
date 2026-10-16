@@ -665,7 +665,8 @@ void register_basic_features(ParserMap& m) {
     const Json* pr = st.find("properties") ? st.find("properties") : st.find("Properties");
     bool falling = pr && pr->has("falling") && (*pr)["falling"].asString() == "true";
     f->state = R().parse(fluid == "lava" || fluid == "flowing_lava" ? "minecraft:lava" : "minecraft:water");
-    if (falling) f->state = R().with(f->state, "level", "8");
+    // FlowingFluid.getLegacyLevel: a source is level 0 even when falling (every vanilla spring is a source).
+    if (falling && fluid.rfind("flowing_", 0) == 0) f->state = R().with(f->state, "level", "8");
     f->requiresBelow = !j.has("requires_block_below") || j["requires_block_below"].asBool();
     f->rockCount = j.getInt("rock_count", 4), f->holeCount = j.getInt("hole_count", 1);
     f->valid = L.block_set(j["valid_blocks"]);

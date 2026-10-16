@@ -132,7 +132,7 @@ struct ChunkStructures {  // ProtoChunk::structure_data
 
 std::vector<uint8_t> possibleBiomes(const worldgen::TerrainGenerator& t) {
   std::vector<uint8_t> out(biomeNames().size(), 0);
-  for (auto& [point, biome] : t.biomeSource->values()) out[biome] = 1;
+  for (int biome : t.possibleBiomes()) out[biome] = 1;
   return out;
 }
 }  // namespace

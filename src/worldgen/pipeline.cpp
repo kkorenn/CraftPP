@@ -46,8 +46,13 @@ Heightmap heightmap_by_name(const std::string& n) {
 }
 
 // ---------------------------------------------------------------- ProtoChunk
+uint16_t ProtoChunk::get(int x, int y, int z) const {
+  return y < owner->min_y || y >= owner->min_y + owner->height ? uint16_t(blocks::void_air) : chunk->get(x, y, z);
+}
+
 void ProtoChunk::set(int x, int y, int z, uint16_t state) {
-  if (y < MIN_Y || y >= MIN_Y + HEIGHT) return;
+  const int MIN_Y = owner->min_y;
+  if (y < MIN_Y || y >= MIN_Y + owner->height) return;
   uint16_t old = chunk->get(x, y, z);
   chunk->set(x, y, z, state);
   Status st = get_status();
@@ -70,7 +75,8 @@ void ProtoChunk::set(int x, int y, int z, uint16_t state) {
 
 void ProtoChunk::prime_heightmaps() {
   const auto& op = opaque();
-  int top = MIN_Y + HEIGHT - 1;
+  const int MIN_Y = owner->min_y;
+  int top = MIN_Y + owner->height - 1;
   for (int z = 0; z < 16; z++)
     for (int x = 0; x < 16; x++) {
       uint8_t remaining = 0x3F;
@@ -183,11 +189,14 @@ void Pipeline::run_step(ProtoChunk& c, Status s) {
   for (ProtoChunk* p : locks) held.emplace_back(p->m);
   if (c.get_status() >= s) return;  // another thread did it while we waited
   if (s == Status::BIOMES && !c.chunk) {
-    c.chunk = std::make_unique<Chunk>();
+    c.chunk = std::make_unique<Chunk>(min_y, height);
     c.chunk->cx = c.cx, c.chunk->cz = c.cz;
   }
   auto t0 = std::chrono::steady_clock::now();
+  GenContext saved = gen_context;
+  gen_context = context;
   if (st.fn) st.fn(region);
+  gen_context = saved;
   if (s == Status::TERRAIN) c.prime_heightmaps();
   step_ns[size_t(s)] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
   step_count[size_t(s)]++;
@@ -202,12 +211,17 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
       static std::once_flag warned;
       std::call_once(warned, [] { fprintf(stderr, "worldgen: regenerating a dropped chunk without features\n"); });
       Region region{*this, Status::TERRAIN, cx, cz, 0, 0, {p.get()}};
-      p->chunk = std::make_unique<Chunk>();
+      p->chunk = std::make_unique<Chunk>(min_y, height);
       p->chunk->cx = cx, p->chunk->cz = cz;
       Status keep = p->get_status();
       p->status.store(Status::STRUCTURE_REFERENCES);
       for (Status s : {Status::BIOMES, Status::TERRAIN})
-        if (steps[size_t(s)].fn) region.step = s, steps[size_t(s)].fn(region);
+        if (steps[size_t(s)].fn) {
+          GenContext saved = gen_context;
+          gen_context = context;
+          region.step = s, steps[size_t(s)].fn(region);
+          gen_context = saved;
+        }
       p->status.store(keep);
     }
     out.sections = p->chunk->sections;

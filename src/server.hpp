@@ -206,15 +206,14 @@ inline void setup_dimensions(int64_t seed) {
         w.coordinate_scale = d.scale, w.skylight = d.sky, w.ceiling = d.ceiling, w.sea_level = d.sea;
         w.logical_height = d.logical;
         w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
-        auto gen = std::make_shared<std::unique_ptr<worldgen::TerrainGenerator>>();
+        auto gen = std::make_shared<std::unique_ptr<worldgen::Overworld>>();
         auto once = std::make_shared<std::once_flag>();
-        bool surface = props["worldgen-stages"] != "noise";
-        std::string settings = d.settings;
+        std::string settings = d.settings, stages = props["worldgen-stages"], pack = props["worldgen-datapack"];  // nether/end structures: structures-2
         w.generator = [=](Chunk& c) {
             std::call_once(*once, [&] {
-                *gen = std::make_unique<worldgen::TerrainGenerator>(seed, "vanilla/src/data", surface, settings, 0, 256);
+                *gen = std::make_unique<worldgen::Overworld>(seed, stages, "vanilla/src/data", pack, settings, 0, 256);
             });
-            (*gen)->generate(c);
+            (*gen)->pipeline.take(c.cx, c.cz, c);
         };
     }
 }

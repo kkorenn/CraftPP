@@ -27,7 +27,7 @@ struct BiomeCtx : material::MaterialContext {
   void sampleDensityVolume(const std::string&, DensityBuffer&, const DensityVolume&) override {}
   int noiseBiome(int qx, int qy, int qz) override {
     ProtoChunk* p = l.region().chunk(qx >> 2, qz >> 2);
-    int y = qy - (MIN_Y >> 2);
+    int y = qy - (l.min_y() >> 2);
     if (p && p->chunk) return p->chunk->get_biome(qx & 3, y, qz & 3);
     // Outside the readable region vanilla would crash; sample the biome source instead.
     auto& t = *l.features().ow.terrain;
@@ -78,8 +78,10 @@ BlockEntity* Level::block_entity(const P& p) {
 
 int Level::height(Heightmap h, int x, int z) const {
   ProtoChunk* c = r.chunk(x >> 4, z >> 4);
-  return c && c->chunk ? c->height(h, x & 15, z & 15) : MIN_Y;
+  return c && c->chunk ? c->height(h, x & 15, z & 15) : min_y();
 }
+int Level::min_y() const { return r.pipeline.min_y; }
+int Level::max_y() const { return r.pipeline.min_y + r.pipeline.height - 1; }
 
 int Level::biome(const P& p) const {
   BiomeCtx ctx(const_cast<Level&>(*this));
@@ -98,13 +100,13 @@ float Level::temperature(int biome, const P& p) const { return f.materials->biom
 void Level::mark_post_processing(const P& p) {
   if (outside(p.y)) return;
   ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
-  if (c && c->chunk) c->post_processing.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
+  if (c && c->chunk) c->post_processing.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
 void Level::schedule_leaf_tick(const P& p) {
   if (outside(p.y)) return;
   ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
-  if (c && c->chunk) c->leaf_ticks.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
+  if (c && c->chunk) c->leaf_ticks.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
 bool Level::should_freeze(int b, const P& p, bool checkNeighbors) const {
@@ -904,7 +906,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   std::sort(names.begin(), names.end());
   std::vector<int> sources;
   possibleBiome.assign(names.size(), 0);
-  for (auto& [pt, b] : ow.terrain->biomeSource->values())
+  for (int b : ow.terrain->possibleBiomes())
     if (!possibleBiome[size_t(b)]) possibleBiome[size_t(b)] = 1, sources.push_back(b);
 
   // Feature lists of every biome (placed features parsed on first reference).
@@ -987,7 +989,7 @@ void Features::finish(Region& r) const {
   using namespace feat;
   Level level(r, *this);
   ProtoChunk& c = r.center();
-  auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + MIN_Y, c.cz * 16 + (v >> 4 & 15)}; };
+  auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + r.pipeline.min_y, c.cz * 16 + (v >> 4 & 15)}; };
   auto writable = [&](const P& p) {
     ProtoChunk* n = r.chunk(p.x >> 4, p.z >> 4);
     return n && n->chunk && !n->taken;
@@ -1047,7 +1049,7 @@ void Features::decorate(Region& r) const {
       for (auto& s : c.sections)
         for (int i = 0; i < 64; i++) present[s.biomes.get(i)] = 1;
     }
-  P origin{ox, MIN_Y, oz};
+  P origin{ox, r.pipeline.min_y, oz};
   int nsteps = std::max(11, int(steps.size()));
   std::vector<int> idx;
   for (int step = 0; step < nsteps; step++) {

@@ -57,6 +57,7 @@
 #include <vector>
 
 #include "world.hpp"
+#include "worldgen/providers.hpp"
 
 namespace worldgen {
 
@@ -91,15 +92,14 @@ struct ProtoChunk {
   ProtoChunk(int cx, int cz, Pipeline* owner) : cx(cx), cz(cz), owner(owner) {}
   Status get_status() const { return status.load(std::memory_order_acquire); }
   // Local x, z (0..15), world y. Outside the build height: void_air / ignored, like ProtoChunk.
-  uint16_t get(int x, int y, int z) const {
-    return y < MIN_Y || y >= MIN_Y + HEIGHT ? uint16_t(blocks::void_air) : chunk->get(x, y, z);
-  }
+  uint16_t get(int x, int y, int z) const;
   // ProtoChunk.setBlockState: stores the state and updates the final heightmaps (from TERRAIN on).
   void set(int x, int y, int z, uint16_t state);
   int height(Heightmap h, int x, int z) const { return heightmaps[h][size_t(z * 16 + x)]; }
   void prime_heightmaps();  // all six from the blocks (Heightmap.primeHeightmaps)
 };
 using ProtoPtr = std::shared_ptr<ProtoChunk>;
+
 
 // WorldGenRegion: the chunks a step may see. Block coordinates are world coordinates.
 struct Region {
@@ -119,7 +119,7 @@ struct Region {
   // WorldGenRegion.setBlock: false (and no write) outside the write radius or the build height.
   bool set(int x, int y, int z, uint16_t state) const {
     if (std::abs((x >> 4) - cx) > write_radius || std::abs((z >> 4) - cz) > write_radius) return false;
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
+    if (y < chunk(x >> 4, z >> 4)->chunk->min_y || y >= chunk(x >> 4, z >> 4)->chunk->min_y + chunk(x >> 4, z >> 4)->chunk->height()) return false;
     chunk(x >> 4, z >> 4)->set(x & 15, y, z & 15, state);
     return true;
   }
@@ -135,6 +135,9 @@ using StepFn = std::function<void(Region&)>;
 class Pipeline {
  public:
   Pipeline();
+  // Dimension layout (chunk min_y / height) and WorldGenerationContext; set before the first ensure.
+  int min_y = MIN_Y, height = HEIGHT;
+  GenContext context;
   // lock_radius -1: max(write radius, 0). A larger lock radius also makes those chunks readable and writable
   // in the Region (used by the FULL step for post-processing and scheduled leaf ticks, which cross borders).
   void set_step(Status s, StepFn fn, int lock_radius = -1);

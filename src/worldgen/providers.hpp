@@ -13,7 +13,13 @@
 
 namespace worldgen {
 
-inline constexpr int GEN_MIN_Y = -64, GEN_DEPTH = 384, GEN_SEA_LEVEL = 63;  // overworld WorldGenerationContext
+// WorldGenerationContext of the dimension being generated (minGenY, genDepth) + its sea level. Pipeline::run_step
+// sets it on the generating thread (thread_local: worker threads generate several dimensions); default overworld.
+struct GenContext { int min_y = -64, depth = 384, sea_level = 63; };
+inline thread_local GenContext gen_context;
+#define GEN_MIN_Y (::worldgen::gen_context.min_y)
+#define GEN_DEPTH (::worldgen::gen_context.depth)
+#define GEN_SEA_LEVEL (::worldgen::gen_context.sea_level)
 
 inline std::string strip_ns(const std::string& s) { return s.rfind("minecraft:", 0) == 0 ? s.substr(10) : s; }
 // Biome JSON path: a datapack override (<pack>/data/minecraft/worldgen/biome/<name>.json) wins over vanilla.
