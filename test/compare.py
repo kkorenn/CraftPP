@@ -22,7 +22,6 @@ ap.add_argument("--mode", choices=["full", "solid"], default="full")
 ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla world (also disables structures)")
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
 ap.add_argument("--center", nargs=2, type=int, help="block x z to compare around instead of the world spawn")
-ap.add_argument("--dump", help="pickle (A, B) chunk data for offline analysis")
 ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
 ap.add_argument("--stable", action="store_true", help="run vanilla twice; compare only blocks both vanilla runs agree on")
@@ -157,7 +156,6 @@ if args.stable:  # vanilla's own run-to-run differences (feature order between c
         for (ba, _), (b2, _) in zip(A[k], A2[k]):
             noise += sum(x != y for x, y in zip(ba, b2))
 
-if args.dump: pickle.dump((A, B, center), open(args.dump, "wb"))
 per_section, per_chunk, examples, block_pairs = collections.Counter(), collections.Counter(), [], collections.Counter()
 bio_pairs, bio_examples, total = collections.Counter(), [], 0
 for (cx, cz) in sorted(A):
