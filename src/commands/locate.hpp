@@ -41,7 +41,7 @@ inline int locate_structure(Cmd& c) {
     hover.set("value", tr("chat.coordinates.tooltip"));
     coords.set("hover_event", hover);
     c.success(tr("commands.locate.structure.success", {name, coords, distance}), false);
-    printf("Locating element %s took %lld ms\n", name.c_str(),
+    log_info("Locating element %s took %lld ms", name.c_str(),
            (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
     return distance;
 }
