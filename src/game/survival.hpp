@@ -21,13 +21,7 @@ inline Writer& translate_component(Writer& w, const std::string& key, std::initi
     return w.u8(0);
 }
 
-inline int difficulty() {  // 0 peaceful, 1 easy, 2 normal, 3 hard (server.properties "difficulty", vanilla default easy)
-    static int d = [] {
-        std::string s = props.count("difficulty") ? props["difficulty"] : "easy";
-        return s == "peaceful" || s == "0" ? 0 : s == "normal" || s == "2" ? 2 : s == "hard" || s == "3" ? 3 : 1;
-    }();
-    return d;
-}
+inline int difficulty() { return world_difficulty; }  // 0 peaceful .. 3 hard (commands/state.hpp, /difficulty)
 inline bool survival_like(const Player& p) { return p.gamemode == 0 || p.gamemode == 2; }
 
 // ---------- vitals ----------
@@ -103,8 +97,7 @@ inline void kill(Player& p, const std::string& type) {
     Writer chat;
     chat.varint(play_cb::system_chat).bytes(component).boolean(false);
     for (auto& q : players) q->send(chat);
-    printf("[death] %s (%s)\n", p.name.c_str(), key.c_str());
-    fflush(stdout);
+    log_info("%s", plain(tr(key, {p.name})).c_str());  // vanilla logs the death message like other system chat
     broadcast_near(p.x, p.z, entity_event_packet(p.eid, 3), &p);
     if (p.g.container) close_container(p, true);
     drop_all(p);
