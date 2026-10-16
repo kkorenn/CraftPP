@@ -21,6 +21,14 @@
 #include <vector>
 
 #include <zlib.h>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
+#ifdef __linux__
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 // Overworld dimension: y -64..319, 24 sections of 16x16x16.
 inline constexpr int MIN_Y = -64, HEIGHT = 384, SECTIONS = HEIGHT / 16;
@@ -255,8 +263,9 @@ inline void write_chunk(Writer& w, Chunk& c) {
     w.bytes(chunk_light_tail());
 }
 
-// Worker pool for chunk load/generate/encode. Sized from the CPU quota (cgroup cpu.max) or core count,
-// minus one core left for the tick thread; `worker-threads` in server.properties overrides (World::start).
+// Worker pool for chunk load/generate/encode, one thread per core of the CPU quota (cgroup cpu.max) or core
+// count, max 4. Workers run at nice +5 (Linux) so the tick thread preempts them. `worker-threads` in
+// server.properties overrides (World::start).
 struct ChunkPool {
     std::mutex m;
     std::condition_variable cv;
@@ -269,11 +278,14 @@ struct ChunkPool {
         std::string quota;
         double period;
         if (f >> quota >> period && quota != "max" && period > 0) cpus = std::min(cpus, std::stod(quota) / period);
-        return std::clamp(int(std::ceil(cpus)) - 1, 1, 4);
+        return std::clamp(int(std::ceil(cpus - 0.01)), 1, 4);
     }
     void start(int n) {
         for (int i = 0; i < n; i++)
             threads.emplace_back([this] {
+#ifdef __linux__
+                setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 5);
+#endif
                 for (;;) {
                     std::function<void()> f;
                     {
@@ -448,6 +460,9 @@ struct World {
             if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
                 chunks.erase(it);
         }
+#ifdef __GLIBC__
+        malloc_trim(0);  // hand freed chunk memory (and the join burst buffers) back to the OS
+#endif
         return saved;
     }
     size_t loaded() {
