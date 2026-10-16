@@ -178,30 +178,6 @@ public final class Main {
         }
     }
 
-    /**
-     * First run only: write an AppCDS archive of the classes loaded so far (JVM started
-     * with -XX:+RecordDynamicDumpInfo), so later starts map them instead of parsing jars.
-     */
-    public static void dumpCds(String file) {
-        try {
-            javax.management.MBeanServer mbs = java.lang.management.ManagementFactory.getPlatformMBeanServer();
-            Object out = mbs.invoke(new javax.management.ObjectName("com.sun.management:type=DiagnosticCommand"), "vmCds",
-                    new Object[] {new String[] {"dynamic_dump", file}}, new String[] {String[].class.getName()});
-            if (out != null && !out.toString().isBlank()) {
-                Logger.getLogger("").fine(out.toString());
-            }
-        } catch (Exception e) {
-            Logger.getLogger("").log(Level.WARNING, "Could not write the AppCDS archive " + file, e);
-        }
-    }
-
-    /** Final stop: System.exit lets the JVM write the AppCDS archive (-XX:+AutoCreateSharedArchive) on the way out. */
-    public static void exit(int status) {
-        running = false;
-        rpc.close();
-        System.exit(status);
-    }
-
     // ----- request routing -----
 
     private static JsonElement handleRequest(String type, JsonObject payload) {

@@ -7,6 +7,7 @@ logs/
 compile_commands.json
 tools/vineflower.jar
 .DS_Store
+build-*/
 ops.json
 banned-players.json
 banned-ips.json
@@ -15,3 +16,20 @@ usercache.json
 eula.txt
 server.properties
 data/roster.json
+cache/
+/plugins/
+/ops.json
+/vanilla
+java/.gradle/
+# Paper-style files the server creates beside server.properties on first run
+/eula.txt
+/bukkit.yml
+/spigot.yml
+/commands.yml
+/config/
+/usercache.json
+/version_history.json
+/banned-players.json
+/banned-ips.json
+/whitelist.json
+/.console_history
