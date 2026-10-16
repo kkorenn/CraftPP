@@ -46,8 +46,9 @@ inline int item_id(const char* name) {
     return it == item_by_name.end() ? -1 : it->second;
 }
 
+inline Json data_json;  // freed by containers_init once every table is built
 inline bool load_data() {
-    Json j;
+    Json& j = data_json;
     try {
         j = Json::parseFile("data/containers.json");
     } catch (const std::exception& e) {
@@ -138,15 +139,15 @@ inline int with(int state, const char* prop, std::string_view v) {
     return s < 0 ? state : s;
 }
 
-// Container.stillValidBlockEntity: block entity still there and within interaction range + 4.
-inline bool in_range(const Player& p, const be::Live& b) {
-    if (b.removed) return false;
+// Player.isWithinBlockInteractionRange(pos, 4.0); Container.stillValidBlockEntity adds "not removed".
+inline bool in_range(const Player& p, int x, int y, int z) {
     double ex = p.x, ey = p.y + 1.62, ez = p.z;
-    double dx = std::max({b.x - ex, 0.0, ex - (b.x + 1)}), dy = std::max({b.y - ey, 0.0, ey - (b.y + 1)}),
-           dz = std::max({b.z - ez, 0.0, ez - (b.z + 1)});
+    double dx = std::max({x - ex, 0.0, ex - (x + 1)}), dy = std::max({y - ey, 0.0, ey - (y + 1)}),
+           dz = std::max({z - ez, 0.0, ez - (z + 1)});
     double r = (p.gamemode == 1 ? 5.0 : 4.5) + 4.0;
     return dx * dx + dy * dy + dz * dz < r * r;
 }
+inline bool in_range(const Player& p, const be::Live& b) { return !b.removed && in_range(p, b.x, b.y, b.z); }
 
 // ---------- slot-list menus ----------
 // A menu over container slots that live elsewhere (block entities, the ender chest). `holders` keep the

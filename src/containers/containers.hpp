@@ -2,6 +2,7 @@
 // Block entities and container menus: entry point. containers_init() (game_init) loads data/containers.json,
 // registers block entity types and installs the hooks in world.hpp / survival.hpp / loot.hpp / server.hpp.
 #include "hopper.hpp"
+#include "stations.hpp"
 
 namespace cont {
 
@@ -11,7 +12,8 @@ inline bool use_block(Player& p, int hand, int x, int y, int z, int) {
     bool have_items = !p.inv[size_t(p.selected)].empty() || !p.inv[40].empty();
     if (p.g.sneaking && have_items) return false;  // secondary use: place against it instead
     if (hand != 0) return false;                   // useWithoutItem is main hand only
-    return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z) || use_hopper(p, state, x, y, z);
+    return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z) || use_hopper(p, state, x, y, z) ||
+           use_station(p, state, x, y, z);
 }
 
 // getStateForPlacement for the blocks of this module; other states pass through.
@@ -63,8 +65,9 @@ inline void player_tick(Player& p) {
 
 }  // namespace cont
 
-// Player file lines (survival.hpp): "ender <slot> <item> <count> [patch hex]".
+// Player file lines (survival.hpp): "xpseed <seed>", "ender <slot> <item> <count> [patch hex]".
 inline void save_player_containers(const Player& p, std::ostream& f) {
+    f << "xpseed " << p.g.enchant_seed << '\n';  // Player XpSeed
     for (size_t i = 0; i < p.g.ender.size(); i++) {
         const ItemStack& s = p.g.ender[i];
         if (s.empty()) continue;
@@ -74,6 +77,7 @@ inline void save_player_containers(const Player& p, std::ostream& f) {
     }
 }
 inline bool load_player_containers(Player& p, const std::string& key, std::istream& f) {
+    if (key == "xpseed") return bool(f >> p.g.enchant_seed) || true;
     if (key != "ender") return false;
     std::string line;
     std::getline(f, line);
@@ -92,6 +96,17 @@ inline void containers_init() {
     cont::register_chests();
     cont::register_furnaces();
     cont::register_hoppers();
+    cont::load_enchant_data(cont::data_json);
+    cont::data_json = Json();
+    static const Writer recipes = cont::update_recipes_packet();
+    on_player_join([](Player& p) {
+        p.send(recipes);
+        if (!p.g.enchant_seed) p.g.enchant_seed = int32_t(game_rng());
+    });
+    on(play_sb::rename_item, [](Player& p, Reader& in, int) {
+        std::string name = in.str(32767);
+        if (auto* m = dynamic_cast<cont::AnvilMenu*>(p.g.menu.get())) m->rename(p, name);
+    });
     block_changed_hook = cont::block_changed;
     chunk_loaded_hook = be::chunk_loaded;
     block_entity_update_tag = be::update_tag;

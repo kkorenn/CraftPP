@@ -65,7 +65,19 @@ def load(folder, name):
 # ---------- recipes ----------
 cooking = {"smelting": [], "blasting": [], "smoking": [], "campfire_cooking": []}
 stonecutting, smithing_transform, smithing_trim = [], [], []
-recipe_files = sorted(f for f in os.listdir(os.path.join(DATA, "recipe")) if f.endswith(".json"))
+recipe_files = sorted(os.path.relpath(os.path.join(dp, f), os.path.join(DATA, "recipe")).replace(os.sep, "/")
+                      for dp, _, fs in os.walk(os.path.join(DATA, "recipe")) for f in fs if f.endswith(".json"))
+potion_ids = {k: v["protocol_id"] for k, v in registries["minecraft:potion"]["entries"].items()}
+brewing = []
+
+
+def potion_ingredient(o):
+    pc = o.get("potion_contents")
+    pots = None
+    if pc is not None:
+        v = pc["potions"]
+        pots = [potion_ids[x] for x in (v if isinstance(v, list) else [v])]
+    return {"i": items(o["item"]), "p": pots}
 for f in recipe_files:
     r = json.load(open(os.path.join(DATA, "recipe", f)))
     t = r["type"].split(":")[-1]
@@ -81,6 +93,11 @@ for f in recipe_files:
         res = r["result"]
         smithing_transform.append({"t": items(r["template"]), "b": items(r["base"]), "a": items(r["addition"]),
                                    "r": [item_ids[res["id"]], res.get("count", 1)]})
+    elif t == "brewing":
+        out_ = r["output"]
+        pc = out_.get("components", {}).get("minecraft:potion_contents")
+        brewing.append({"in": potion_ingredient(r["input"]), "re": potion_ingredient(r["reagent"]),
+                        "r": [item_ids[out_["id"]], out_.get("count", 1)], "p": potion_ids[pc["potion"]] if pc else None})
     elif t == "smithing_trim":
         smithing_trim.append({"t": items(r["template"]), "b": items(r["base"]), "a": items(r["addition"]),
                               "p": r["pattern"]})
@@ -113,6 +130,54 @@ for name, iid in item_ids.items():
         fuel[iid] = [provider("int", cf["burn_time"], False), provider("int", cf["burn_time"], True),
                      provider("float", cf["speed_multiplier"], False), provider("float", cf["speed_multiplier"], True)]
 
+# ---------- enchantments (registry order = sorted ids, like the synced registry) ----------
+ench_tags = load_tags("enchantment")
+ench_ids = json_ids("enchantment")
+ench_index = {n: i for i, n in enumerate(ench_ids)}
+
+
+def ench_set(spec):
+    names = []
+    for v in spec if isinstance(spec, list) else [spec]:
+        names += ench_tags.get(v[1:], []) if v.startswith("#") else [v]
+    return [ench_index[n] for n in names if n in ench_index]
+
+
+enchantments = []
+for n in ench_ids:
+    e = load("enchantment", n.replace("minecraft:", ""))
+    enchantments.append({"n": n, "max": e["max_level"], "w": e["weight"], "ac": e["anvil_cost"],
+                         "min": [e["min_cost"]["base"], e["min_cost"]["per_level_above_first"]],
+                         "maxc": [e["max_cost"]["base"], e["max_cost"]["per_level_above_first"]],
+                         "sup": items(e["supported_items"]), "pri": items(e["primary_items"]) if "primary_items" in e else None,
+                         "ex": ench_set(e["exclusive_set"]) if "exclusive_set" in e else []})
+ench_tag_out = {t: ench_set("#minecraft:" + t) for t in ("in_enchanting_table", "curse", "treasure", "non_treasure")}
+
+# ---------- per-item extras ----------
+DYES = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple",
+        "blue", "brown", "green", "red", "black"]
+item_extra = {}
+for name, iid in item_ids.items():
+    p = os.path.join(comp_dir, name.split(":")[-1] + ".json")
+    if not os.path.exists(p):
+        continue
+    c = json.load(open(p))["components"]
+    x = {}
+    if "minecraft:enchantable" in c: x["ench"] = c["minecraft:enchantable"]["value"]
+    if "minecraft:enchantments" in c: x["has_ench"] = 1
+    if "minecraft:repairable" in c: x["rep"] = items(c["minecraft:repairable"]["items"])
+    if "minecraft:provides_trim_material" in c: x["trim"] = c["minecraft:provides_trim_material"]
+    if "minecraft:provides_banner_patterns" in c: x["banner"] = c["minecraft:provides_banner_patterns"]
+    if "minecraft:brewing_fuel" in c: x["bfuel"] = 1
+    if "minecraft:unbreakable" in c: x["unbreakable"] = 1
+    if "minecraft:dye" in c: x["dye"] = DYES.index(c["minecraft:dye"])
+    if x: item_extra[iid] = x
+
+banner_tags = load_tags("banner_pattern")
+banner_ids = json_ids("banner_pattern")
+banner = {"ids": banner_ids, "no_item": [banner_ids.index(n) for n in banner_tags.get("minecraft:no_item_required", [])],
+          "tags": {t: [banner_ids.index(n) for n in v] for t, v in banner_tags.items() if t.startswith("minecraft:pattern_item/")}}
+
 sounds = {k.split(":")[-1]: v["protocol_id"] for k, v in registries["minecraft:sound_event"]["entries"].items()}
 want_sounds = [s for s in sounds if s.startswith(("block.chest.", "block.barrel.", "block.ender_chest.", "block.shulker_box.",
                                                  "block.furnace.", "block.blastfurnace.", "block.smoker.", "ui.stonecutter.",
@@ -129,7 +194,7 @@ tags = {t: items("#minecraft:" + t) for t in (
     "enchantable/armor", "enchantable/sword", "enchantable/sharp_weapon", "enchantable/mace", "enchantable/fire_aspect",
     "enchantable/weapon", "enchantable/mining", "enchantable/mining_loot", "enchantable/fishing", "enchantable/trident",
     "enchantable/durability", "enchantable/bow", "enchantable/equippable", "enchantable/crossbow", "enchantable/vanishing",
-    "enchantable/melee_weapon", "enchantable/lunge", "wool", "planks", "saplings", "dyes")
+    "enchantable/melee_weapon", "enchantable/lunge", "loom_dyes", "loom_patterns", "banners", "wool", "planks", "saplings", "dyes")
     if "minecraft:" + t in item_tags}
 reg_ids = lambda r: {k.split(":")[-1]: v["protocol_id"] for k, v in registries["minecraft:" + r]["entries"].items()}
 
@@ -137,7 +202,8 @@ out = {"cooking": cooking, "fuel": fuel, "stonecutting": stonecutting, "smithing
        "smithing_trim": smithing_trim, "sounds": {s: sounds[s] for s in want_sounds}, "item_tags": tags,
        "block_entity_types": reg_ids("block_entity_type"), "menus": reg_ids("menu"),
        "recipe_display": reg_ids("slot_display"), "trim_pattern": json_ids("trim_pattern"),
-       "trim_material": json_ids("trim_material")}
+       "trim_material": json_ids("trim_material"), "brewing": brewing, "enchantments": enchantments,
+       "enchantment_tags": ench_tag_out, "items": item_extra, "banner": banner, "potions": potion_ids}
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
 with open(os.path.join(ROOT, "data", "containers.json"), "w") as fp:
     json.dump(out, fp, separators=(",", ":"))

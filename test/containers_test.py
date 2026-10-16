@@ -127,3 +127,41 @@ cid, items = open_menu(c, CHEST, 8, "generic_9x3")
 assert items[0] == (45, item("cobblestone")), items[:2]
 close(c, cid)
 print("hopper ok")
+
+# Stonecutter: 2 stone, pick the stone_slab option -> 2 slabs in the result slot (client list = update_recipes order).
+CDATA = json.load(open(os.path.join(ROOT, "data/containers.json")))
+opts = [r["r"][0] for r in CDATA["stonecutting"] if item("stone") in r["i"]]
+STONECUTTER = (24, -60, 22)
+give(c, 0, "stonecutter", 1)
+use(c, (STONECUTTER[0], STONECUTTER[1] - 1, STONECUTTER[2]), 9)
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == STONECUTTER)
+give(c, 0, "stone", 2)
+time.sleep(0.2)
+cid, items = open_menu(c, STONECUTTER, 10, "stonecutter")
+assert len(items) == 38
+click(c, cid, 29, 0, 1)  # stone -> input
+wait_slot(c, cid, 0, (2, item("stone")))
+c.send(PLAY_SB["container_button_click"], varint(cid) + varint(opts.index(item("stone_slab"))))
+wait_slot(c, cid, 1, (2, item("stone_slab")))
+close(c, cid)
+print("stonecutter ok")
+
+# Anvil rename: the result carries minecraft:custom_name (component patch present).
+ANVIL = (26, -60, 22)
+give(c, 0, "anvil", 1)
+use(c, (ANVIL[0], ANVIL[1] - 1, ANVIL[2]), 11)
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == ANVIL)
+give(c, 0, "iron_sword", 1)
+time.sleep(0.2)
+cid, items = open_menu(c, ANVIL, 12, "anvil")
+click(c, cid, 30, 0, 1)  # sword -> input
+wait_slot(c, cid, 0, (1, item("iron_sword")))
+c.send(PLAY_SB["rename_item"], string("Sting"))
+def named(b):
+    if b.varint() != cid: return False
+    b.varint()
+    if b.i16() != 2 or b.varint() != 1 or b.varint() != item("iron_sword"): return False
+    return b"Sting" in b.d[b.i:]
+wait(c, PLAY_CB["container_set_slot"], named)
+close(c, cid)
+print("anvil rename ok")
