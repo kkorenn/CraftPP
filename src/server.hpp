@@ -68,7 +68,7 @@ struct Player {
     std::array<Slot, 41> inv;  // vanilla Inventory indices: 0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand
     int selected = 0;          // hotbar slot 0-8
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
-    Outbox out;                // queued outgoing packets, sent by the writer thread (src/game/tick.hpp)
+    Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
