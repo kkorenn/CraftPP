@@ -7,3 +7,10 @@ logs/
 compile_commands.json
 tools/vineflower.jar
 .DS_Store
+ops.json
+banned-players.json
+banned-ips.json
+whitelist.json
+usercache.json
+eula.txt
+server.properties
