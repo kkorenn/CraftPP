@@ -68,19 +68,4 @@ inline double atan2(double y, double x) {  // Mth.atan2 (table + fastInvSqrt, no
     return theta;
 }
 
-struct Vec3 {
-    double x = 0, y = 0, z = 0;
-    Vec3 operator+(const Vec3& o) const { return {x + o.x, y + o.y, z + o.z}; }
-    Vec3 operator-(const Vec3& o) const { return {x - o.x, y - o.y, z - o.z}; }
-    Vec3 scale(double s) const { return {x * s, y * s, z * s}; }
-    double dot(const Vec3& o) const { return x * o.x + y * o.y + z * o.z; }
-    double length() const { return std::sqrt(x * x + y * y + z * z); }
-    double horizontal() const { return std::sqrt(x * x + z * z); }
-    double dist_sqr(double ox, double oy, double oz) const { return (x - ox) * (x - ox) + (y - oy) * (y - oy) + (z - oz) * (z - oz); }
-    Vec3 normalize() const {  // Vec3.normalize: < 1e-5 -> zero
-        double d = length();
-        return d < 1.0E-5F ? Vec3{} : Vec3{x / d, y / d, z / d};
-    }
-};
-
 }  // namespace emth

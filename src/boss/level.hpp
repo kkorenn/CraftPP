@@ -8,7 +8,8 @@
 #include <cfloat>
 
 namespace boss {
-using emth::Vec3;
+// Vec3::dist_sqr against loose coordinates
+inline double dsq(const Vec3& v, double x, double y, double z) { return v.dist_sqr(Vec3{x, y, z}); }
 
 inline World& boss_level() { return world; }
 inline int64_t level_seed() {
@@ -19,7 +20,7 @@ inline int64_t level_seed() {
     return s;
 }
 
-inline int get_block(int x, int y, int z) { return boss_level().get_block(x, y, z); }
+inline int get_block(int x, int y, int z) { return block_at(x, y, z); }  // loaded chunks only (unloaded = air)
 inline void set_block(int x, int y, int z, int state) {  // Level.setBlockAndUpdate (client update; no neighbour updates)
     if (get_block(x, y, z) == state) return;
     change_block(x, y, z, state);
@@ -107,12 +108,6 @@ inline bool clip_hits(const Vec3& a, const Vec3& b) {
     return false;
 }
 
-struct AABB {
-    double x0, y0, z0, x1, y1, z1;
-    AABB inflate(double x, double y, double z) const { return {x0 - x, y0 - y, z0 - z, x1 + x, y1 + y, z1 + z}; }
-    AABB move(double x, double y, double z) const { return {x0 + x, y0 + y, z0 + z, x1 + x, y1 + y, z1 + z}; }
-    bool intersects(const AABB& o) const { return x0 < o.x1 && x1 > o.x0 && y0 < o.y1 && y1 > o.y0 && z0 < o.z1 && z1 > o.z0; }
-};
 inline AABB player_box(const Player& p) { return {p.x - 0.3, p.y, p.z - 0.3, p.x + 0.3, p.y + 1.8, p.z + 0.3}; }
 
 // ServerExplosion.getSeenPercent
@@ -207,13 +202,13 @@ inline void explode(double x, double y, double z, float radius, int interaction,
     for (auto& pp : players) {
         Player& p = *pp;
         if (p.gamemode == 3 || p.g.dead || radius < 1.0E-5F) continue;
-        double dist = std::sqrt(Vec3{p.x, p.y, p.z}.dist_sqr(x, y, z)) / r2;
+        double dist = std::sqrt(dsq(Vec3{p.x, p.y, p.z}, x, y, z)) / r2;
         if (dist > 1.0) continue;
         Vec3 dir = (Vec3{p.x, p.y + 1.62, p.z} - c).normalize();
         float exposure = seen_percent(c, player_box(p));
         double pw = (1.0 - dist) * exposure;
         hurt_player(p, float((pw * pw + pw) / 2.0 * 7.0 * r2 + 1.0), attacker_player_eid >= 0 ? "player_explosion" : "explosion", true);
-        if (p.gamemode != 1) knock[p.eid] = dir.scale((1.0 - dist) * exposure);  // ponytail: no knockback resistance
+        if (p.gamemode != 1) knock[p.eid] = dir * ((1.0 - dist) * exposure);  // ponytail: no knockback resistance
     }
     if (destroy) {
         for (size_t i = blow.size(); i > 1; i--) std::swap(blow[i - 1], blow[size_t(rand_int(int(i)))]);  // Util.shuffle

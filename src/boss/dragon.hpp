@@ -7,12 +7,14 @@
 namespace boss {
 
 struct DragonFight;
+struct EnderDragon;
 inline DragonFight* fight = nullptr;           // the End's EnderDragonFight (fight.hpp)
 inline int fight_alive_crystals();              // fight.hpp
 inline bool fight_previously_killed();          // fight.hpp
 inline void fight_update_dragon(EnderDragon& d);  // fight.hpp
 inline void fight_dragon_killed(EnderDragon& d);  // fight.hpp
 inline bool fight_owns(const EnderDragon& d);     // fight.hpp
+inline void fight_origin_into(int* out);         // fight.hpp
 
 // ---------- pathfinder (Node / BinaryHeap / Path) ----------
 struct Node {
@@ -125,11 +127,11 @@ struct PhaseInstance {  // AbstractDragonPhaseInstance
     virtual void end() {}
     virtual float fly_speed() const { return 0.6f; }
     virtual std::optional<Vec3> target() const { return std::nullopt; }
-    virtual float on_hurt(const Dmg&, float dmg) { return dmg; }
+    virtual float on_hurt(const DamageSource&, float dmg) { return dmg; }
     virtual float turn_speed() const;
 };
 
-struct EnderDragon : Entity {
+struct EnderDragon : BossEntity {
     // part order: head, neck, body, tail1-3, wing1, wing2 (ids eid+1..eid+8, assigned by the client the same way)
     struct Part { float w, h; double x = 0, y = 0, z = 0; };
     std::array<Part, 8> parts{{{1, 1}, {3, 3}, {5, 3}, {2, 2}, {2, 2}, {2, 2}, {4, 2}, {4, 2}}};
@@ -137,8 +139,8 @@ struct EnderDragon : Entity {
     FlightHistory history;
     float health = 200, max_health = 200, last_hurt = 0, sitting_damage = 0, yrot_a = 0, flap = 0, oflap = 0;
     int death_time = 0, hurt_time = 0, cooldown = 0, ambient_time = 0;
-    bool in_wall = false, dead_flag = false, no_ai = false;
-    EndCrystal* nearest_crystal = nullptr;
+    bool in_wall = false, dead_flag = false, no_ai = false, linked = false;
+    int nearest_crystal = 0;  // entity id
     int fight_origin[3] = {0, 0, 0};
     std::array<std::unique_ptr<PhaseInstance>, PHASE_COUNT> phases;
     PhaseInstance* current = nullptr;
@@ -149,25 +151,22 @@ struct EnderDragon : Entity {
     std::map<int, int64_t> player_last_hurt;  // player eid -> tick hurt by this dragon (getLastHurtByMobTimestamp)
 
     EnderDragon();
-    std::string type_name() const override { return "ender_dragon"; }
-    bool living() const override { return true; }
-    void write_meta(Writer& w) override {
-        if (health != 200) meta::f32(w, 9, health);
-        meta::i32(w, 16, current ? int(current->phase()) : int(HOVERING));
-    }
     void set_health(float h) {
         h = std::clamp(h, 0.0f, max_health);
         if (h == health) return;
         health = h;
-        meta::f32(dirty, 9, health);
+        data.set_float(edata::LivingEntity::HEALTH, health);
     }
     bool dying() const { return health <= 0 || dead_flag; }
+    bool is_alive() const override { return !removed && !dying(); }
+    bool fire_immune() const override { return true; }
+    int sound_source() const override { return SRC_HOSTILE; }
     PhaseInstance& phase(Phase p);
     void set_phase(Phase p) {  // EnderDragonPhaseManager.setPhase
         if (current && current->phase() == p) return;
         if (current) current->end();
         current = &phase(p);
-        meta::i32(dirty, 16, int(p));
+        data.set_int(edata::EnderDragon::PHASE, int(p));
         current->begin();
     }
     int egg_y(bool no_leaves) const { return heightmap(fight_origin[0], fight_origin[2], no_leaves); }
@@ -189,16 +188,28 @@ struct EnderDragon : Entity {
     void tick() override;
     void ai_step();
     void tick_death();
-    void tick_part(int i, double ox, double oy, double oz) { parts[size_t(i)].x = x + ox, parts[size_t(i)].y = y + oy, parts[size_t(i)].z = z + oz; }
+    void tick_part(int i, double ox, double oy, double oz) { parts[size_t(i)].x = pos.x + ox, parts[size_t(i)].y = pos.y + oy, parts[size_t(i)].z = pos.z + oz; }
     bool check_walls(const AABB& bb);
-    bool hurt(const Dmg& d, float dmg, int part = -1) override;
-    bool really_hurt(const Dmg& d, float dmg);
+    bool hurt_by(const DamageSource& d, Player* p, float dmg, int part = -1) override;
+    bool really_hurt(const DamageSource& d, Player* p, float dmg);
     void kill() override {  // EnderDragon.kill: no death animation, no XP
-        removed = true;
+        remove(Removal::KILLED);
         fight_update_dragon(*this);
         fight_dragon_killed(*this);
     }
-    void on_crystal_destroyed(EndCrystal& c, Player* p, const Dmg& src);
+    void on_crystal_destroyed(EndCrystal& c, Player* p);
+    void save_extra(Nbt& o) const override {
+        o.set("Health", Nbt::real(Nbt::Float, health));
+        o.set("DragonPhase", Nbt::num(Nbt::Int, current ? int(current->phase()) : int(HOVERING)));
+        o.set("DragonDeathTime", Nbt::num(Nbt::Int, death_time));
+        o.set("sitting_damage_received", Nbt::real(Nbt::Float, sitting_damage));
+    }
+    void load_extra(const Nbt& in) override {
+        set_health(float(nbt_num(in, "Health", 200)));
+        if (in.get("DragonPhase")) set_phase(Phase(std::clamp(int(nbt_num(in, "DragonPhase", 0)), 0, int(PHASE_COUNT) - 1)));
+        death_time = int(nbt_num(in, "DragonDeathTime", 0));
+        sitting_damage = float(nbt_num(in, "sitting_damage_received", 0));
+    }
 };
 
 inline float PhaseInstance::turn_speed() const {
@@ -234,7 +245,7 @@ inline int ring_target(EnderDragon& d, int current, bool& clockwise, bool crysta
     return t;
 }
 inline bool needs_new_target(const EnderDragon& d, const std::optional<Vec3>& t) {
-    double dist = t ? t->dist_sqr(d.x, d.y, d.z) : 0.0;
+    double dist = t ? t->dist_sqr(d.pos) : 0.0;
     return dist < 100.0 || dist > 22500.0;  // horizontal/verticalCollision: always false (noPhysics)
 }
 
@@ -257,8 +268,8 @@ struct HoldingPatternPhase : PhaseInstance {
             int crystals = fight ? fight_alive_crystals() : 0;
             if (rand_int(crystals + 3) == 0) return d.set_phase(LANDING_APPROACH);
             Player* p = nearest_player(d.fight_origin[0], ey, d.fight_origin[2]);  // ignoreLineOfSight, no range
-            double dsq = p ? Vec3{d.fight_origin[0] + 0.5, ey + 0.5, d.fight_origin[2] + 0.5}.dist_sqr(p->x, p->y, p->z) / 512.0 : 64.0;
-            if (p && (rand_int(int(dsq + 2.0)) == 0 || rand_int(crystals + 2) == 0)) return strafe(*p);
+            double ds = p ? dsq(Vec3{d.fight_origin[0] + 0.5, ey + 0.5, d.fight_origin[2] + 0.5}, p->x, p->y, p->z) / 512.0 : 64.0;
+            if (p && (rand_int(int(ds + 2.0)) == 0 || rand_int(crystals + 2) == 0)) return strafe(*p);
         }
         if (!path || path->done()) {
             int cur = d.find_closest_node();
@@ -278,16 +289,16 @@ struct StrafePhase : PhaseInstance {
     int charge = 0;
     std::optional<Path> path;
     std::optional<Vec3> tgt;
-    Player* attack = nullptr;
+    int attack_eid = -1;  // player entity id
     bool clockwise = false;
     Phase phase() const override { return STRAFE_PLAYER; }
-    void begin() override { charge = 0, tgt.reset(), path.reset(), attack = nullptr; }
+    void begin() override { charge = 0, tgt.reset(), path.reset(), attack_eid = -1; }
     std::optional<Vec3> target() const override { return tgt; }
     void set_target(Player& p) {
-        attack = &p;
+        attack_eid = p.eid;
         int cur = d.find_closest_node(), t = d.find_closest_node(p.x, p.y, p.z);
         int fx = int(std::floor(p.x)), fz = int(std::floor(p.z));
-        double xd = fx - d.x, zd = fz - d.z, sd = std::sqrt(xd * xd + zd * zd);
+        double xd = fx - d.pos.x, zd = fz - d.pos.z, sd = std::sqrt(xd * xd + zd * zd);
         double ho = std::min(0.4F + sd / 80.0 - 1.0, 10.0);
         Node fin;
         fin.x = fx, fin.y = Mth::floor(p.y + ho), fin.z = fz;
@@ -365,17 +376,18 @@ struct SittingPhase : PhaseInstance {  // AbstractDragonSittingPhase
 struct SittingFlamingPhase : SittingPhase {
     using SittingPhase::SittingPhase;
     int ticks = 0, count = 0;
-    AreaEffectCloud* flame = nullptr;
+    int flame = 0;  // entity id
     Phase phase() const override { return SITTING_FLAMING; }
     void begin() override { ticks = 0, count++; }
     void end() override {
-        if (flame) flame->discard(), flame = nullptr;
+        if (::Entity* f = flame ? entity_by_id(flame) : nullptr) f->discard();
+        flame = 0;
     }
     void server_tick() override {
         if (++ticks >= 200) return d.set_phase(count >= 4 ? TAKEOFF : SITTING_SCANNING);
         if (ticks != 10) return;
         auto& h = d.parts[EnderDragon::HEAD];
-        Vec3 look = Vec3{h.x - d.x, 0.0, h.z - d.z}.normalize();
+        Vec3 look = Vec3{h.x - d.pos.x, 0.0, h.z - d.pos.z}.normalize();
         double fx = h.x + look.x * 5.0 / 2.0, fz = h.z + look.z * 5.0 / 2.0;
         double iy = h.y + d.parts[EnderDragon::HEAD].h * 0.5, fy = iy;
         int bx = int(std::floor(fx)), bz = int(std::floor(fz)), by = int(std::floor(iy));
@@ -384,12 +396,12 @@ struct SittingFlamingPhase : SittingPhase {
             by = int(std::floor(fy));
         }
         fy = std::floor(fy) + 1;
-        auto& c = add<AreaEffectCloud>(fx, fy, fz);
-        c.owner = &d;
-        c.radius = 5.0f, c.width = 10.0f;
+        auto& c = spawn<AreaEffectCloud>(fx, fy, fz);
+        c.owned_by_mob = true;
+        c.set_radius(5.0f);
         c.duration = 200;
         c.amplifier = 0;
-        flame = &c;
+        flame = c.id;
     }
 };
 
@@ -422,7 +434,7 @@ struct TakeoffPhase : PhaseInstance {
     void server_tick() override {
         if (!first && path) {
             double ex = d.fight_origin[0] + 0.5, ey = d.egg_y(true) + 0.5, ez = d.fight_origin[2] + 0.5;
-            if (!(Vec3{ex, ey, ez}.dist_sqr(d.x, d.y, d.z) < 100.0)) d.set_phase(HOLDING_PATTERN);
+            if (!(Vec3{ex, ey, ez}.dist_sqr(d.pos) < 100.0)) d.set_phase(HOLDING_PATTERN);
             return;
         }
         first = false;
@@ -461,7 +473,7 @@ struct ChargePlayerPhase : PhaseInstance {
     void server_tick() override {
         if (!tgt) return d.set_phase(HOLDING_PATTERN);
         if (since > 0 && since++ >= 10) return d.set_phase(HOLDING_PATTERN);
-        double dist = tgt->dist_sqr(d.x, d.y, d.z);
+        double dist = tgt->dist_sqr(d.pos);
         if (dist < 100.0 || dist > 22500.0) since++;
     }
 };
@@ -477,7 +489,7 @@ struct DeathPhase : PhaseInstance {
     void server_tick() override {
         time++;
         if (!tgt) tgt = Vec3{d.fight_origin[0] + 0.5, double(d.egg_y(false)), d.fight_origin[2] + 0.5};
-        double dist = tgt->dist_sqr(d.x, d.y, d.z);
+        double dist = tgt->dist_sqr(d.pos);
         d.set_health(dist < 100.0 || dist > 22500.0 ? 0.0f : 1.0f);
     }
 };
@@ -491,13 +503,13 @@ struct HoverPhase : PhaseInstance {
     float fly_speed() const override { return 1.0f; }
     std::optional<Vec3> target() const override { return tgt; }
     void server_tick() override {
-        if (!tgt) tgt = d.pos();
+        if (!tgt) tgt = d.pos;
     }
 };
 
 inline void LandingPhase::server_tick() {
     if (!tgt) tgt = Vec3{d.fight_origin[0] + 0.5, double(d.egg_y(true)), d.fight_origin[2] + 0.5};
-    if (tgt->dist_sqr(d.x, d.y, d.z) < 1.0) {
+    if (tgt->dist_sqr(d.pos) < 1.0) {
         static_cast<SittingFlamingPhase&>(d.phase(SITTING_FLAMING)).count = 0;
         d.set_phase(SITTING_SCANNING);
     }
@@ -507,10 +519,10 @@ inline void SittingScanningPhase::server_tick() {
     time++;
     static EnderDragon* self;
     self = &d;
-    Player* t = nearest_player(d.x, d.y, d.z, 20.0, [](const Player& p) { return std::abs(p.y - self->y) <= 10.0; });
+    Player* t = nearest_player(d.pos.x, d.pos.y, d.pos.z, 20.0, [](const Player& p) { return std::abs(p.y - self->pos.y) <= 10.0; });
     if (t) {
         if (time > 25) return d.set_phase(SITTING_ATTACKING);
-        Vec3 aim = Vec3{t->x - d.x, 0.0, t->z - d.z}.normalize();
+        Vec3 aim = Vec3{t->x - d.pos.x, 0.0, t->z - d.pos.z}.normalize();
         Vec3 dir = Vec3{emth::sin(d.yaw * float(M_PI / 180.0)), 0.0, -emth::cos(d.yaw * float(M_PI / 180.0))}.normalize();
         float dot = float(dir.dot(aim));
         float angle = float(std::acos(dot) * 180.0F / float(M_PI)) + 0.5F;
@@ -525,7 +537,7 @@ inline void SittingScanningPhase::server_tick() {
             d.yaw += d.yrot_a;
         }
     } else if (time >= 100) {
-        Player* c = nearest_player(d.x, d.y, d.z, 150.0);
+        Player* c = nearest_player(d.pos.x, d.pos.y, d.pos.z, 150.0);
         d.set_phase(TAKEOFF);
         if (c) {
             d.set_phase(CHARGING_PLAYER);
@@ -536,25 +548,24 @@ inline void SittingScanningPhase::server_tick() {
 
 // Entity.hasLineOfSight (eye to eye, COLLIDER).
 inline bool line_of_sight(const EnderDragon& d, const Player& p) {
-    return !clip_hits(Vec3{d.x, d.y + d.height * 0.85, d.z}, Vec3{p.x, p.y + 1.62, p.z});
+    return !clip_hits(Vec3{d.pos.x, d.pos.y + d.height * 0.85, d.pos.z}, Vec3{p.x, p.y + 1.62, p.z});
 }
 
 inline void StrafePhase::server_tick() {
-    if (!attack || attack->g.dead) {  // ponytail: vanilla keeps a dead target until its entity is gone
-        if (!attack) return d.set_phase(HOLDING_PATTERN);
-    }
+    Player* attack = player_by_eid(attack_eid);
+    if (!attack) return d.set_phase(HOLDING_PATTERN);  // ponytail: vanilla keeps a dead target until its entity is gone
     if (path && path->done()) {
-        double xt = attack->x, zt = attack->z, xd = xt - d.x, zd = zt - d.z;
+        double xt = attack->x, zt = attack->z, xd = xt - d.pos.x, zd = zt - d.pos.z;
         double dist = std::sqrt(xd * xd + zd * zd);
         double ho = std::min(0.4F + dist / 80.0 - 1.0, 10.0);
         tgt = Vec3{xt, attack->y + ho, zt};
     }
-    double dt = tgt ? tgt->dist_sqr(d.x, d.y, d.z) : 0.0;
+    double dt = tgt ? tgt->dist_sqr(d.pos) : 0.0;
     if (dt < 100.0 || dt > 22500.0) find_new_target();
-    if (Vec3{attack->x, attack->y, attack->z}.dist_sqr(d.x, d.y, d.z) < 4096.0) {
+    if (Vec3{attack->x, attack->y, attack->z}.dist_sqr(d.pos) < 4096.0) {
         if (line_of_sight(d, *attack)) {
             charge++;
-            Vec3 aim = Vec3{attack->x - d.x, 0.0, attack->z - d.z}.normalize();
+            Vec3 aim = Vec3{attack->x - d.pos.x, 0.0, attack->z - d.pos.z}.normalize();
             Vec3 dir = Vec3{emth::sin(d.yaw * float(M_PI / 180.0)), 0.0, -emth::cos(d.yaw * float(M_PI / 180.0))}.normalize();
             float dot = float(dir.dot(aim));
             float ang = float(std::acos(dot) * 180.0F / float(M_PI)) + 0.5F;
@@ -563,11 +574,12 @@ inline void StrafePhase::server_tick() {
                 auto& h = d.parts[EnderDragon::HEAD];
                 double sx = h.x - view.x, sy = h.y + h.h * 0.5 + 0.5, sz = h.z - view.z;
                 Vec3 dirv{attack->x - sx, attack->y + 0.9 - sy, attack->z - sz};
-                level_event(1017, int(std::floor(d.x)), int(std::floor(d.y)), int(std::floor(d.z)), 0);
-                auto& fb = add<DragonFireball>(sx, sy, sz);
-                fb.owner = &d;
-                fb.vel = dirv.normalize().normalize().scale(0.1);
-                fb.yaw = d.yaw, fb.pitch = d.pitch;
+                level_event(1017, d.block_x(), d.block_y(), d.block_z(), 0);
+                auto fb = std::make_unique<DragonFireball>();
+                fb->owner_id = d.id;
+                fb->snap_to(sx, sy, sz, d.yaw, d.pitch);
+                fb->vel = dirv.normalize().normalize() * 0.1;
+                add_entity(std::move(fb));
                 charge = 0;
                 if (path)
                     while (!path->done()) path->advance();
@@ -577,11 +589,16 @@ inline void StrafePhase::server_tick() {
     } else if (charge > 0) charge--;
 }
 
+// Dragon parts are ids id+1..id+8 on the client (EnderDragon.recreateFromPacket): reserve them.
+inline std::unique_ptr<::Entity> make_dragon() {
+    auto d = std::make_unique<EnderDragon>();
+    d->id = next_entity_id.fetch_add(9);
+    return d;
+}
 inline EnderDragon::EnderDragon() {
-    type = entity_types::ender_dragon, width = 16.0f, height = 8.0f;
-    extra_ids = 8;
+    type = entity_types::ender_dragon;
+    no_physics = true;
     set_phase(HOVERING);
-    dirty.b.clear();
 }
 inline PhaseInstance& EnderDragon::phase(Phase p) {
     auto& slot = phases[size_t(p)];
@@ -607,7 +624,7 @@ inline Vec3 EnderDragon::head_look_vector() {
     Phase p = current->phase();
     if (p == LANDING || p == TAKEOFF) {
         double ex = fight_origin[0] + 0.5, ey = egg_y(true) + 0.5, ez = fight_origin[2] + 0.5;
-        float dist = std::max(float(std::sqrt(Vec3{ex, ey, ez}.dist_sqr(x, y, z))) / 4.0F, 1.0F);
+        float dist = std::max(float(std::sqrt(dsq(Vec3{ex, ey, ez}, pos.x, pos.y, pos.z))) / 4.0F, 1.0F);
         float yo = 6.0F / dist;
         return view_vector(-yo * 1.5F * 5.0F);
     }
@@ -640,7 +657,7 @@ inline int EnderDragon::find_closest_node() {
         adjacency = {6146, 8197, 8202, 16404, 32808, 32848, 65696, 131392, 131712, 263424, 526848, 525313,
                      1581057, 3166214, 2138120, 6373424, 4358208, 12910976, 9044480, 9706496, 15216640, 13688832, 11763712, 8257536};
     }
-    return find_closest_node(x, y, z);
+    return find_closest_node(pos.x, pos.y, pos.z);
 }
 inline int EnderDragon::find_closest_node(double tx, double ty, double tz) {
     float closest = 10000.0F;
@@ -695,8 +712,11 @@ inline std::optional<Path> EnderDragon::find_path(int start, int endi, std::opti
 }
 
 // ---------- ticking ----------
-inline void EnderDragon::tick() {  // LivingEntity.tick -> baseTick + aiStep
-    tick_count++;
+inline void EnderDragon::tick() {  // LivingEntity.tick -> baseTick + aiStep (tick_count: entity_common_tick)
+    if (fight_owns(*this) && !linked) {  // aiStep: adopt the level's fight when our uuid is its dragon
+        linked = true;
+        fight_origin_into(fight_origin);
+    }
     if (hurt_time > 0) hurt_time--;
     if (cooldown > 0) cooldown--;
     if (dying()) tick_death();
@@ -705,7 +725,7 @@ inline void EnderDragon::tick() {  // LivingEntity.tick -> baseTick + aiStep
     // Mob.baseTick ambient sound (interval 80)
     if (!dying() && rand_int(1000) < ambient_time++) {
         ambient_time = -80;
-        play_sound("minecraft:entity.ender_dragon.ambient", sound_source_hostile, x, y, z, 5.0f, (rand_float() - rand_float()) * 0.2f + 1.0f);
+        ::play_sound("minecraft:entity.ender_dragon.ambient", SRC_HOSTILE, pos.x, pos.y, pos.z, 5.0f, (rand_float() - rand_float()) * 0.2f + 1.0f);
     }
 }
 
@@ -714,14 +734,15 @@ inline void EnderDragon::ai_step() {
     if (dying()) return;  // vanilla: explosion particles only (client side)
     // checkCrystals
     if (nearest_crystal) {
-        if (nearest_crystal->removed) nearest_crystal = nullptr;
+        ::Entity* nc = entity_by_id(nearest_crystal);
+        if (!nc || nc->removed) nearest_crystal = 0;
         else if (tick_count % 10 == 0 && health < max_health) set_health(health + 1.0f);
     }
     if (rand_int(10) == 0) {
-        EndCrystal* best = nullptr;
+        int best = 0;
         double bd = DBL_MAX;
-        for (auto* c : in_box<EndCrystal>(box().inflate(32, 32, 32)))
-            if (double dd = c->dist_sqr(*this); dd < bd) bd = dd, best = c;
+        for (auto* c : in_box<EndCrystal>(bb.inflate(32.0)))
+            if (double dd = c->dist_sqr(*this); dd < bd) bd = dd, best = c->id;
         nearest_crystal = best;
     }
     float fs = 0.2F / (float(vel.horizontal()) * 10.0F + 1.0F);
@@ -729,19 +750,19 @@ inline void EnderDragon::ai_step() {
     flap += current->sitting() ? 0.1F : in_wall ? fs * 0.5F : fs;
     yaw = emth::wrapDegrees(yaw);
     if (no_ai) { flap = 0.5F; return; }
-    history.record(y, yaw);
+    history.record(pos.y, yaw);
     PhaseInstance* ph = current;
     ph->server_tick();
     if (current != ph) ph = current, ph->server_tick();
     if (auto tl = ph->target()) {
-        double xdd = tl->x - x, ydd = tl->y - y, zdd = tl->z - z;
+        double xdd = tl->x - pos.x, ydd = tl->y - pos.y, zdd = tl->z - pos.z;
         double dist = xdd * xdd + ydd * ydd + zdd * zdd;
         float mx = ph->fly_speed();
         double hd = std::sqrt(xdd * xdd + zdd * zdd);
         if (hd > 0.0) ydd = emth::clamp(ydd / hd, double(-mx), double(mx));
         vel.y += ydd * 0.01;
         yaw = emth::wrapDegrees(yaw);
-        Vec3 aim = (*tl - pos()).normalize();
+        Vec3 aim = (*tl - pos).normalize();
         Vec3 dir = Vec3{emth::sin(yaw * float(M_PI / 180.0)), vel.y, -emth::cos(yaw * float(M_PI / 180.0))}.normalize();
         float dot = std::max((float(dir.dot(aim)) + 0.5F) / 1.5F, 0.0F);
         if (std::abs(xdd) > 1.0E-5F || std::abs(zdd) > 1.0E-5F) {
@@ -756,8 +777,8 @@ inline void EnderDragon::ai_step() {
         float s = emth::sin(yaw * float(M_PI / 180.0)), c = emth::cos(yaw * float(M_PI / 180.0));
         double mz = -1.0 * speed;
         vel.x += 0.0 * c - mz * s, vel.z += mz * c + 0.0 * s;
-        Vec3 m = in_wall ? vel.scale(0.8F) : vel;
-        x += m.x, y += m.y, z += m.z;  // noPhysics move
+        Vec3 m = in_wall ? vel * (0.8F) : vel;
+        move(SELF, m);  // noPhysics
         Vec3 actual = vel.normalize();
         double slide = 0.8 + 0.15 * (actual.dot(dir) + 1.0) / 2.0;
         vel = {vel.x * slide, vel.y * 0.91F, vel.z * slide};
@@ -828,15 +849,15 @@ inline bool EnderDragon::check_walls(const AABB& bb) {
     return hit;
 }
 
-inline bool EnderDragon::hurt(const Dmg& d, float dmg, int part) {  // EnderDragon.hurt(level, part, source, damage)
+inline bool EnderDragon::hurt_by(const DamageSource& d, Player* p, float dmg, int part) {  // EnderDragon.hurt(level, part, source, damage)
     if (current->phase() == DYING) return false;
     if (part < 0) part = BODY;
     dmg = current->on_hurt(d, dmg);
     if (part != HEAD && part != NECK) dmg = dmg / 4.0F + std::min(dmg, 1.0F);
     if (dmg < 0.01F) return false;
-    if (d.player || d.always_hurts_dragon) {
+    if (p || d.is(DT_IS_EXPLOSION)) {  // getEntity() instanceof Player || ALWAYS_HURTS_ENDER_DRAGONS (= #is_explosion)
         float before = health;
-        really_hurt(d, dmg);
+        really_hurt(d, p, dmg);
         if (current->sitting()) {
             sitting_damage = sitting_damage + before - health;
             if (sitting_damage > 0.25F * max_health) {
@@ -848,7 +869,7 @@ inline bool EnderDragon::hurt(const Dmg& d, float dmg, int part) {  // EnderDrag
     return true;
 }
 
-inline bool EnderDragon::really_hurt(const Dmg& d, float dmg) {  // LivingEntity.hurtServer (dragon: no armor/effects)
+inline bool EnderDragon::really_hurt(const DamageSource& d, Player* p, float dmg) {  // LivingEntity.hurtServer (dragon: no armor/effects)
     if (dying() || (removed)) return false;
     if (dmg < 0) dmg = 0;
     bool full = true;
@@ -864,18 +885,18 @@ inline bool EnderDragon::really_hurt(const Dmg& d, float dmg) {  // LivingEntity
     }
     if (full) {
         Writer w;  // broadcastDamageEvent
-        w.varint(play_cb::damage_event).varint(eid).varint(damage_type_id(d.type))
-            .varint(d.player ? d.player->eid + 1 : d.causing ? d.causing->eid + 1 : 0)
-            .varint(d.direct ? d.direct->eid + 1 : d.player ? d.player->eid + 1 : 0).boolean(false);
-        broadcast_near(x, z, w);
-        play_sound("minecraft:entity.ender_dragon.hurt", sound_source_hostile, x, y, z, 5.0f, (rand_float() - rand_float()) * 0.2f + 1.0f);
+        w.varint(play_cb::damage_event).varint(id).varint(d.type)
+            .varint(p ? p->eid + 1 : d.causing ? d.causing->id + 1 : 0)
+            .varint(d.direct ? d.direct->id + 1 : p ? p->eid + 1 : 0).boolean(false);
+        broadcast_near(pos.x, pos.z, w);
+        ::play_sound("minecraft:entity.ender_dragon.hurt", SRC_HOSTILE, pos.x, pos.y, pos.z, 5.0f, (rand_float() - rand_float()) * 0.2f + 1.0f);
     }
     if (dying()) {  // die() -> handleKillingBlow
         if (!current->sitting()) {
             set_health(1.0f);
             set_phase(DYING);
         } else dead_flag = true;
-        broadcast_near(x, z, entity_event_packet(eid, 3));
+        broadcast_event(3);
     }
     return true;
 }
@@ -884,28 +905,21 @@ inline void EnderDragon::tick_death() {
     fight_update_dragon(*this);
     death_time++;
     int xp = fight && !fight_previously_killed() ? 12000 : 500;
-    if (death_time > 150 && death_time % 5 == 0 && rule("mob_drops")) award_xp(x, y, z, Mth::floor(xp * 0.08F));
-    if (death_time == 1) level_event(1028, int(std::floor(x)), int(std::floor(y)), int(std::floor(z)), 0, true);
-    y += 0.1F;  // move(SELF, (0, 0.1, 0)), noPhysics
+    if (death_time > 150 && death_time % 5 == 0 && rule("mob_drops")) award_xp(pos.x, pos.y, pos.z, Mth::floor(xp * 0.08F));
+    if (death_time == 1) level_event(1028, block_x(), block_y(), block_z(), 0, true);
+    move(SELF, Vec3{0.0, double(0.1F), 0.0});  // noPhysics
     for (auto& p : parts) p.y += 0.1F;
     if (death_time >= 200) {
-        if (rule("mob_drops")) award_xp(x, y, z, Mth::floor(xp * 0.2F));
+        if (rule("mob_drops")) award_xp(pos.x, pos.y, pos.z, Mth::floor(xp * 0.2F));
         fight_dragon_killed(*this);
-        removed = true;
+        remove(Removal::KILLED);
     }
 }
 
-inline void EnderDragon::on_crystal_destroyed(EndCrystal& c, Player* p, const Dmg& src) {
-    if (!p) p = nearest_player(int(std::floor(c.x)), int(std::floor(c.y)), int(std::floor(c.z)), 64.0);
-    if (&c == nearest_crystal) {
-        Dmg d;
-        d.type = p ? "player_explosion" : "explosion";
-        d.explosion = d.always_hurts_dragon = true;
-        d.player = p, d.direct = &c;
-        hurt(d, 10.0f, HEAD);
-    }
+inline void EnderDragon::on_crystal_destroyed(EndCrystal& c, Player* p) {
+    if (!p) p = nearest_player(c.block_x(), c.block_y(), c.block_z(), 64.0);
+    if (c.id == nearest_crystal) hurt_by(DamageSource::of(p ? "player_explosion" : "explosion", nullptr, &c), p, 10.0f, HEAD);
     current->on_crystal_destroyed(p);
-    (void)src;
 }
 
 }  // namespace boss

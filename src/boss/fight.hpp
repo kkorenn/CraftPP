@@ -25,8 +25,10 @@ struct DragonFight {
     int respawn_time = 0;
     std::optional<std::array<int, 3>> exit_portal;
     std::vector<int> gateways;  // remaining gateway slots (spawnNewGateway pops the back)
-    std::vector<int> respawn_crystals;  // eids
-    int dragon_eid = -1;  // stands in for dragon_uuid (entities live only in memory + boss save)
+    using Uuid = std::pair<int64_t, int64_t>;
+    std::vector<Uuid> respawn_crystals;
+    std::optional<Uuid> dragon_uuid;
+    int dragon_id = 0;  // cached entity id of dragon_uuid
     int ticks_since_dragon_seen = 0, alive_crystals = 0, ticks_since_crystals_scanned = 0, ticks_since_player_scan = 21;
     int64_t bar_uh = int64_t(game_rng()), bar_ul = int64_t(game_rng());
     float bar_progress = 1.0f;
@@ -71,7 +73,7 @@ struct DragonFight {
         for (auto& pp : players) {
             Player& p = *pp;
             if (p.g.dead) continue;  // ENTITY_STILL_ALIVE
-            if (Vec3{p.x, p.y, p.z}.dist_sqr(origin[0], 128 + origin[1], origin[2]) > 192.0 * 192.0) continue;
+            if (dsq(Vec3{p.x, p.y, p.z}, origin[0], 128 + origin[1], origin[2]) > 192.0 * 192.0) continue;
             now.push_back(p.eid);
             if (std::find(bar_players.begin(), bar_players.end(), p.eid) == bar_players.end()) {
                 bar_players.push_back(p.eid);
@@ -86,8 +88,14 @@ struct DragonFight {
     }
 
     EnderDragon* dragon() const {
-        Entity* e = dragon_eid >= 0 ? find(dragon_eid) : nullptr;
-        return e && e->type == entity_types::ender_dragon ? static_cast<EnderDragon*>(e) : nullptr;
+        if (!dragon_uuid) return nullptr;
+        ::Entity* e = dragon_id ? entity_by_id(dragon_id) : nullptr;
+        if (!e || e->removed || e->uuid_hi != dragon_uuid->first || e->uuid_lo != dragon_uuid->second) {
+            e = entity_by_uuid(dragon_uuid->first, dragon_uuid->second);  // reloaded from its entity chunk
+            if (e && e->removed) e = nullptr;
+            const_cast<DragonFight*>(this)->dragon_id = e ? e->id : 0;
+        }
+        return dynamic_cast<EnderDragon*>(e);
     }
 
     void tick() {
@@ -97,14 +105,14 @@ struct DragonFight {
         if (needs_state_scanning) scan_state(), needs_state_scanning = false, dirty = true;
         if (stage != Respawn::NONE) {
             std::vector<EndCrystal*> cs;
-            for (int e : respawn_crystals)
-                if (Entity* c = find(e); c && c->type == entity_types::end_crystal) cs.push_back(static_cast<EndCrystal*>(c));
+            for (auto& u : respawn_crystals)
+                if (auto* c = dynamic_cast<EndCrystal*>(entity_by_uuid(u.first, u.second)); c && !c->removed) cs.push_back(c);
             if (cs.empty()) return abort_respawn();
             tick_respawn(cs, respawn_time++);
             dirty = true;
         }
         if (!dragon_killed) {
-            if (dragon_eid < 0 || !dragon() || ++ticks_since_dragon_seen >= 1200) {
+            if (!dragon_uuid || ++ticks_since_dragon_seen >= 1200) {
                 if (!dragon()) find_or_create_dragon();
                 ticks_since_dragon_seen = 0;
             }
@@ -131,9 +139,9 @@ struct DragonFight {
         auto ds = all_of<EnderDragon>();
         if (ds.empty()) dragon_killed = true;
         else {
-            dragon_eid = ds[0]->eid;
+            dragon_uuid = Uuid{ds[0]->uuid_hi, ds[0]->uuid_lo};
             dragon_killed = false;
-            if (!active) ds[0]->discard(), dragon_eid = -1;
+            if (!active) ds[0]->discard(), dragon_uuid.reset();
         }
         if (!previously_killed && dragon_killed) dragon_killed = false;
         dirty = true;
@@ -141,14 +149,15 @@ struct DragonFight {
     void find_or_create_dragon() {
         auto ds = all_of<EnderDragon>();
         if (ds.empty()) create_new_dragon();
-        else dragon_eid = ds[0]->eid, dirty = true;
+        else dragon_uuid = Uuid{ds[0]->uuid_hi, ds[0]->uuid_lo}, dirty = true;
     }
     EnderDragon* create_new_dragon() {
-        auto& d = add<EnderDragon>(origin[0], 128 + origin[1], origin[2]);
-        std::copy(origin, origin + 3, d.fight_origin);
-        d.set_phase(HOLDING_PATTERN);
-        d.yaw = rand_float() * 360.0f;
-        dragon_eid = d.eid;
+        std::unique_ptr<EnderDragon> e(static_cast<EnderDragon*>(make_dragon().release()));
+        std::copy(origin, origin + 3, e->fight_origin);
+        e->set_phase(HOLDING_PATTERN);
+        e->snap_to(origin[0], 128 + origin[1], origin[2], rand_float() * 360.0f, 0);
+        auto& d = *add_entity_t(std::move(e));
+        dragon_uuid = Uuid{d.uuid_hi, d.uuid_lo}, dragon_id = d.id;
         dirty = true;
         return &d;
     }
@@ -208,7 +217,7 @@ struct DragonFight {
     }
 
     void set_dragon_killed(EnderDragon& d) {
-        if (d.eid != dragon_eid) return;
+        if (!owns(d)) return;
         set_progress(0.0f);
         set_visible(false);
         spawn_exit_portal(true);
@@ -218,7 +227,7 @@ struct DragonFight {
         dirty = true;
     }
     void update_dragon(EnderDragon& d) {
-        if (d.eid != dragon_eid) return;
+        if (!owns(d)) return;
         set_progress(d.health / d.max_health);
         ticks_since_dragon_seen = 0;
     }
@@ -242,11 +251,12 @@ struct DragonFight {
         dirty = true;
     }
 
-    void on_crystal_destroyed(EndCrystal& c, const Dmg& d) {
-        if (stage != Respawn::NONE && std::find(respawn_crystals.begin(), respawn_crystals.end(), c.eid) != respawn_crystals.end())
+    bool owns(const EnderDragon& d) const { return dragon_uuid && d.uuid_hi == dragon_uuid->first && d.uuid_lo == dragon_uuid->second; }
+    void on_crystal_destroyed(EndCrystal& c, Player* p) {
+        if (stage != Respawn::NONE && std::find(respawn_crystals.begin(), respawn_crystals.end(), Uuid{c.uuid_hi, c.uuid_lo}) != respawn_crystals.end())
             return abort_respawn();
         update_crystal_count();
-        if (EnderDragon* dr = dragon()) dr->on_crystal_destroyed(c, d.player, d);
+        if (EnderDragon* dr = dragon()) dr->on_crystal_destroyed(c, p);
     }
     void abort_respawn() {
         stage = Respawn::NONE;
@@ -266,17 +276,17 @@ struct DragonFight {
         if (!dragon_killed || stage != Respawn::NONE) return;
         if (!exit_portal && !find_exit_portal()) spawn_exit_portal(true);
         auto& l = *exit_portal;
-        std::vector<int> found;
+        std::vector<Uuid> found;
         static const int dirs[4][2] = {{0, -1}, {1, 0}, {0, 1}, {-1, 0}};  // north east south west
         for (auto& dir : dirs) {
             int bx = l[0] + dir[0] * 3, by = l[1] + 1, bz = l[2] + dir[1] * 3;
             auto cs = in_box<EndCrystal>({double(bx), double(by), double(bz), bx + 1.0, by + 1.0, bz + 1.0});
             if (cs.empty()) return;
-            for (auto* c : cs) found.push_back(c->eid);
+            for (auto* c : cs) found.push_back({c->uuid_hi, c->uuid_lo});
         }
         respawn_dragon(found);
     }
-    void respawn_dragon(const std::vector<int>& crystals) {
+    void respawn_dragon(const std::vector<Uuid>& crystals) {
         if (!dragon_killed || stage != Respawn::NONE) return;
         for (auto p = find_exit_portal(); p; p = find_exit_portal()) {
             static const char* rows[5] = {"pillar", "pillar", "pillar", "ring", "base"};
@@ -341,7 +351,7 @@ struct DragonFight {
                     reset_spike_crystals();
                     for (auto* c : cs) {
                         c->set_beam(std::nullopt);
-                        explode(c->x, c->y, c->z, 6.0F, 0, false, c->eid);
+                        explode(c->pos.x, c->pos.y, c->pos.z, 6.0F, 0, false, c->id);
                         c->discard();
                     }
                 } else if (time >= 80) level_event(3001, 0, 128, 0, 0);
@@ -355,10 +365,9 @@ struct DragonFight {
     // EndSpikeFeature.placeSpike with its crystal (worldgen and the respawn sequence).
     static void place_spike_with_crystal(const endgen::EndSpike& s, bool invulnerable, std::optional<std::array<int, 3>> beam) {
         endgen::place_spike(s, end_states(), MIN_Y, set_block);
-        auto& c = add<EndCrystal>(s.x + 0.5, s.height + 1, s.z + 0.5);
-        c.yaw = rand_float() * 360.0f;
+        auto& c = spawn<EndCrystal>(s.x + 0.5, s.height + 1, s.z + 0.5, rand_float() * 360.0f);
         c.invulnerable = invulnerable;
-        c.beam = beam;
+        if (beam) c.set_beam(beam);
     }
 
     // ---------- persistence (level.dat "ender-dragon-fight") ----------
@@ -371,6 +380,10 @@ struct DragonFight {
         for (int g : gateways) o << ' ' << g;
         o << ' ' << placed_gateways.size();
         for (auto& g : placed_gateways) o << ' ' << g.x << ' ' << g.y << ' ' << g.z << ' ' << g.has_exit << ' ' << g.exact << ' ' << g.ex << ' ' << g.ey << ' ' << g.ez;
+        o << ' ' << bool(dragon_uuid);
+        if (dragon_uuid) o << ' ' << dragon_uuid->first << ' ' << dragon_uuid->second;
+        o << ' ' << respawn_crystals.size();
+        for (auto& u : respawn_crystals) o << ' ' << u.first << ' ' << u.second;
         return o.str();
     }
     void load(const std::string& s) {
@@ -390,12 +403,23 @@ struct DragonFight {
         in >> n;
         placed_gateways.resize(n);
         for (auto& g : placed_gateways) in >> g.x >> g.y >> g.z >> g.has_exit >> g.exact >> g.ex >> g.ey >> g.ez;
-        if (stage != Respawn::NONE) stage = Respawn::NONE;  // respawn crystals are not persisted: restart the sequence by hand
+        int hd = 0;
+        if (in >> hd && hd) {
+            Uuid u;
+            in >> u.first >> u.second;
+            dragon_uuid = u;
+        }
+        if (in >> n) {
+            respawn_crystals.resize(n);
+            for (auto& u : respawn_crystals) in >> u.first >> u.second;
+        }
         dirty = false;
     }
 };
 
 inline bool fight_active() { return fight != nullptr; }
+inline bool fight_owns(const EnderDragon& d) { return fight && fight->owns(d); }
+inline void fight_origin_into(int* out) { std::copy(fight->origin, fight->origin + 3, out); }
 inline int fight_alive_crystals() { return fight ? fight->alive_crystals : 0; }
 inline bool fight_previously_killed() { return fight && fight->previously_killed; }
 inline void fight_update_dragon(EnderDragon& d) {
@@ -404,8 +428,8 @@ inline void fight_update_dragon(EnderDragon& d) {
 inline void fight_dragon_killed(EnderDragon& d) {
     if (fight) fight->set_dragon_killed(d);
 }
-inline void fight_crystal_destroyed(Entity& c, const Dmg& d) {
-    if (fight) fight->on_crystal_destroyed(static_cast<EndCrystal&>(c), d);
+inline void fight_crystal_destroyed(::Entity& c, const DamageSource&, Player* p) {
+    if (fight) fight->on_crystal_destroyed(static_cast<EndCrystal&>(c), p);
 }
 
 // ---------- TheEndGatewayBlockEntity: exits to the outer islands ----------
@@ -433,9 +457,9 @@ inline std::array<int, 3> gateway_exit(size_t gi) {  // getPortalPosition
     Gateway g = fight->placed_gateways[gi];
     if (!g.has_exit) {
         Vec3 dir = Vec3{double(g.x), 0.0, double(g.z)}.normalize();
-        Vec3 t = dir.scale(1024.0);
-        for (int lim = 16; !chunk_empty(t.x, t.z) && lim-- > 0;) t = t + dir.scale(-16.0);
-        for (int lim = 16; chunk_empty(t.x, t.z) && lim-- > 0;) t = t + dir.scale(16.0);
+        Vec3 t = dir * 1024.0;
+        for (int lim = 16; !chunk_empty(t.x, t.z) && lim-- > 0;) t = t + dir * -16.0;
+        for (int lim = 16; chunk_empty(t.x, t.z) && lim-- > 0;) t = t + dir * 16.0;
         int cx = Mth::floor(t.x / 16.0), cz = Mth::floor(t.z / 16.0);
         std::optional<std::array<int, 3>> best;
         double bd = 0;

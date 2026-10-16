@@ -12,59 +12,15 @@ inline std::set<int> won_game;               // player eids waiting for PERFORM_
 inline std::map<int, int64_t> last_attack, gateway_cooldown;
 inline std::string saved_state;
 
-// ---------- persistence: level.dat keys ender-dragon-fight, boss-entities, seen-credits ----------
-inline std::string entities_state() {
-    std::ostringstream o;
-    for (auto& e : entities) {
-        if (e->removed) continue;
-        if (auto* c = dynamic_cast<EndCrystal*>(e.get())) {
-            o << "c " << c->x << ' ' << c->y << ' ' << c->z << ' ' << c->yaw << ' ' << c->invulnerable << ' ' << c->show_bottom << ' '
-              << bool(c->beam);
-            if (c->beam) o << ' ' << (*c->beam)[0] << ' ' << (*c->beam)[1] << ' ' << (*c->beam)[2];
-            o << ';';
-        } else if (auto* d = dynamic_cast<EnderDragon*>(e.get())) {
-            o << "d " << d->x << ' ' << d->y << ' ' << d->z << ' ' << d->yaw << ' ' << d->health << ' ' << int(d->current->phase()) << ' '
-              << d->death_time << ' ' << d->sitting_damage << ' ' << (fight && fight->dragon_eid == d->eid) << ';';
-        }
-    }
-    return o.str();
-}
-inline void load_entities(const std::string& s) {
-    std::istringstream all(s);
-    for (std::string item; std::getline(all, item, ';');) {
-        std::istringstream in(item);
-        std::string k;
-        double x, y, z;
-        float yaw;
-        in >> k >> x >> y >> z >> yaw;
-        if (k == "c") {
-            auto& c = add<EndCrystal>(x, y, z);
-            int hb = 0;
-            c.yaw = yaw;
-            in >> c.invulnerable >> c.show_bottom >> hb;
-            if (hb) {
-                std::array<int, 3> b{};
-                in >> b[0] >> b[1] >> b[2];
-                c.beam = b;
-            }
-        } else if (k == "d") {
-            auto& d = add<EnderDragon>(x, y, z);
-            int ph = 0, owned = 0;
-            d.yaw = yaw;
-            in >> d.health >> ph >> d.death_time >> d.sitting_damage >> owned;
-            d.set_phase(Phase(std::clamp(ph, 0, int(PHASE_COUNT) - 1)));
-            if (fight && owned) fight->dragon_eid = d.eid, std::copy(fight->origin, fight->origin + 3, d.fight_origin);
-        }
-    }
-}
+// ---------- persistence: level.dat keys ender-dragon-fight, seen-credits (entities: mob framework chunks) ----------
 inline void save_state() {
-    std::string ents = entities_state(), f = fight ? fight->save() : "";
+    std::string f = fight ? fight->save() : "";
     std::string credits;
     for (auto& u : seen_credits) credits += u + ",";
-    std::string all = ents + "|" + f + "|" + credits;
+    std::string all = f + "|" + credits;
     if (all == saved_state) return;
     saved_state = all;
-    std::map<std::string, std::string> kv{{"boss-entities", ents}, {"seen-credits", credits}};
+    std::map<std::string, std::string> kv{{"seen-credits", credits}};
     if (fight) kv["ender-dragon-fight"] = f;
     write_level_data(kv);
 }
@@ -84,14 +40,18 @@ inline float player_attack_damage(Player& p) {  // Player.attack: attribute dama
     return dmg;
 }
 
-inline void attack_entity(Player& p, Entity& e, int eid) {
+// Level.getEntityOrPart for our entities: the dragon's parts are ids id+1..id+8.
+inline BossEntity* find_target(int eid, int& part) {
+    part = -1;
+    if (auto* b = dynamic_cast<BossEntity*>(entity_by_id(eid)); b && !b->removed) return b;
+    for (auto* d : all_of<EnderDragon>())
+        if (eid > d->id && eid <= d->id + 8) return part = eid - d->id - 1, d;
+    return nullptr;
+}
+inline void attack_entity(Player& p, BossEntity& e, int part) {
     if (p.gamemode == 3 || p.g.dead) return;
-    Dmg d;
-    d.type = "player_attack", d.player = &p;
     float dmg = player_attack_damage(p);
-    int part = -1;
-    if (e.type == entity_types::ender_dragon && eid != e.eid) part = eid - e.eid - 1;
-    e.hurt(d, dmg, part);
+    e.hurt_by(DamageSource::of("player_attack"), &p, dmg, part);
 }
 
 // EndCrystalItem.useOn: returns true when it handled the click.
@@ -102,12 +62,15 @@ inline bool use_end_crystal(Player& p, int hand, int x, int y, int z) {
     if (b != blocks::obsidian && b != blocks::bedrock) return true;  // InteractionResult.FAIL
     if (!is_air(get_block(x, y + 1, z))) return true;
     AABB box{double(x), double(y + 1), double(z), x + 1.0, y + 3.0, z + 1.0};
-    for (auto& e : entities)
-        if (!e->removed && e->box().intersects(box)) return true;
+    bool blocked = false;
+    for_each_entity_in(box, [&](::Entity&) { blocked = true; }, false);
     for (auto& q : players)
-        if (q->gamemode != 3 && !q->g.dead && player_box(*q).intersects(box)) return true;
-    auto& c = add<EndCrystal>(x + 0.5, y + 1, z + 0.5);
-    c.show_bottom = false;
+        if (q->gamemode != 3 && !q->g.dead && player_box(*q).intersects(box)) blocked = true;
+    if (blocked) return true;
+    auto c = std::make_unique<EndCrystal>();
+    c->snap_to(x + 0.5, y + 1, z + 0.5, 0, 0);
+    c->set_show_bottom(false);
+    add_entity(std::move(c));
     if (fight) fight->try_respawn();
     if (p.gamemode != 1 && --s.count <= 0) s = {};
     send_slot(p, hand == 1 ? 40 : p.selected);  // client predicted the use; resync the stack
@@ -126,8 +89,7 @@ inline void respawn_after_win(Player& p) {  // PlayerList.respawn(player, keepAl
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);
-    forget_player(p);
+    entities_reset_view(p);
     broadcast(remove_entities_packet({p.eid}), &p);
     broadcast(spawn_entity(p), &p);
     for (auto& q : players)
@@ -175,46 +137,54 @@ inline void portal_checks(Player& p) {
 }
 
 // ---------- commands: /summon for boss entities, entity-aware /kill ----------
-inline Entity* summon(const std::string& id, double x, double y, double z) {
-    std::string t = short_id(id);
-    if (t == "ender_dragon") {
-        auto& d = add<EnderDragon>(x, y, z);
-        if (fight) std::copy(fight->origin, fight->origin + 3, d.fight_origin);
-        return &d;
-    }
-    if (t == "end_crystal") return &add<EndCrystal>(x, y, z);
-    if (t == "dragon_fireball") return &add<DragonFireball>(x, y, z);
-    if (t == "area_effect_cloud") return &add<AreaEffectCloud>(x, y, z);
-    if (t == "experience_orb") return &add<ExperienceOrb>(x, y, z, 0);
-    return nullptr;
+inline std::unique_ptr<::Entity> make_crystal() { return std::make_unique<EndCrystal>(); }
+inline std::unique_ptr<::Entity> make_fireball() { return std::make_unique<DragonFireball>(); }
+inline std::unique_ptr<::Entity> make_cloud() { return std::make_unique<AreaEffectCloud>(); }
+inline std::unique_ptr<::Entity> make_orb() { return std::make_unique<ExperienceOrb>(); }
+
+// ponytail: until mobs-core's summon_entity covers these types, /summon spawns them here.
+inline ::Entity* summon(const std::string& id, double x, double y, double z) {
+    int t = entity_type_id(id);
+    if (t != entity_types::ender_dragon && t != entity_types::end_crystal && t != entity_types::dragon_fireball &&
+        t != entity_types::area_effect_cloud && t != entity_types::experience_orb)
+        return nullptr;
+    auto e = create_entity(t);
+    if (!e) return nullptr;
+    if (auto* d = dynamic_cast<EnderDragon*>(e.get()); d && fight) std::copy(fight->origin, fight->origin + 3, d->fight_origin);
+    e->snap_to(x, y, z, 0, 0);
+    return add_entity(std::move(e));
 }
 
-inline std::vector<Entity*> select_entities(const Selector& sel, const Source& src) {
-    std::vector<Entity*> out;
+inline std::vector<::Entity*> select_entities(const Selector& sel, const Source& src) {
+    std::vector<::Entity*> out;
     if (!sel.includes_entities || sel.self || sel.by_name || sel.by_uuid) return out;
-    double ox = sel.x.value_or(src.x), oy = sel.y.value_or(src.y), oz = sel.z.value_or(src.z);
-    for (auto& e : entities) {
-        if (e->removed) continue;
+    Vec3 o{sel.x.value_or(src.x), sel.y.value_or(src.y), sel.z.value_or(src.z)};
+    for_each_entity([&](::Entity& e) {
+        if (e.as_player()) return;
         bool ok = true;
         for (auto& [t, neg] : sel.types)
-            if ((short_id(t) == e->type_name()) == neg) ok = false;
+            if ((entity_type_id(t) == e.type) == neg) ok = false;
         if (!sel.names.empty() || !sel.tags.empty() || !sel.teams.empty() || !sel.gamemodes.empty() || !sel.level.any()) ok = false;
-        if (!sel.distance.any() && !sel.distance.matches(std::sqrt(e->pos().dist_sqr(ox, oy, oz)))) ok = false;
-        if (ok) out.push_back(e.get());
-    }
+        if (!sel.distance.any() && !sel.distance.matches(std::sqrt(e.pos.dist_sqr(o)))) ok = false;
+        if (ok) out.push_back(&e);
+    });
     if (sel.sort == Selector::NEAREST)
-        std::sort(out.begin(), out.end(), [&](Entity* a, Entity* b) { return a->pos().dist_sqr(ox, oy, oz) < b->pos().dist_sqr(ox, oy, oz); });
+        std::sort(out.begin(), out.end(), [&](::Entity* a, ::Entity* b) { return a->pos.dist_sqr(o) < b->pos.dist_sqr(o); });
     if (int(out.size()) > sel.limit) out.resize(size_t(sel.limit));
     return out;
 }
 
 inline void register_commands() {
-    reg("summon", [](Cmd& c) {
+    auto prev_summon = command_handlers()["summon"];
+    reg("summon", [prev_summon](Cmd& c) {
         std::string id = c.str("entity");
-        Vec3 at = c.has("pos") ? Vec3{c.vec("pos").x, c.vec("pos").y, c.vec("pos").z} : Vec3{c.src.x, c.src.y, c.src.z};
+        Vec3 at = c.has("pos") ? c.vec("pos") : Vec3{c.src.x, c.src.y, c.src.z};
         if (at.y < MIN_Y - 2048 || at.y >= MIN_Y + HEIGHT + 2048) throw err("commands.summon.invalidPosition");
-        Entity* e = summon(id, at.x, at.y, at.z);
-        if (!e) throw fail(not_supported("summon " + id));
+        ::Entity* e = summon(id, at.x, at.y, at.z);
+        if (!e) {
+            if (prev_summon) return prev_summon(c);
+            throw fail(not_supported("summon " + id));
+        }
         c.success(tr("commands.summon.success", {tr("entity.minecraft." + short_id(id))}), true);
         return 1;
     });
@@ -225,27 +195,30 @@ inline void register_commands() {
         auto ents = select_entities(sel, c.src);
         if (ents.empty()) return prev(c);
         auto ps = select(sel, c.src);
+        int type0 = ents[0]->type;
         for (auto* e : ents) e->kill();
         for (auto& p : ps) kill(*p, "generic_kill");
         size_t n = ents.size() + ps.size();
-        if (n == 1) c.success(tr("commands.kill.success.single", {tr("entity.minecraft." + ents[0]->type_name())}), true);
+        if (n == 1) c.success(tr("commands.kill.success.single", {tr("entity.minecraft." + entity_type_info[size_t(type0)].id)}), true);
         else c.success(tr("commands.kill.success.multiple", {int(n)}), true);
         return int(n);
     });
 }
 
 // ---------- tick ----------
-inline void tick() {
-    if (fight) fight->tick();
-    for (size_t i = 0; i < entities.size(); i++)
-        if (!entities[i]->removed) entities[i]->tick();  // index: ticks may add entities
+inline void tick() {  // before the entity tick (on_tick order: game_init's hooks run first, then ours)
+    if (fight) {
+        fight->tick();
+        // EnderDragonFight's DRAGON ticket (radius 9): keep the arena's entity chunks loaded while it has players
+        if (!fight->bar_players.empty() && server_tick % 20 == 0)
+            for (int cx = -8; cx <= 8; cx++)
+                for (int cz = -8; cz <= 8; cz++) ensure_entity_chunk_loaded(cx, cz);
+    }
     for (auto& p : players) portal_checks(*p);
-    track();
     if (server_tick % 100 == 0) save_state();
 }
 
 inline void on_leave(Player& p) {
-    forget_player(p);
     if (fight) std::erase(fight->bar_players, p.eid);
     won_game.erase(p.eid);
     last_attack.erase(p.eid), gateway_cooldown.erase(p.eid), xp_taken.erase(p.eid);
@@ -253,6 +226,11 @@ inline void on_leave(Player& p) {
 
 inline void init() {
     explosion_entities = explosion_hits_entities;
+    register_entity_factory(entity_types::ender_dragon, make_dragon);
+    register_entity_factory(entity_types::end_crystal, make_crystal);
+    register_entity_factory(entity_types::dragon_fireball, make_fireball);
+    if (!create_entity(entity_types::area_effect_cloud)) register_entity_factory(entity_types::area_effect_cloud, make_cloud);
+    if (!create_entity(entity_types::experience_orb)) register_entity_factory(entity_types::experience_orb, make_orb);
     auto kv = read_level_data();
     if (props.count("debug-end-fight") && props["debug-end-fight"] == "true") {
         fight = new DragonFight();
@@ -265,13 +243,12 @@ inline void init() {
         }
         fight->init(level_seed());
     }
-    if (kv.count("boss-entities")) load_entities(kv["boss-entities"]);
     if (kv.count("seen-credits")) {
         std::istringstream in(kv["seen-credits"]);
         for (std::string u; std::getline(in, u, ',');)
             if (!u.empty()) seen_credits.insert(u);
     }
-    saved_state = kv["boss-entities"] + "|" + kv["ender-dragon-fight"] + "|" + kv["seen-credits"];  // what is on disk
+    saved_state = kv["ender-dragon-fight"] + "|" + kv["seen-credits"];  // what is on disk
     on_tick(tick);
     on_player_leave(on_leave);
     register_commands();
@@ -279,8 +256,8 @@ inline void init() {
     auto chain = [](int id) { auto it = handlers().find(id); return it == handlers().end() ? PacketHandler{} : it->second; };
     on(play_sb::attack, [prev = chain(play_sb::attack)](Player& p, Reader& in, int id) {
         Reader copy = in;
-        int eid = in.varint();
-        if (Entity* e = find(eid)) return attack_entity(p, *e, eid);
+        int part;
+        if (BossEntity* e = find_target(in.varint(), part)) return attack_entity(p, *e, part);
         if (prev) prev(p, copy, id);
     });
     on(play_sb::use_item_on, [prev = chain(play_sb::use_item_on)](Player& p, Reader& in, int id) {
@@ -301,9 +278,7 @@ inline void init() {
             won_game.erase(p.eid);
             return respawn_after_win(p);
         }
-        bool was_dead = p.g.dead;
         if (prev) prev(p, copy, id);
-        if (was_dead && !p.g.dead) forget_player(p);  // a death respawn makes the client drop its entities too
     });
 }
 

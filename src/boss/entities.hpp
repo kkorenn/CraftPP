@@ -1,97 +1,38 @@
 #pragma once
-// Boss-fight entities: a small entity base with tracking and synched data, EndCrystal, DragonFireball,
-// AreaEffectCloud (dragon breath) and ExperienceOrb. Tick thread only.
-// ponytail: stand-in for the mobs-core entity framework; port these onto it once it lands.
+// Boss-fight entities on the mob framework (src/mobs): EndCrystal, DragonFireball, AreaEffectCloud (dragon
+// breath) and ExperienceOrb, plus small query helpers. Tick thread only.
 #include "level.hpp"
 
-#include <cfloat>
 #include <memory>
 
 namespace boss {
 
-// ---------- synched entity data (EntityDataSerializers ids) ----------
-namespace meta {
-inline void byte(Writer& w, int i, int v) { w.u8(uint8_t(i)).varint(0).u8(uint8_t(v)); }
-inline void i32(Writer& w, int i, int v) { w.u8(uint8_t(i)).varint(1).varint(v); }
-inline void f32(Writer& w, int i, float v) { w.u8(uint8_t(i)).varint(3).f32(v); }
-inline void boolean(Writer& w, int i, bool v) { w.u8(uint8_t(i)).varint(8).boolean(v); }
-inline void opt_pos(Writer& w, int i, const std::optional<std::array<int, 3>>& p) {
-    w.u8(uint8_t(i)).varint(11).boolean(bool(p));
-    if (p) w.i64(pack_pos((*p)[0], (*p)[1], (*p)[2]));
-}
-inline void particle(Writer& w, int i, int type, float power) {  // PowerParticleOption (dragon_breath)
-    w.u8(uint8_t(i)).varint(16).varint(type).f32(power);
-}
-}  // namespace meta
-
-// DamageSource, reduced to what the bosses look at.
-struct Entity;
-struct Dmg {
-    std::string type = "generic";
-    Player* player = nullptr;      // getEntity() when a player is responsible
-    Entity* causing = nullptr;     // getEntity() when a (boss) entity is responsible
-    Entity* direct = nullptr;      // getDirectEntity()
-    bool explosion = false, bypass_invul = false;  // IS_EXPLOSION / BYPASSES_INVULNERABILITY (generic_kill)
-    bool always_hurts_dragon = false;  // ALWAYS_HURTS_ENDER_DRAGONS (explosions)
+// Players are not framework entities yet, so damage that a player is responsible for carries the Player
+// alongside the DamageSource (ponytail: fold into DamageSource.causing once PlayerEntity proxies exist).
+struct BossEntity : ::Entity {
+    virtual bool hurt_by(const DamageSource&, Player*, float, int part = -1) { return (void)part, false; }
+    bool hurt_server(const DamageSource& s, float dmg) override {
+        return hurt_by(s, s.causing ? s.causing->as_player() : nullptr, dmg);
+    }
 };
 
-struct Entity {
-    int eid = 0, type = 0;
-    int64_t uh = 0, ul = 0;
-    double x = 0, y = 0, z = 0;
-    Vec3 vel;
-    float yaw = 0, pitch = 0, width = 0, height = 0;
-    int tick_count = 0;
-    bool removed = false, invulnerable = false, sync_motion = false;
-    int extra_ids = 0;  // ids after eid owned by this entity (dragon parts)
-    double sx = 0, sy = 0, sz = 0;
-    float syaw = 0, spitch = 0;
-    std::vector<int> watchers;
-    Writer dirty;  // synched-data entries changed this tick (no terminator)
-
-    virtual ~Entity() = default;
-    virtual void tick() {}
-    virtual void write_meta(Writer&) {}  // every entry that differs from the client default
-    virtual int spawn_data() const { return 0; }
-    virtual bool hurt(const Dmg&, float, int part = -1) { return (void)part, false; }
-    virtual void kill() { removed = true; }  // Entity.kill (/kill)
-    virtual bool living() const { return false; }
-    virtual std::string type_name() const = 0;
-    virtual void on_removed() {}
-
-    AABB box() const { return {x - width / 2, y, z - width / 2, x + width / 2, y + height, z + width / 2}; }
-    Vec3 pos() const { return {x, y, z}; }
-    double dist_sqr(const Entity& o) const { return pos().dist_sqr(o.x, o.y, o.z); }
-    void discard() { removed = true; }
-};
-
-inline std::vector<std::unique_ptr<Entity>> entities;
-
-template <class T, class... A> inline T& add(double x, double y, double z, A&&... args) {
-    auto e = std::make_unique<T>(std::forward<A>(args)...);
-    e->eid = next_entity_id.fetch_add(1 + e->extra_ids);
-    e->uh = int64_t((game_rng() & ~0xF000ull) | 0x4000), e->ul = int64_t((game_rng() & 0x3FFFFFFFFFFFFFFFull) | 0x8000000000000000ull);
-    e->x = e->sx = x, e->y = e->sy = y, e->z = e->sz = z;
-    T& ref = *e;
-    entities.push_back(std::move(e));
-    return ref;
-}
-inline Entity* find(int eid) {  // Level.getEntityOrPart
-    for (auto& e : entities)
-        if (!e->removed && eid >= e->eid && eid <= e->eid + e->extra_ids) return e.get();
-    return nullptr;
+template <class T> inline T& spawn(double x, double y, double z, float yaw = 0) {
+    auto e = std::make_unique<T>();
+    e->snap_to(x, y, z, yaw, 0);
+    return *add_entity_t(std::move(e));
 }
 template <class T> inline std::vector<T*> all_of() {
     std::vector<T*> v;
-    for (auto& e : entities)
-        if (!e->removed)
-            if (auto* t = dynamic_cast<T*>(e.get())) v.push_back(t);
+    for_each_entity([&](::Entity& e) {
+        if (auto* t = dynamic_cast<T*>(&e)) v.push_back(t);
+    });
     return v;
 }
 template <class T> inline std::vector<T*> in_box(const AABB& b) {
     std::vector<T*> v;
-    for (auto* t : all_of<T>())
-        if (t->box().intersects(b)) v.push_back(t);
+    for_each_entity_in(b, [&](::Entity& e) {
+        if (auto* t = dynamic_cast<T*>(&e)) v.push_back(t);
+    }, false);
     return v;
 }
 inline Player* player_by_eid(int eid) {
@@ -109,53 +50,17 @@ inline Player* nearest_player(double x, double y, double z, double range = -1, b
     for (auto& pp : players) {
         Player& p = *pp;
         if (!attackable(p) || (extra && !extra(p))) continue;
-        double d = Vec3{p.x, p.y, p.z}.dist_sqr(x, y, z);
+        double d = dsq(Vec3{p.x, p.y, p.z}, x, y, z);
         if (range > 0 && d > range * range) continue;
         if (bd < 0 || d < bd) bd = d, best = &p;
     }
     return best;
 }
-
-// ---------- tracking (ChunkMap.TrackedEntity / ServerEntity) ----------
-inline void track() {
-    for (auto& up : entities) {
-        Entity& e = *up;
-        int cx = int(std::floor(e.x)) >> 4, cz = int(std::floor(e.z)) >> 4;
-        bool moved = e.x != e.sx || e.y != e.sy || e.z != e.sz || e.yaw != e.syaw || e.pitch != e.spitch;
-        Writer meta_pkt;
-        if (!e.dirty.b.empty()) {
-            meta_pkt.varint(play_cb::set_entity_data).varint(e.eid).bytes(e.dirty.b).u8(0xFF);
-            e.dirty.b.clear();
-        }
-        for (auto& pp : players) {
-            Player& p = *pp;
-            auto w = std::find(e.watchers.begin(), e.watchers.end(), p.eid);
-            bool in = !e.removed && sees_chunk(p, cx, cz);
-            if (in && w == e.watchers.end()) {
-                p.send(add_entity_packet(e.eid, e.uh, e.ul, e.type, e.x, e.y, e.z, e.vel.x, e.vel.y, e.vel.z, e.yaw, e.pitch,
-                                         e.spawn_data()));
-                Writer m;
-                e.write_meta(m);
-                if (!m.b.empty()) p.send(Writer().varint(play_cb::set_entity_data).varint(e.eid).bytes(m.b).u8(0xFF));
-                e.watchers.push_back(p.eid);
-            } else if (!in && w != e.watchers.end()) {
-                p.send(remove_entities_packet({e.eid}));
-                e.watchers.erase(w);
-            } else if (in) {
-                if (!meta_pkt.b.empty()) p.send(meta_pkt);
-                if (moved) p.send(teleport_entity_packet(e.eid, e.x, e.y, e.z, e.vel.x, e.vel.y, e.vel.z, e.yaw, e.pitch, false));
-                if (e.sync_motion) p.send(set_entity_motion_packet(e.eid, e.vel.x, e.vel.y, e.vel.z));
-            }
-        }
-        e.sx = e.x, e.sy = e.y, e.sz = e.z, e.syaw = e.yaw, e.spitch = e.pitch;
-        e.sync_motion = false;
-    }
-    for (auto& e : entities)
-        if (e->removed) e->on_removed();
-    std::erase_if(entities, [](const std::unique_ptr<Entity>& e) { return e->removed; });
-}
-inline void forget_player(Player& p) {  // the client dropped its entities (left / respawned)
-    for (auto& e : entities) std::erase(e->watchers, p.eid);
+inline std::vector<uint8_t> opt_pos_bytes(const std::optional<std::array<int, 3>>& p) {
+    Writer w;
+    w.boolean(bool(p));
+    if (p) w.i64(pack_pos((*p)[0], (*p)[1], (*p)[2]));
+    return w.b;
 }
 
 // ---------- ExperienceOrb ----------
@@ -170,51 +75,60 @@ inline void give_xp_points(Player& p, int amount) {  // Player.giveExperiencePoi
     }
     send_experience(p);
 }
+inline std::map<int, int64_t> xp_taken;  // player eid -> tick of the last orb pickup (takeXpDelay)
 
-inline std::map<int, int64_t> xp_taken;  // player eid -> tick of the last orb pickup
-struct ExperienceOrb : Entity {
+struct ExperienceOrb : BossEntity {
     int value = 1, age = 0, count = 1;
     Player* following = nullptr;
-    ExperienceOrb(int v) : value(v) {
-        type = entity_types::experience_orb, width = height = 0.5f;
+    ExperienceOrb() {
+        type = entity_types::experience_orb;
         yaw = rand_float() * 360.0f;
         vel = {(rand_double() * 0.2 - 0.1) * 2.0, rand_double() * 0.2 * 2.0, (rand_double() * 0.2 - 0.1) * 2.0};
     }
-    std::string type_name() const override { return "experience_orb"; }
-    void write_meta(Writer& w) override { meta::i32(w, 8, value); }
-    int spawn_data() const override { return 0; }
+    void set_value(int v) { value = v, data.set_int(edata::ExperienceOrb::VALUE, v); }
+    double default_gravity() const override { return 0.03; }
     void tick() override {
-        tick_count++;
-        vel.y -= 0.03;
-        if (!following || following->g.dead || following->gamemode == 3 ||
-            Vec3{following->x, following->y, following->z}.dist_sqr(x, y, z) > 64.0) {
+        Entity::tick();
+        apply_gravity();
+        if (!following || !alive_target(*following) || dsq(Vec3{following->x, following->y, following->z}, pos.x, pos.y, pos.z) > 64.0) {
             following = nullptr;
             double bd = 64.0;
             for (auto& p : players)
                 if (alive_target(*p))
-                    if (double d = Vec3{p->x, p->y, p->z}.dist_sqr(x, y, z); d < bd) bd = d, following = p.get();
+                    if (double d = dsq(Vec3{p->x, p->y, p->z}, pos.x, pos.y, pos.z); d < bd) bd = d, following = p.get();
         }
         if (following) {
-            Vec3 d{(following->x - x) / 8.0, (following->y + 1.62 / 2.0 - y) / 8.0, (following->z - z) / 8.0};
+            Vec3 d{(following->x - pos.x) / 8.0, (following->y + 1.62 / 2.0 - pos.y) / 8.0, (following->z - pos.z) / 8.0};
             double power = 1.0 - d.length();
-            if (power > 0.0) vel = vel + d.normalize().scale(power * power * 0.1), sync_motion = true;
+            if (power > 0.0) vel = vel + d.normalize() * (power * power * 0.1), needs_sync = true;
         }
-        bool og, hh;
-        move_box(x, y, z, width / 2, height, vel.x, vel.y, vel.z, og, hh);
-        double f = og ? 0.98 * 0.6 : 0.98;
-        vel = {vel.x * f, vel.y * 0.98, vel.z * f};
+        double fall = vel.y;
+        move(SELF, vel);
+        float f = 0.98f;
+        if (on_ground) f *= phys_of(block_below_affecting_movement()).friction;
+        vel = vel * double(f);
+        if (vertical_collision_below && fall < -gravity()) vel.y = -fall * 0.4;
         if (++age >= 6000) discard();
         for (auto& pp : players) {  // Player.touch -> playerTouch
             Player& p = *pp;
-            if (removed || !alive_target(p) || !player_box(p).inflate(1.0, 0.5, 1.0).intersects(box())) continue;
-            if (server_tick - xp_taken[p.eid] < 2) continue;  // Player.takeXpDelay
+            if (removed || !alive_target(p) || !player_box(p).inflate(1.0, 0.5, 1.0).intersects(bb)) continue;
+            if (server_tick - xp_taken[p.eid] < 2) continue;
             xp_taken[p.eid] = server_tick;
             Writer t;
-            t.varint(play_cb::take_item_entity).varint(eid).varint(p.eid).varint(1);
-            broadcast_near(x, z, t);
+            t.varint(play_cb::take_item_entity).varint(id).varint(p.eid).varint(1);
+            broadcast_near(pos.x, pos.z, t);
             give_xp_points(p, value);  // ponytail: no Mending repair
             if (--count == 0) discard();
         }
+    }
+    void save_extra(Nbt& o) const override {
+        o.set("Value", Nbt::num(Nbt::Short, value));
+        o.set("Age", Nbt::num(Nbt::Short, age));
+        o.set("Count", Nbt::num(Nbt::Int, count));
+    }
+    void load_extra(const Nbt& in) override {
+        set_value(int(nbt_num(in, "Value", 1)));
+        age = int(nbt_num(in, "Age", 0)), count = int(nbt_num(in, "Count", 1));
     }
 };
 inline int orb_value(int amount) {  // ExperienceOrb.getExperienceValue
@@ -222,77 +136,86 @@ inline int orb_value(int amount) {  // ExperienceOrb.getExperienceValue
         if (amount >= v) return v;
     return 1;
 }
-inline void award_xp(double x, double y, double z, int amount) {  // ExperienceOrb.award (no merging)
+inline void award_xp(double x, double y, double z, int amount) {  // ExperienceOrb.award (ponytail: no merging)
     while (amount > 0) {
         int v = orb_value(amount);
         amount -= v;
-        add<ExperienceOrb>(x, y, z, v);
+        auto e = std::make_unique<ExperienceOrb>();
+        e->snap_to(x, y, z, e->yaw, 0);
+        e->set_value(v);
+        add_entity(std::move(e));
     }
 }
 
 // ---------- EndCrystal ----------
-inline bool fight_active();                               // fight.hpp
-inline void fight_crystal_destroyed(Entity& c, const Dmg& d);  // fight.hpp
-struct EnderDragon;
+inline bool fight_active();                                                          // fight.hpp
+inline void fight_crystal_destroyed(::Entity& c, const DamageSource& d, Player* p);  // fight.hpp
 
-struct EndCrystal : Entity {
+struct EndCrystal : BossEntity {
     std::optional<std::array<int, 3>> beam;
     bool show_bottom = true;
     int time = rand_int(100000);
-    EndCrystal() { type = entity_types::end_crystal, width = height = 2.0f; }
-    std::string type_name() const override { return "end_crystal"; }
-    void write_meta(Writer& w) override {
-        if (beam) meta::opt_pos(w, 8, beam);
-        if (!show_bottom) meta::boolean(w, 9, false);
-    }
+    EndCrystal() { type = entity_types::end_crystal; }
+    bool is_pickable() const override { return true; }
     void set_beam(std::optional<std::array<int, 3>> b) {
-        if (b == beam) return;
+        if (b == beam && data.find(edata::EndCrystal::BEAM_TARGET)) return;
         beam = b;
-        meta::opt_pos(dirty, 8, beam);
+        data.set_raw(edata::EndCrystal::BEAM_TARGET, edser::OPTIONAL_BLOCK_POS, opt_pos_bytes(beam));
     }
-    void set_show_bottom(bool s) {
-        if (s == show_bottom) return;
-        show_bottom = s;
-        meta::boolean(dirty, 9, s);
-    }
+    void set_show_bottom(bool s) { show_bottom = s, data.set_bool(edata::EndCrystal::SHOW_BOTTOM, s); }
     void tick() override {
-        tick_count++, time++;
-        int bx = int(std::floor(x)), by = int(std::floor(y)), bz = int(std::floor(z));
-        if (fight_active() && is_air(get_block(bx, by, bz))) set_block(bx, by, bz, blocks::fire);
+        time++;
+        Entity::tick();
+        int bx = block_x(), by = block_y(), bz = block_z();
+        if (fight_active() && chunk_loaded_at(bx, bz) && is_air(get_block(bx, by, bz))) set_block(bx, by, bz, blocks::fire);
     }
-    bool hurt(const Dmg& d, float, int) override;
+    bool hurt_by(const DamageSource& d, Player* p, float, int) override;
     void kill() override {
-        Dmg d;
-        fight_crystal_destroyed(*this, d);
-        removed = true;
+        fight_crystal_destroyed(*this, DamageSource::of("generic"), nullptr);
+        remove(Removal::KILLED);
+    }
+    void save_extra(Nbt& o) const override {
+        if (beam) {
+            Nbt a;
+            a.t = Nbt::IntArray;
+            a.arr = {(*beam)[0], (*beam)[1], (*beam)[2]};
+            o.set("beam_target", a);
+        }
+        o.set("ShowBottom", Nbt::num(Nbt::Byte, show_bottom));
+    }
+    void load_extra(const Nbt& in) override {
+        if (const Nbt* a = in.get("beam_target"); a && a->t == Nbt::IntArray && a->arr.size() == 3)
+            set_beam(std::array<int, 3>{int(a->arr[0]), int(a->arr[1]), int(a->arr[2])});
+        if (!nbt_num(in, "ShowBottom", 1)) set_show_bottom(false);
     }
 };
 
 // ---------- AreaEffectCloud (dragon breath) ----------
-struct AreaEffectCloud : Entity {
-    float radius = 3.0f, radius_per_tick = 0, duration_scale = 1;
+struct AreaEffectCloud : BossEntity {
+    float radius = 3.0f, radius_per_tick = 0;
     int duration = -1, wait_time = 20, reapply = 20, amplifier = 0;
     bool waiting = true;
-    Entity* owner = nullptr;
+    bool owned_by_mob = false;  // owner is the dragon (difficulty scaling)
     std::map<int, int> victims;  // player eid -> tick when it may be hit again
-    AreaEffectCloud() { type = entity_types::area_effect_cloud, width = 6.0f, height = 0.5f; }
-    std::string type_name() const override { return "area_effect_cloud"; }
+    AreaEffectCloud() {
+        type = entity_types::area_effect_cloud;
+        static const int breath = particle_id("dragon_breath");
+        Writer w;
+        w.varint(breath).f32(1.0f);  // PowerParticleOption
+        data.set_raw(edata::AreaEffectCloud::PARTICLE, edser::PARTICLE, w.b);
+        data.set_bool(edata::AreaEffectCloud::WAITING, true);
+    }
+    bool fire_immune() const override { return true; }
     void set_radius(float r) {
         radius = std::clamp(r, 0.0f, 32.0f);
-        width = radius * 2.0f;
-        meta::f32(dirty, 8, radius);
-    }
-    void write_meta(Writer& w) override {
-        static const int breath = particle_id("dragon_breath");
-        meta::f32(w, 8, radius);
-        meta::boolean(w, 9, waiting);
-        meta::particle(w, 10, breath, 1.0f);
+        set_size(radius * 2.0f, 0.5f, info().eye);
+        data.set_float(edata::AreaEffectCloud::RADIUS, radius);
     }
     void tick() override {
-        tick_count++;
+        Entity::tick();
         if (duration != -1 && tick_count - wait_time >= duration) return discard();
         bool should_wait = tick_count < wait_time;
-        if (waiting != should_wait) waiting = should_wait, meta::boolean(dirty, 9, waiting);
+        if (waiting != should_wait) waiting = should_wait, data.set_bool(edata::AreaEffectCloud::WAITING, waiting);
         if (should_wait) return;
         float r = radius;
         if (radius_per_tick != 0) {
@@ -304,14 +227,26 @@ struct AreaEffectCloud : Entity {
         std::erase_if(victims, [&](auto& v) { return tick_count >= v.second; });
         for (auto& pp : players) {
             Player& p = *pp;
-            if (!alive_target(p) || victims.count(p.eid) || !player_box(p).intersects(box())) continue;
-            double dx = p.x - x, dz = p.z - z;
+            if (!alive_target(p) || victims.count(p.eid) || !player_box(p).intersects(bb)) continue;
+            double dx = p.x - pos.x, dz = p.z - pos.z;
             if (dx * dx + dz * dz > double(r) * r) continue;
             victims[p.eid] = tick_count + reapply;
             // HealOrHarmMobEffect (instant damage, scale 0.5): indirect magic, scaled when the owner is a mob.
             int amount = int(0.5 * (6 << amplifier) + 0.5);
-            hurt_player(p, float(amount), "indirect_magic", owner != nullptr);
+            hurt_player(p, float(amount), "indirect_magic", owned_by_mob);
         }
+    }
+    void save_extra(Nbt& o) const override {
+        o.set("Radius", Nbt::real(Nbt::Float, radius));
+        o.set("Duration", Nbt::num(Nbt::Int, duration));
+        o.set("RadiusPerTick", Nbt::real(Nbt::Float, radius_per_tick));
+        o.set("Amplifier", Nbt::num(Nbt::Int, amplifier));  // ponytail: potion_contents not modelled
+    }
+    void load_extra(const Nbt& in) override {
+        set_radius(float(nbt_num(in, "Radius", 3)));
+        duration = int(nbt_num(in, "Duration", -1));
+        radius_per_tick = float(nbt_num(in, "RadiusPerTick", 0));
+        amplifier = int(nbt_num(in, "Amplifier", 0));
     }
 };
 
@@ -334,81 +269,83 @@ inline bool segment_hits_box(const Vec3& a, const Vec3& b, const AABB& bb, doubl
     return true;
 }
 
-struct DragonFireball : Entity {
-    Entity* owner = nullptr;
+struct DragonFireball : BossEntity {
+    int owner_id = 0;
     double accel = 0.1;
-    DragonFireball() { type = entity_types::dragon_fireball, width = height = 1.0f; }
-    std::string type_name() const override { return "dragon_fireball"; }
-    int spawn_data() const override { return owner ? owner->eid : 0; }
-    bool hurt(const Dmg&, float, int) override { return false; }
-    void tick() override;  // dragon.hpp (needs the owner's removal state)
+    DragonFireball() { type = entity_types::dragon_fireball; }
+    int add_entity_data() const override { return owner_id; }
     void on_hit() {  // DragonFireball.onHit
-        auto& c = add<AreaEffectCloud>(x, y, z);
-        c.owner = owner;
-        c.radius = 3.0f, c.width = 6.0f;
+        auto& c = spawn<AreaEffectCloud>(pos.x, pos.y, pos.z);
+        c.owned_by_mob = owner_id != 0;
+        c.set_radius(3.0f);
         c.duration = 600;
         c.radius_per_tick = (7.0f - c.radius) / float(c.duration);
         c.amplifier = 1;
         for (auto& pp : players) {
             Player& p = *pp;
-            if (!alive_target(p) || !player_box(p).intersects(box().inflate(4.0, 2.0, 4.0))) continue;
-            if (Vec3{p.x, p.y, p.z}.dist_sqr(x, y, z) < 16.0) {
-                c.x = p.x, c.y = p.y, c.z = p.z;
+            if (!alive_target(p) || !player_box(p).intersects(bb.inflate(4.0, 2.0, 4.0))) continue;
+            if (dsq(Vec3{p.x, p.y, p.z}, pos.x, pos.y, pos.z) < 16.0) {
+                c.teleport_to(p.x, p.y, p.z);
                 break;
             }
         }
-        level_event(2006, int(std::floor(x)), int(std::floor(y)), int(std::floor(z)), 1);
+        level_event(2006, block_x(), block_y(), block_z(), 1);
         discard();
     }
+    void tick() override {  // AbstractHurtingProjectile.tick
+        ::Entity* owner = owner_id ? entity_by_id(owner_id) : nullptr;
+        if (owner_id && (!owner || owner->removed)) return discard();
+        vel = (vel + vel.normalize() * accel) * double(0.95f);  // applyInertia
+        Vec3 from = pos, to = from + vel;
+        double best = 2;  // ProjectileUtil.getHitResultOnMoveVector: blocks, then the nearest player in the sweep
+        if (clip_hits(from, to))
+            for (int i = 1; i <= 16; i++)  // ponytail: hit point found by stepping, not exact face intersection
+                if (clip_hits(from, from + vel * (i / 16.0))) { best = (i - 1) / 16.0; break; }
+        for (auto& pp : players) {
+            double t;
+            if (alive_target(*pp) && segment_hits_box(from, to, player_box(*pp).inflate(0.3), t) && t < best) best = t;
+        }
+        set_pos(best <= 1 ? from + vel * best : to);
+        Entity::tick();
+        if (!removed && best <= 1) on_hit();
+    }
 };
-inline void DragonFireball::tick() {
-    tick_count++;
-    if (owner && owner->removed) return discard();
-    vel = (vel + vel.normalize().scale(accel)).scale(0.95f);  // applyInertia
-    Vec3 from = pos(), to = from + vel;
-    // ProjectileUtil.getHitResultOnMoveVector: blocks first, then the nearest player in the swept box.
-    double best = 2;
-    if (clip_hits(from, to)) {
-        for (int i = 1; i <= 16; i++)  // ponytail: hit point found by stepping, not exact face intersection
-            if (clip_hits(from, from + vel.scale(i / 16.0))) { best = (i - 1) / 16.0; break; }
-    }
-    for (auto& pp : players) {
-        if (!alive_target(*pp)) continue;
-        double t;
-        if (segment_hits_box(from, to, player_box(*pp).inflate(0.3, 0.3, 0.3), t) && t < best) best = t;
-    }
-    Vec3 np = best <= 1 ? from + vel.scale(best) : to;
-    x = np.x, y = np.y, z = np.z;
-    if (best <= 1) on_hit();
-    if (y < MIN_Y - 64) discard();
-}
 
-// ---------- explosions -> boss entities ----------
+// ---------- explosions -> framework entities ----------
 inline void explosion_hits_entities(const Vec3& c, float radius, int source_eid, int attacker) {
     float r2 = radius * 2.0f;
-    for (size_t i = 0; i < entities.size(); i++) {
-        Entity& e = *entities[i];
-        if (e.removed || e.eid == source_eid || dynamic_cast<ExperienceOrb*>(&e) || dynamic_cast<AreaEffectCloud*>(&e)) continue;
-        double dist = std::sqrt(e.pos().dist_sqr(c.x, c.y, c.z)) / r2;
+    AABB box{std::floor(c.x - r2 - 1.0), std::floor(c.y - r2 - 1.0), std::floor(c.z - r2 - 1.0),
+             std::floor(c.x + r2 + 1.0), std::floor(c.y + r2 + 1.0), std::floor(c.z + r2 + 1.0)};
+    std::vector<::Entity*> hit;
+    for_each_entity_in(box, [&](::Entity& e) {
+        if (e.id != source_eid && !dynamic_cast<AreaEffectCloud*>(&e)) hit.push_back(&e);
+    }, false);
+    Player* p = player_by_eid(attacker);
+    DamageSource d = DamageSource::of(p ? "player_explosion" : "explosion");
+    for (::Entity* e : hit) {
+        if (e->removed) continue;
+        double dist = std::sqrt(e->pos.dist_sqr(c)) / r2;
         if (dist > 1.0) continue;
-        float exposure = seen_percent(c, e.box());
+        float exposure = seen_percent(c, e->bb);
         double pw = (1.0 - dist) * exposure;
-        Dmg d;
-        d.type = attacker >= 0 ? "player_explosion" : "explosion";
-        d.explosion = d.always_hurts_dragon = true;
-        d.player = player_by_eid(attacker);
-        e.hurt(d, float((pw * pw + pw) / 2.0 * 7.0 * r2 + 1.0));
+        float dmg = float((pw * pw + pw) / 2.0 * 7.0 * r2 + 1.0);
+        if (auto* b = dynamic_cast<BossEntity*>(e)) b->hurt_by(d, p, dmg);
+        else e->hurt_server(d, dmg);
+        if (!e->removed) {  // pushFromExplosion
+            Vec3 k = (e->eye_pos() - c).normalize() * ((1.0 - dist) * exposure);
+            e->push(k.x, k.y, k.z);
+            mark_entity_sync(*e);
+        }
     }
 }
 
-inline bool EndCrystal::hurt(const Dmg& d, float, int) {  // EndCrystal.hurtServer
-    if (invulnerable && !d.bypass_invul && !(d.player && d.player->gamemode == 1)) return false;
+inline bool EndCrystal::hurt_by(const DamageSource& d, Player* p, float, int) {  // EndCrystal.hurtServer
+    if (invulnerable && !d.is(DT_BYPASSES_INVULNERABILITY) && !(p && p->gamemode == 1)) return false;
     if (d.causing && d.causing->type == entity_types::ender_dragon) return false;
     if (removed) return true;
-    removed = true;
-    if (!d.explosion)
-        explode(x, y, z, 6.0f, 1, false, eid, d.player ? d.player->eid : -1);
-    fight_crystal_destroyed(*this, d);
+    remove(Removal::KILLED);
+    if (!d.is(DT_IS_EXPLOSION)) explode(pos.x, pos.y, pos.z, 6.0f, 1, false, id, p ? p->eid : -1);
+    fight_crystal_destroyed(*this, d, p);
     return true;
 }
 
