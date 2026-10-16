@@ -27,7 +27,7 @@ public class BlockData {
     SharedConstants.tryDetectVersion();
     Bootstrap.bootStrap();
     out = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(args[0])));
-    out.writeInt(0x43424431);  // "CBD1" (big endian)
+    out.writeInt(0x43424432);  // "CBD2" (big endian)
     List<Block> blocks = new ArrayList<>();
     for (Block b : BuiltInRegistries.BLOCK) blocks.add(b);
     blocks.sort(Comparator.comparingInt(b -> Block.getId(b.defaultBlockState())));
@@ -41,6 +41,15 @@ public class BlockData {
       str(BuiltInRegistries.BLOCK.getKey(b).getPath());
       out.writeInt(first);
       out.writeInt(Block.getId(b.defaultBlockState()));
+      int beType = -1;  // BlockEntityType registry id of newBlockEntity(), -1 = none
+      if (b.defaultBlockState().hasBlockEntity())
+        for (var t : BuiltInRegistries.BLOCK_ENTITY_TYPE)
+          if (t.isValid(b.defaultBlockState())) beType = BuiltInRegistries.BLOCK_ENTITY_TYPE.getId(t);
+      out.writeShort(beType);
+      StringBuilder chain = new StringBuilder();  // Java class chain, e.g. "TallSeagrassBlock,DoublePlantBlock,VegetationBlock"
+      for (Class<?> c = b.getClass(); c != Block.class && c != null; c = c.getSuperclass())
+        chain.append(chain.length() > 0 ? "," : "").append(c.getSimpleName());
+      str(chain.toString());
       List<Property<?>> props = new ArrayList<>(b.getStateDefinition().getProperties());
       out.writeByte(props.size());
       int[] stride = new int[props.size()];
@@ -82,7 +91,15 @@ public class BlockData {
       out.writeInt((int) f);
       FluidState fs = st.getFluidState();
       int type = fs.isEmpty() ? 0 : fs.getType() == Fluids.WATER ? 1 : fs.getType() == Fluids.FLOWING_WATER ? 2 : fs.getType() == Fluids.LAVA ? 3 : 4;
-      out.writeByte(type | fs.getAmount() << 3);
+      out.writeByte(type | fs.getAmount() << 3 | (fs.isEmpty() ? 0 : fs.getValue(net.minecraft.world.level.material.FlowingFluid.FALLING) ? 0x80 : 0));
+      int e = 0;
+      if (!st.getCollisionShape(g, o).getFaceShape(Direction.UP).isEmpty()) e |= 1;
+      if (st.liquid()) e |= 2;
+      if (st.canOcclude()) e |= 4;
+      if (st.isRedstoneConductor(g, o)) e |= 8;
+      for (int d = 0; d < 6; d++)
+        if (Block.isFaceFull(st.getCollisionShape(g, o), dirs[d])) e |= 16 << d;
+      out.writeShort(e);
     }
     out.close();
     System.out.println("blocks " + blocks.size() + " states " + nstates);

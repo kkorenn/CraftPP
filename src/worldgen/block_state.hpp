@@ -39,6 +39,17 @@ struct Prop {
 struct Block {
   std::string name;  // without "minecraft:"
   int first, def, count;
+  int block_entity;     // block_entity_types:: id created by this block, -1 = none
+  std::string classes;  // vanilla Java class chain below Block, e.g. "TallSeagrassBlock,DoublePlantBlock,VegetationBlock"
+  bool is_a(std::string_view cls) const {  // instanceof
+    for (size_t i = 0; i <= classes.size();) {
+      size_t j = classes.find(',', i);
+      if (j == std::string::npos) j = classes.size();
+      if (std::string_view(classes).substr(i, j - i) == cls) return true;
+      i = j + 1;
+    }
+    return false;
+  }
   std::vector<Prop> props;
 };
 
@@ -81,7 +92,14 @@ class Registry {
   bool sturdy(int s, Dir d, Support t = FULL) const { return (flags(s) >> (int(t) + int(d))) & 1; }
   bool face_occlusion_full(int s, Dir d) const { return (flags(s) >> (FACE_OCCLUSION_FULL + d)) & 1; }
   uint8_t fluid_type(int s) const { return state_fluid[size_t(s)] & 7; }
-  int fluid_amount(int s) const { return state_fluid[size_t(s)] >> 3; }
+  int fluid_amount(int s) const { return (state_fluid[size_t(s)] >> 3) & 15; }
+  uint8_t fluid_packed(int s) const { return state_fluid[size_t(s)]; }  // FluidState identity
+  bool fluid_falling(int s) const { return state_fluid[size_t(s)] & 0x80; }
+  bool collision_up_face(int s) const { return state_flags2[size_t(s)] & 1; }  // !getCollisionShape().getFaceShape(UP).isEmpty()
+  bool liquid(int s) const { return state_flags2[size_t(s)] & 2; }             // BlockState.liquid()
+  bool can_occlude(int s) const { return state_flags2[size_t(s)] & 4; }
+  bool redstone_conductor(int s) const { return state_flags2[size_t(s)] & 8; }
+  bool collision_face_full(int s, Dir d) const { return (state_flags2[size_t(s)] >> (4 + int(d))) & 1; }  // Block.isFaceFull(getCollisionShape(), d)
   bool has_fluid(int s) const { return fluid_type(s) != NO_FLUID; }
   bool is_water(int s) const { return fluid_type(s) == WATER || fluid_type(s) == FLOWING_WATER; }  // FluidTags.WATER
   bool is_lava(int s) const { return fluid_type(s) == LAVA || fluid_type(s) == FLOWING_LAVA; }
@@ -91,6 +109,9 @@ class Registry {
 
   bool is(int state, int defaultStateOfBlock) const { return block_of(state) == block_of(defaultStateOfBlock); }
   const Tag& tag(std::string_view name) const;  // "minecraft:logs" (or "#minecraft:logs"); empty tag if unknown
+  // Fluid tag or fluid name ("minecraft:water", "#minecraft:lava") -> bit mask over Fluid types.
+  uint8_t fluids(std::string_view nameOrTag) const;
+  bool fluid_in(int state, uint8_t mask) const { return (mask >> fluid_type(state)) & 1; }
   bool in(int state, const Tag& t) const { return t.has(block_of(state)); }
   int state_count() const { return int(state_block.size()); }
   int block_count() const { return int(blocks.size()); }
@@ -101,8 +122,10 @@ class Registry {
   std::vector<uint16_t> state_block;
   std::vector<uint32_t> state_flags;
   std::vector<uint8_t> state_fluid;
+  std::vector<uint16_t> state_flags2;
   std::unordered_map<std::string, int> by_name;
   std::unordered_map<std::string, Tag> tags;
+  std::unordered_map<std::string, uint8_t> fluid_tags;
   Tag empty;
   const Prop* prop(int b, std::string_view name) const;
 };
