@@ -35,7 +35,7 @@ int main() {
           solid += b == blocks::stone, water += b == blocks::water;
         }
     assert(solid > 0);
-    printf("chunk %d,%d: %d stone, %d water, biome[0]=%d\n", c->cx, c->cz, solid, water, c->sections[16].biomes[0]);
+    printf("chunk %d,%d: %d stone, %d water, biome[0]=%d\n", c->cx, c->cz, solid, water, c->get_biome(0, 64, 0));
   }
   double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / N;
   printf("noise stage: %.1f ms/chunk; spawn height at 0,0: %d\n", ms, gen.baseHeight(0, 0));
