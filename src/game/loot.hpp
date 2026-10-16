@@ -29,6 +29,20 @@ struct LootContext {
     int state = 0, x = 0, y = 0, z = 0;
     ItemStack tool;
     float explosion_radius = 0;  // 0: not an explosion
+    // entity tables (LootContextParamSets.ENTITY / SHEARING)
+    Entity* this_entity = nullptr;
+    Entity* attacker = nullptr;         // ATTACKING_ENTITY (damage source causing entity)
+    Entity* direct = nullptr;           // DIRECT_ATTACKING_ENTITY
+    Entity* last_player = nullptr;      // LAST_DAMAGE_PLAYER (only when killed by a player)
+    const DamageSource* source = nullptr;
+};
+// entity_properties predicate check, pre-compiled by tools/gen_mob_data.py
+struct EntityCheck {
+    enum K : uint8_t { FLAG, TYPE, VEHICLE, PROP } k = FLAG;
+    std::string key, value;
+    bool want = true;
+    std::vector<uint16_t> ids;
+    std::vector<EntityCheck> sub;
 };
 
 struct StateMatch {  // match_block / location_check "state": property -> exact value or int range
@@ -40,7 +54,11 @@ struct StateMatch {  // match_block / location_check "state": property -> exact 
 
 struct LootCond {
     enum T : uint8_t { TRUE_, FALSE_, SURVIVES_EXPLOSION, MATCH_TOOL, TABLE_BONUS, RANDOM_CHANCE, MATCH_BLOCK,
-                       LOCATION, INVERTED, ANY_OF, ALL_OF } t = TRUE_;
+                       LOCATION, INVERTED, ANY_OF, ALL_OF, KILLED_BY_PLAYER, ENTITY_PROPS, DAMAGE_SOURCE } t = TRUE_;
+    uint8_t which = 0;  // ENTITY_PROPS: 0 this, 1 attacker, 2 direct_attacker, 3 attacking_player
+    std::vector<EntityCheck> checks, checks2;  // ENTITY_PROPS; DAMAGE_SOURCE: source_entity, direct_entity
+    std::vector<std::pair<std::vector<uint16_t>, bool>> dtags;  // DAMAGE_SOURCE: damage type tags
+    int is_direct = -1;
     std::vector<uint16_t> ids;  // items (match_tool) or blocks (match_block/location)
     bool any_id = true;
     std::vector<float> chances;
@@ -51,7 +69,7 @@ struct LootCond {
 };
 
 struct LootFunc {
-    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT } t = NOP;
+    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT, SMELT } t = NOP;
     LootNumber n;
     bool add = false;
     float p1 = 0, p2 = 0;
@@ -60,8 +78,10 @@ struct LootFunc {
 };
 
 struct LootEntry {
-    enum T : uint8_t { ITEM, TAG, ALTERNATIVES, GROUP, SEQUENCE, EMPTY } t = EMPTY;
+    enum T : uint8_t { ITEM, TAG, ALTERNATIVES, GROUP, SEQUENCE, EMPTY, TABLE } t = EMPTY;
     int item = -1, weight = 1;
+    std::string table;           // TABLE: referenced table name ("shearing/sheep/white"), resolved lazily
+    std::vector<uint16_t> items;  // TAG: items of the tag (expand=false: one random... ponytail: first item)
     std::vector<LootCond> conds;
     std::vector<LootFunc> funcs;
     std::vector<LootEntry> kids;
@@ -114,6 +134,21 @@ inline std::vector<StateMatch> states(const Json* j) {
     }
     return v;
 }
+inline std::vector<EntityCheck> entity_checks(const Json& a) {
+    std::vector<EntityCheck> v;
+    for (auto& c : a.arr) {
+        EntityCheck e;
+        std::string k = c[0].asString();
+        if (k == "flag") e.k = EntityCheck::FLAG, e.key = c[1].asString(), e.want = c[2].asBool();
+        else if (k == "type") {
+            e.k = EntityCheck::TYPE;
+            for (auto& i : c[1].arr) e.ids.push_back(uint16_t(i.asInt()));
+        } else if (k == "vehicle") e.k = EntityCheck::VEHICLE, e.sub = entity_checks(c[1]);
+        else e.k = EntityCheck::PROP, e.key = c[1].asString(), e.value = c[2].asString();
+        v.push_back(std::move(e));
+    }
+    return v;
+}
 inline LootCond cond(const Json& j) {
     LootCond c;
     std::string t = strip(j["type"].asString());
@@ -147,6 +182,28 @@ inline LootCond cond(const Json& j) {
     } else if (t == "any_of" || t == "all_of") {
         c.t = t == "any_of" ? LootCond::ANY_OF : LootCond::ALL_OF;
         for (auto& k : j["terms"].arr) c.kids.push_back(cond(k));
+    } else if (t == "killed_by_player") {
+        c.t = LootCond::KILLED_BY_PLAYER;
+    } else if (t == "random_chance_with_enchanted_bonus") {  // no enchantments yet: the unenchanted chance
+        c.t = LootCond::RANDOM_CHANCE;
+        c.chance.a = j["unenchanted_chance"].asFloat();
+    } else if (t == "entity_properties") {
+        c.t = !j.find("checks") || j["unsupported"].asBool() ? LootCond::FALSE_ : LootCond::ENTITY_PROPS;  // raw = block tables
+        if (c.t == LootCond::FALSE_) return c;
+        std::string w = j["entity"].asString();
+        c.which = w == "attacker" ? 1 : w == "direct_attacker" ? 2 : w == "attacking_player" ? 3 : 0;
+        c.checks = entity_checks(j["checks"]);
+    } else if (t == "damage_source_properties") {
+        c.t = !j.find("unsupported") || j["unsupported"].asBool() ? LootCond::FALSE_ : LootCond::DAMAGE_SOURCE;
+        if (auto* se = j.find("source_entity")) c.checks = entity_checks(*se);
+        if (auto* de = j.find("direct_entity")) c.checks2 = entity_checks(*de);
+        if (auto* tg = j.find("tags"))
+            for (auto& x : tg->arr) {
+                std::vector<uint16_t> ids;
+                for (auto& i : x[0].arr) ids.push_back(uint16_t(i.asInt()));
+                c.dtags.emplace_back(std::move(ids), x[1].asBool());
+            }
+        if (auto* d = j.find("is_direct")) c.is_direct = d->asBool();
     } else {
         warn("condition " + t);
         c.t = LootCond::FALSE_;
@@ -184,8 +241,11 @@ inline LootFunc func(const Json& j) {
         auto& l = j["limit"];
         if (auto* lo = l.find("min")) f.lo = int(number(*lo).a);
         if (auto* hi = l.find("max")) f.hi = int(number(*hi).a);
-    } else if (t != "copy_components" && t != "copy_state") {
-        warn("function " + t);
+    } else if (t == "furnace_smelt") {
+        f.t = LootFunc::SMELT;
+    } else if (t != "copy_components" && t != "copy_state" && t != "enchanted_count_increase" && t != "set_potion" &&
+               t != "set_damage" && t != "enchant_with_levels" && t != "enchant_randomly" && t != "set_ominous_bottle_amplifier") {
+        warn("function " + t);  // the listed ones need enchantments / components: no-ops until those exist
     }
     return f;
 }
@@ -211,13 +271,43 @@ inline LootEntry entry(const Json& j) {
     } else if (t == "alternatives" || t == "group" || t == "sequence") {
         e.t = t == "alternatives" ? LootEntry::ALTERNATIVES : t == "group" ? LootEntry::GROUP : LootEntry::SEQUENCE;
         for (auto& k : j["children"].arr) e.kids.push_back(entry(k));
+    } else if (t == "loot_table" && j["value"].isString()) {
+        e.t = LootEntry::TABLE;
+        e.table = strip(j["value"].asString());
+    } else if (t == "tag" && j.find("items")) {
+        e.t = LootEntry::TAG;
+        for (auto& x : j["items"].arr) e.items.push_back(uint16_t(x.asInt()));
     } else if (t != "empty") {
-        warn("entry " + t);  // dynamic (block entity contents), tag, loot_table
+        warn("entry " + t);  // dynamic (block entity contents), inline loot_table
     }
     return e;
 }
 }  // namespace loot_detail
 
+inline LootTable compile_table(const Json& j) {
+    using namespace loot_detail;
+    LootTable t;
+    t.funcs = funcs(j);
+    if (auto* pools = j.find("pools"))
+        for (auto& pj : pools->arr) {
+            LootPool p;
+            p.rolls = number(pj["rolls"]);
+            p.bonus.a = 0;
+            if (auto* b = pj.find("bonus_rolls")) p.bonus = number(*b);
+            p.conds = conds(pj);
+            p.funcs = funcs(pj);
+            for (auto& e : pj["entries"].arr) p.entries.push_back(entry(e));
+            t.pools.push_back(std::move(p));
+        }
+    return t;
+}
+// Entity / shearing / gameplay tables from data/mobs.json, by name ("entities/cow").
+inline void load_entity_loot(const Json& loot) {
+    for (auto& [name, j] : loot.obj) {
+        entity_loot_index[name] = int(loot_tables.size());
+        loot_tables.push_back(compile_table(j));
+    }
+}
 inline void load_loot_tables(const Json& loot) {
     using namespace loot_detail;
     for (auto& [name, j] : loot.obj) {
@@ -256,8 +346,33 @@ inline bool state_matches(int state, const std::vector<StateMatch>& sm) {
     return true;
 }
 
+inline bool check_entity(const std::vector<EntityCheck>& cs, const Entity* e) {
+    if (!e) return false;
+    for (auto& c : cs) {
+        switch (c.k) {
+            case EntityCheck::FLAG: if (e->loot_flag(c.key) != c.want) return false; break;
+            case EntityCheck::TYPE: if (!in_sorted(c.ids, e->type)) return false; break;
+            case EntityCheck::VEHICLE: return false;  // ponytail: no riding yet, so no vehicle ever matches
+            case EntityCheck::PROP: if (e->loot_prop(c.key) != c.value) return false; break;
+        }
+    }
+    return true;
+}
 inline bool test(const LootCond& c, const LootContext& ctx) {
     switch (c.t) {
+        case LootCond::KILLED_BY_PLAYER: return ctx.last_player != nullptr;
+        case LootCond::ENTITY_PROPS: {
+            Entity* e = c.which == 0 ? ctx.this_entity : c.which == 1 ? ctx.attacker : c.which == 2 ? ctx.direct : ctx.last_player;
+            return check_entity(c.checks, e);
+        }
+        case LootCond::DAMAGE_SOURCE: {
+            if (!ctx.source) return false;
+            if (!c.checks.empty() && !check_entity(c.checks, ctx.source->causing)) return false;
+            if (!c.checks2.empty() && !check_entity(c.checks2, ctx.source->direct)) return false;
+            for (auto& [ids, want] : c.dtags) if (in_sorted(ids, ctx.source->type) != want) return false;
+            if (c.is_direct >= 0 && (ctx.source->causing == ctx.source->direct) != bool(c.is_direct)) return false;
+            return true;
+        }
         case LootCond::TRUE_: return true;
         case LootCond::FALSE_: return false;
         case LootCond::SURVIVES_EXPLOSION:
@@ -310,6 +425,9 @@ inline void apply(const std::vector<LootFunc>& fs, ItemStack& s, const LootConte
                 }
                 break;
             case LootFunc::LIMIT: s.count = std::clamp(s.count, f.lo, f.hi); break;
+            case LootFunc::SMELT:
+                if (auto it = smelt_result.find(s.item); it != smelt_result.end()) s.item = it->second;
+                break;
         }
     }
 }
@@ -318,7 +436,7 @@ inline void apply(const std::vector<LootFunc>& fs, ItemStack& s, const LootConte
 inline bool expand(const LootEntry& e, const LootContext& ctx, std::vector<const LootEntry*>& out) {
     if (!all(e.conds, ctx)) return false;
     switch (e.t) {
-        case LootEntry::ITEM: case LootEntry::TAG: case LootEntry::EMPTY: out.push_back(&e); return true;
+        case LootEntry::ITEM: case LootEntry::TAG: case LootEntry::EMPTY: case LootEntry::TABLE: out.push_back(&e); return true;
         case LootEntry::ALTERNATIVES:
             for (auto& k : e.kids) if (expand(k, ctx, out)) return true;
             return false;
@@ -333,6 +451,7 @@ inline bool expand(const LootEntry& e, const LootContext& ctx, std::vector<const
 }
 
 // LootTable.getRandomItems; `out` receives stacks (may exceed max stack size, pop_resource splits).
+inline void roll_loot(const LootTable& t, const LootContext& ctx, std::vector<ItemStack>& out);
 inline void roll_loot(const LootTable& t, const LootContext& ctx, std::vector<ItemStack>& out) {
     std::vector<const LootEntry*> cand;
     for (auto& p : t.pools) {
@@ -349,6 +468,15 @@ inline void roll_loot(const LootTable& t, const LootContext& ctx, std::vector<It
                 int v = rand_int(total);
                 for (auto* c : cand)
                     if ((v -= std::max(c->weight, 0)) < 0) { pick = c; break; }
+            }
+            if (pick && pick->t == LootEntry::TABLE) {  // LootTableReference: roll the referenced table
+                auto it = entity_loot_index.find(pick->table);
+                if (it != entity_loot_index.end()) roll_loot(loot_tables[size_t(it->second)], ctx, out);
+                continue;
+            }
+            if (pick && pick->t == LootEntry::TAG && !pick->items.empty()) {  // expand=false: every tag item
+                for (uint16_t it : pick->items) out.push_back({it, 1, 0});
+                continue;
             }
             if (!pick || pick->t != LootEntry::ITEM) continue;
             ItemStack s{pick->item, 1, 0};
