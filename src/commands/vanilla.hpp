@@ -1,6 +1,7 @@
 #pragma once
 // Vanilla command implementations (net.minecraft.server.commands.*), keyed by root literal.
 #include "dispatcher.hpp"
+#include "locate.hpp"
 
 // Survival module API (src/game/, included after this header).
 inline void kick(Player& p);
@@ -67,6 +68,7 @@ inline void reg(const char* name, Handler h) { command_handlers()[name] = std::m
 inline void sync_time_all(int clock) { clock_changed(clock); }
 
 inline void register_vanilla_commands() {
+    register_locate();
     // help
     reg("help", [](Cmd& c) {
         if (!c.has("command")) {
@@ -694,7 +696,7 @@ inline void register_vanilla_commands() {
 
     reg("stop", [](Cmd& c) {
         c.success(tr("commands.stop.stopping"), true);
-        shutdown_requested = 1;
+        request_shutdown_async();
         return 1;
     });
     reg("save-all", [](Cmd& c) {

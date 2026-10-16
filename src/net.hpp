@@ -6,6 +6,9 @@
 #include <sys/socket.h>
 #include <zlib.h>
 
+#include <algorithm>
+#include <cstring>
+
 inline int compression_threshold = -1;            // network-compression-threshold; -1 = off (set at startup)
 inline thread_local bool conn_compressed = false;  // network thread: our connection has sent set_compression
 
@@ -58,12 +61,28 @@ inline std::vector<uint8_t> reframe(const std::vector<uint8_t>& blob, bool compr
     return out;
 }
 
+// Reads go through a per-thread buffer (one network thread per connection): a recv() takes every packet the
+// client has sent so far instead of 2+ syscalls per packet (length bytes, then body).
+struct RecvBuf { uint8_t b[8192]; size_t i = 0, n = 0; };
+inline thread_local RecvBuf conn_rbuf;
+
 inline bool read_exact(int fd, uint8_t* buf, size_t n) {
+    RecvBuf& rb = conn_rbuf;
     while (n) {
-        ssize_t r = recv(fd, buf, n, 0);
-        if (r <= 0) return false;
-        buf += r;
-        n -= size_t(r);
+        if (rb.i == rb.n) {
+            if (n >= sizeof rb.b) {  // big body: straight into the destination
+                ssize_t r = recv(fd, buf, n, 0);
+                if (r <= 0) return false;
+                buf += r, n -= size_t(r);
+                continue;
+            }
+            ssize_t r = recv(fd, rb.b, sizeof rb.b, 0);
+            if (r <= 0) return false;
+            rb.i = 0, rb.n = size_t(r);
+        }
+        size_t k = std::min(n, rb.n - rb.i);
+        memcpy(buf, rb.b + rb.i, k);
+        rb.i += k, buf += k, n -= k;
     }
     return true;
 }

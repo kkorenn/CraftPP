@@ -112,23 +112,35 @@ def parse_chunk(b, decode=False):
     assert len(sections) in (16, 24), len(sections)  # nether/end 0..255, overworld -64..319
     for _ in range(b.varint()):  # block entities
         b.u8(); b.i16(); b.varint(); skip_nbt(b)
-    for _ in range(4): b.take(b.varint())  # light masks (BitSet as byte array in 26.x)
-    for _ in range(2):
-        for _ in range(b.varint()): assert len(b.take(b.varint())) == 2048
+    light = parse_light(b)
     assert b.i == len(b.d), "trailing bytes in chunk"
-    return cx, cz, sections
+    return (cx, cz, sections, light) if decode else (cx, cz, sections)
+
+def parse_light(b):
+    """Light data (chunk packet tail / light_update): {"sky"|"block": {section index 0..25: 2048 bytes}}.
+    Sections in the empty mask come back as zeros; sections in neither mask are absent."""
+    masks = [int.from_bytes(b.take(b.varint()), "little") for _ in range(4)]  # BitSet as LE byte array
+    out = {}
+    for k, (mask, empty) in zip(("sky", "block"), ((masks[0], masks[2]), (masks[1], masks[3]))):
+        layers = [b.take(b.varint()) for _ in range(b.varint())]
+        assert all(len(l) == 2048 for l in layers) and len(layers) == bin(mask).count("1")
+        d = out[k] = {}
+        for i in range(26):
+            if mask >> i & 1: d[i] = layers.pop(0)
+            elif empty >> i & 1: d[i] = bytes(2048)
+    return out
 
 def login(name, host, port, view=8, decode=False, uid=None):
     """Join and stop at the first teleport. c.chunks holds chunks seen so far, c.spawn the world spawn."""
     c = Conn(host, port)
-    c.chunks, c.spawn, c.registries = {}, None, 0
+    c.chunks, c.light, c.spawn, c.registries = {}, {}, None, 0
     c.send(0, varint(PROTO) + string(host) + struct.pack(">H", port) + varint(2))
     c.send(0, string(name) + (uid or uuid.uuid4()).bytes)
     pid, b = c.recv()
     if pid == LOGIN_CB["login_compression"]:
         c.threshold = b.varint()
         pid, b = c.recv()
-    assert pid == LOGIN_CB["login_finished"], pid
+    assert pid == LOGIN_CB["login_finished"], (pid, b.d[b.i:])
     c.send(3)  # login acknowledged
     c.send(CFG_SB["client_information"], string("en_us") + bytes([view]) + varint(0) + b"\x01\x7f" + varint(1) + b"\x00\x01" + varint(0))
     while True:
@@ -167,7 +179,14 @@ def play_step(c):
     pid, b = c.recv()
     c.last = b
     if pid == PLAY_CB["level_chunk_with_light"]:
-        cx, cz, secs = parse_chunk(b, c.decode); c.chunks[cx, cz] = secs
+        if c.decode:
+            cx, cz, secs, c.light[cx, cz] = parse_chunk(b, True)
+        else:
+            cx, cz, secs = parse_chunk(b)
+        c.chunks[cx, cz] = secs
+    elif pid == PLAY_CB["light_update"] and c.decode:
+        cx, cz = b.varint(), b.varint()
+        for k, d in parse_light(b).items(): c.light.setdefault((cx, cz), {"sky": {}, "block": {}})[k].update(d)
     elif pid == PLAY_CB["login"]:
         b.i32(); b.u8(); [b.str() for _ in range(b.varint())]; b.varint(); b.varint(); b.varint(); b.take(3)
         b.varint(); c.dimension = b.str()
