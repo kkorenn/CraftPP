@@ -251,6 +251,8 @@ class Features {
   // vanilla runs once the chunk ticks. Writes into neighbours already handed to the World are skipped.
   void finish(Region& r) const;
   StructurePlacer structure_placer;  // structures hook (see top)
+  // Loads a placed feature by id (structures: feature pool elements). Not thread-safe: call during setup.
+  const feat::Placed* load_placed(const std::string& id);
 
   // Internal (feat::Level and feature code).
   Overworld& ow;

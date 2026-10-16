@@ -251,8 +251,9 @@ std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::createNoiseChunk
   return nc;
 }
 
-std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c) {
+std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Chunk& c, const df::Sampler* beardifier) {
   auto nc = createNoiseChunk({16, HEIGHT, 16, c.cx * 16, MIN_Y, c.cz * 16});
+  nc->ctx.beardifier = beardifier;  // NoiseChunk user field Beardifier.CONTEXT_KEY
   const DensityVolume& v = nc->volume;
   DensityBuffer density(v.size());
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, v);
@@ -371,8 +372,8 @@ int TerrainGenerator::uncachedBiome(ClimateSampler& s, int qx, int qy, int qz) {
 }
 
 void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, int)>& noiseBiome, const Carvers* carvers,
-                                    const std::function<int(int, int)>& carverBiome) {
-  auto nc = fillFromNoise(c);
+                                    const std::function<int(int, int)>& carverBiome, const df::Sampler* beardifier) {
+  auto nc = fillFromNoise(c, beardifier);
   if (!materials) return;
   SurfaceContext ctx(*this, *nc, c);
   ctx.regionBiome = &noiseBiome;
@@ -445,16 +446,27 @@ std::pair<int, int> TerrainGenerator::findSpawnPosition() {
   return {rx, rz};
 }
 
-int TerrainGenerator::baseHeight(int x, int z) {
+int TerrainGenerator::baseHeight(int x, int z, bool oceanFloor) {
   auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
   DensityBuffer density(HEIGHT);
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
   for (int y = HEIGHT - 1; y >= 0; y--) {
     int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
     if (state < 0) state = blocks::stone;
-    if (state != blocks::air) return MIN_Y + y + 1;
+    if (oceanFloor ? state == blocks::stone : state != blocks::air) return MIN_Y + y + 1;
   }
   return MIN_Y;
+}
+
+void TerrainGenerator::baseColumn(int x, int z, std::vector<int>& out) {
+  auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
+  DensityBuffer density(HEIGHT);
+  dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
+  out.assign(HEIGHT, blocks::air);
+  for (int y = HEIGHT - 1; y >= 0; y--) {
+    int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
+    out[y] = state < 0 ? blocks::stone : state;
+  }
 }
 
 }  // namespace worldgen

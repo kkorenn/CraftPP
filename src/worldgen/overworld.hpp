@@ -1,6 +1,7 @@
 // The overworld generator: TerrainGenerator (biomes, noise, material rules), carvers and biome decoration
 // wired into a Pipeline (pipeline.hpp). World::generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); }.
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -23,6 +24,8 @@ struct Overworld {
   std::unique_ptr<Carvers> carvers;
   std::unique_ptr<Features> features;
   Pipeline pipeline;
+  // Structures hook (structure/hooks.cpp): Beardifier.forStructuresInChunk for the TERRAIN step, null = none.
+  std::function<std::shared_ptr<const df::Sampler>(int cx, int cz)> beardifier;
 };
 
 }  // namespace worldgen

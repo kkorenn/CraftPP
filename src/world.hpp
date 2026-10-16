@@ -359,6 +359,10 @@ inline std::string chunk_path(int cx, int cz) {
 }
 inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
 
+// Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
+inline std::function<void(const Chunk&, Writer&)> chunk_save_extra;
+inline std::function<void(Chunk&, Reader&)> chunk_load_extra;
+
 inline bool load_chunk(Chunk& c) {
     std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
     uint32_t magic = 0, raw = 0;
@@ -391,7 +395,9 @@ inline bool load_chunk(Chunk& c) {
     if (r.i < out.size()) {  // light (light::save)
         size_t len = size_t(r.varint());
         if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
+        r.i += len;
     }
+    if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
     return c.on_disk = true;
 }
 
@@ -408,6 +414,7 @@ inline void save_chunk(Chunk& c) {
         for (auto& e : c.block_entities)
             w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
         w.varint(int32_t(light.size())).bytes(light);
+        if (chunk_save_extra) chunk_save_extra(c, w);
         c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
@@ -488,6 +495,7 @@ struct World {
     }
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
+    std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
     int save_dirty() {
         std::vector<ChunkPtr> dirty, idle;
         {
@@ -503,6 +511,7 @@ struct World {
         }
         int saved = int(dirty.size());
         for (auto& c : dirty) save_chunk(*c);
+        if (on_saved) on_saved();
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(*c);
         std::lock_guard lock(m);

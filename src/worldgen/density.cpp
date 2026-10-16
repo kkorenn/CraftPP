@@ -202,6 +202,14 @@ struct ConstS : Sampler {
   float sampleValue(Ctx&, int, int, int) const override { return v; }
 };
 
+struct BeardS : Sampler {  // ContextBoundSampler(Beardifier.CONTEXT_KEY, constant 0)
+  void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
+    if (c.beardifier) c.beardifier->sampleVolume(c, o, v);
+    else o.fill(0.0f);
+  }
+  float sampleValue(Ctx& c, int x, int y, int z) const override { return c.beardifier ? c.beardifier->sampleValue(c, x, y, z) : 0.0f; }
+};
+
 struct NoiseS : Sampler {  // NoiseFunction.Sampler
   std::shared_ptr<const Noise> noise;
   double xz, y;
@@ -1280,7 +1288,8 @@ SamplerP DensityFunctions::compile(const NodeP& n) {
       return s;
     }
     case K::BlendAlpha: return std::make_shared<ConstS>(1.0f);  // no blender in context: ContextBoundSampler fallback
-    case K::BlendOffset: case K::Beardifier: return std::make_shared<ConstS>(0.0f);
+    case K::Beardifier: return std::make_shared<BeardS>();
+    case K::BlendOffset: return std::make_shared<ConstS>(0.0f);
     case K::BlendDensity: return c(0);  // blender empty: pass-through
     case K::OldBlendedNoise: {
       BlendedNoise bn{n->d[0], n->d[1], n->d[2], n->d[3], n->d[4]};
