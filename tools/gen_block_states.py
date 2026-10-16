@@ -9,7 +9,7 @@ src = sys.argv[1] if len(sys.argv) > 1 else "vanilla/generated/reports/blocks.js
 out = sys.argv[2] if len(sys.argv) > 2 else "java/src/main/resources/block-states-26.3.txt"
 blocks = json.load(open(src))
 lines = []
-for name, b in blocks.items():  # report order == registry order == block id
+for name, b in sorted(blocks.items(), key=lambda nb: min(s["id"] for s in nb[1]["states"])):  # by state id (= block id order)
     props = sorted(b.get("properties", {}).items())  # vanilla StateDefinition sorts by name
     states = b["states"]
     first = min(s["id"] for s in states)

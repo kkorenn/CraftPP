@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Headless join check: login -> configuration -> play, parses every chunk.
 Usage: python3 test/bot.py [host] [port]"""
-import re, socket, struct, sys, uuid
+import re, socket, struct, sys, uuid, zlib
 
 HDR = open(__file__.rsplit("/", 2)[0] + "/src/gen/ids.hpp").read()
 PROTO = int(re.search(r"PROTOCOL_VERSION = (\d+)", HDR).group(1))
@@ -44,9 +44,11 @@ class Conn:
     def __init__(self, host, port):
         self.s = socket.create_connection((host, port))
         self.f = self.s.makefile("rb")
-        self.play, self.biomes = False, []
+        self.play, self.biomes, self.threshold = False, [], -1
     def send(self, pid, body=b""):
         p = varint(pid) + body
+        if self.threshold >= 0:  # set_compression received
+            p = varint(len(p)) + zlib.compress(p, 1) if len(p) >= self.threshold else b"\x00" + p
         self.s.sendall(varint(len(p)) + p)
     def recv(self):
         n = s = 0
@@ -56,6 +58,8 @@ class Conn:
             n |= (b[0] & 0x7F) << s; s += 7
             if not b[0] & 0x80: break
         b = Buf(self.f.read(n))
+        if self.threshold >= 0 and b.varint():
+            b = Buf(zlib.decompress(b.d[b.i:]))
         pid = b.varint()
         # Housekeeping vanilla insists on: keep-alives and chunk batch acks (it throttles without them).
         cb, sb = (PLAY_CB, PLAY_SB) if self.play else (CFG_CB, CFG_SB)
@@ -121,6 +125,9 @@ def login(name, host, port, view=8, decode=False, uid=None):
     c.send(0, varint(PROTO) + string(host) + struct.pack(">H", port) + varint(2))
     c.send(0, string(name) + (uid or uuid.uuid4()).bytes)
     pid, b = c.recv()
+    if pid == LOGIN_CB["login_compression"]:
+        c.threshold = b.varint()
+        pid, b = c.recv()
     assert pid == LOGIN_CB["login_finished"], pid
     c.send(3)  # login acknowledged
     c.send(CFG_SB["client_information"], string("en_us") + bytes([view]) + varint(0) + b"\x01\x7f" + varint(1) + b"\x00\x01" + varint(0))
