@@ -287,18 +287,9 @@ inline Writer spawn_entity(const Player& p) {
                          .varint(0));
 }
 
-inline void broadcast_position(const Player& p) {
-    broadcast(Writer()
-                  .varint(play_cb::teleport_entity)
-                  .varint(p.eid)
-                  .f64(p.x).f64(p.y).f64(p.z)
-                  .f64(0).f64(0).f64(0)
-                  .f32(p.yaw).f32(p.pitch)
-                  .i32(0)
-                  .boolean(p.on_ground),
-              &p);
-    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
-}
+// Other clients learn player moves from the entity tracker (src/mobs/manager.hpp: ChunkMap.TrackedEntity with
+// range min(512, view * 16), relative moves every 2 ticks); nothing to send here.
+inline void broadcast_position(const Player&) {}
 
 // ---------- player data ----------
 

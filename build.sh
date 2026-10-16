@@ -49,6 +49,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
+  python3 -u test/mobs_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
   grep -q 'Alice lost connection: Disconnected' $LOG || fail "lost connection line"
@@ -80,6 +81,7 @@ if [ "$1" = "test" ]; then
   ls build/logs/*-1.log* > /dev/null 2>&1 || fail "previous latest.log was not rolled over"
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
   python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/mobs_test.py 127.0.0.1 $PORT --after-restart
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
