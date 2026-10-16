@@ -17,6 +17,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Bug hunt: ASan/UBSan/TSan builds (`./build.sh [test] asan|tsan`), test/stress.py (fuzz, cmdfuzz, 50+ bots, reconnect storms, soak), 15 crash/DoS/race fixes (NaN moves, unbounded inbox, 2 MiB per-connection prealloc, socket timeouts, deep SNBT, int-overflow UB → -fwrapv, ghost players).
 - Mobs core (src/mobs/): entity manager, vanilla TrackedEntity tracking (players too), A* pathfinding, GoalSelector + Brain, NaturalSpawner, explosions, combat (cooldown/crits/sweep/PvP/armour/killer death messages), XP orbs, /summon + @e selectors; cow, pig, sheep, chicken, zombie, skeleton, spider, creeper. ~0.45 ms mspt at 100 mobs. Tool-time extractor: tools/gen_mob_data.py + MobDump.java → data/mob_dump.json.
 - Block ticks (src/level/): Level.setBlock + CollectingNeighborUpdater (vanilla update order), scheduled ticks (persisted), exact water/lava flow + worldgen fluid post-processing (vanilla-vs-CraftPP fluid diffs at vanilla-vs-vanilla level), random ticks (crops, grass, leaves, ice, snow, fire, copper), pop-offs, two-part blocks, buckets, bone meal, hoe, flint and steel, falling blocks. Tool-time extractor: tools/gen_level_data.py → data/level.json.
+- Placement (src/level/place_rules.hpp): vanilla getStateForPlacement + updateShape/canSurvive for walls, chests, wire shape, rails (RailState), rotation-16 signs/banners/skulls, wall/hanging variants, attached blocks, count increments, per-class facing, waterlogging. Fixed state-id ordering for 12 blocks in data/game.json and item→block mapping for redstone/string/seeds.
 
 ## In progress (branches)
 | Branch | Scope |
@@ -25,7 +26,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | dimensions | Nether, End, portals |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
-| placement | block placement states (facing/axis/half/slab/stairs/doors/beds/waterlogging), BlockItem.useOn parity |
+| effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
 | redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
@@ -34,7 +35,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
-- Potions/effects, enchantments, XP, advancements, recipe book, statistics, maps
+- Advancements, recipe book, statistics, maps
 - Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
 - Online-mode auth + encryption + compression, signed chat, resource packs, server-list favicon, query, RCON
 - Pi deployment guide (systemd), plugin API coverage
