@@ -31,7 +31,10 @@ Overworld::Overworld(int64_t seed, const std::string& stages, const std::string&
     };
     terrain->buildTerrain(*r.center().chunk, noiseBiome, carvers.get(), carverBiome);
   });
-  if (features) pipeline.set_step(Status::FEATURES, [this](Region& r) { features->decorate(r); });
+  if (features) {
+    pipeline.set_step(Status::FEATURES, [this](Region& r) { features->decorate(r); });
+    pipeline.set_step(Status::FULL, [this](Region& r) { features->finish(r); }, 1);
+  }
 }
 
 }  // namespace worldgen

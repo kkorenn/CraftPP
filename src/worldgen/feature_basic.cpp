@@ -661,8 +661,9 @@ void register_basic_features(ParserMap& m) {
   m["spring_feature"] = [](Loader& L, const Json& j) {
     auto* f = L.make<Spring>();
     const Json& st = j["state"];
-    std::string fluid = strip_ns(st["Name"].asString());
-    bool falling = st.has("Properties") && st["Properties"].has("falling") && st["Properties"]["falling"].asString() == "true";
+    std::string fluid = strip_ns((st.has("id") ? st["id"] : st["Name"]).asString());
+    const Json* pr = st.find("properties") ? st.find("properties") : st.find("Properties");
+    bool falling = pr && pr->has("falling") && (*pr)["falling"].asString() == "true";
     f->state = R().parse(fluid == "lava" || fluid == "flowing_lava" ? "minecraft:lava" : "minecraft:water");
     if (falling) f->state = R().with(f->state, "level", "8");
     f->requiresBelow = !j.has("requires_block_below") || j["requires_block_below"].asBool();
