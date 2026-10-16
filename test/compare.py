@@ -13,6 +13,7 @@ from bot import login, play_step, PLAY_SB
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
 MIN_Y = -64
+RUN = f"{ROOT}/vanilla/compare_run"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--seed", required=True)
