@@ -415,6 +415,10 @@ struct World {
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
     ChunkPtr get_ptr(int cx, int cz) {
+        {
+            std::lock_guard lock(m);  // fast path (every get_block/set_block): no promise/future allocation
+            if (auto it = chunks.find({cx, cz}); it != chunks.end()) return it->second;
+        }
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
         if (job) produce(cx, cz, *job, false);
