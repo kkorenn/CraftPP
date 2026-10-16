@@ -3,7 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
-[ -f data/game.json ] || python3 tools/gen_game_data.py
+[ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
 if [ "$1" = "test" ]; then cmake --build build -j; else cmake --build build -j --target craftpp; fi
 
@@ -30,7 +30,7 @@ if [ "$1" = "test" ]; then
   [ ! -d build/eula-test/world ] || fail "world created before eula was accepted"
 
   rm -rf build/test-world build/logs
-  printf 'server-port=%s\nlevel-name=build/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\n' "$PORT" > build/test.properties
+  printf 'server-port=%s\nlevel-name=build/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\nspawn-protection=0\n' "$PORT" > build/test.properties
   echo "eula=true" > build/eula.txt
   rm -f build/banned-players.json build/banned-ips.json build/whitelist.json
   printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}]\n' > build/ops.json  # bot.py and survival.py run op commands
@@ -38,7 +38,7 @@ if [ "$1" = "test" ]; then
   rm -f build/console.fifo && mkfifo build/console.fifo
   ./build/craftpp build/test.properties < build/console.fifo > $LOG 2>&1 &
   PID=$!
-  trap 'kill $PID 2>/dev/null; rm -f build/console.fifo' EXIT
+  trap 'kill $PID 2>/dev/null || true; rm -f build/console.fifo' EXIT  # || true: set -e would turn a gone PID into exit 1
   exec 3> build/console.fifo
   wait_log 'Done ('
   grep -qE '^\[[0-9:]{8} INFO\]: Done \([0-9]+\.[0-9]{3}s\)! For help, type "help"$' $LOG || fail "Done line format"
@@ -46,6 +46,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"

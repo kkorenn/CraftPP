@@ -28,9 +28,9 @@ inline void join(const PlayerPtr& pp) {
                .varint(std::stoi(props["max-players"]))
                .varint(v)
                .varint(v)       // simulation distance
-               .boolean(false)  // reduced debug info
-               .boolean(true)   // show death screen
-               .boolean(false)  // limited crafting
+               .boolean(rule("reduced_debug_info"))
+               .boolean(!rule("immediate_respawn"))  // show death screen
+               .boolean(rule("limited_crafting"))
                .varint(dimension_types::overworld)
                .str("minecraft:overworld")
                .i64(0)          // hashed seed
@@ -46,7 +46,7 @@ inline void join(const PlayerPtr& pp) {
     commands_on_join(p);  // commands tree, op level, border, time, spawn, difficulty, weather, scoreboard
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));  // level chunks load start
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(1)
+    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
     for (size_t i = 0; i < p.inv.size(); i++)
         if (p.inv[i].item >= 0)

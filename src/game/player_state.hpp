@@ -97,6 +97,7 @@ struct PlayerGame {
     bool sent_sat_zero = false;
     // block breaking (ServerPlayerGameMode)
     bool digging = false, delayed = false;
+    int game_ticks = 0;  // ServerPlayerGameMode.gameTicks
     int dig_x = 0, dig_y = 0, dig_z = 0, dig_start = 0, dig_state = 0;
     int dly_x = 0, dly_y = 0, dly_z = 0, dly_start = 0, dly_state = 0;
     // using an item (eating)
@@ -112,7 +113,29 @@ struct PlayerGame {
     std::array<ItemStack, MENU_SLOTS> remote{};  // what the client shows for the open menu
     ItemStack remote_carried;
     bool remote_valid = false;
-    int keepalive_timer = 0;
+};
+
+// Connection bookkeeping (ServerCommonPacketListenerImpl / ServerGamePacketListenerImpl), game/netplay.hpp.
+// Lives outside PlayerGame because respawn resets that, and the connection outlives a respawn.
+struct NetState {
+    int64_t keepalive_time = 0, keepalive_challenge = 0;  // ms
+    bool keepalive_pending = false;
+    int latency = 0, ticks = 0;
+    int teleport_id = 0, awaiting_since = 0;  // ticks: awaitingTeleportTime
+    bool awaiting = false;
+    double await_x = 0, await_y = 0, await_z = 0;
+    double first_x = 0, first_y = 0, first_z = 0;  // firstGood: position at the start of the tick
+    int move_packets = 0, known_move_packets = 0;
+    bool floating = false, flying = false, fall_flying = false;
+    int floating_ticks = 0;
+    int ack_upto = -1;  // ackBlockChangesUpTo: sent once per tick
+    // ClientInformation
+    uint8_t skin_parts = 0;
+    int main_hand = 1, chat_visibility = 0;
+    // entity data last sent to viewers (shared flags, pose, skin parts); -1 = resend
+    int sent_flags = -1, sent_pose = -1, sent_skin = -1;
+    bool was_dead = false;
+    int last_dig_state = -1;  // ServerPlayerGameMode.lastSentState
 };
 
 struct Player;
