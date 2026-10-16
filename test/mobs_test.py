@@ -112,6 +112,54 @@ def main(host, port):
     assert pump(c, 8, on_boom), f"creeper explosion not seen: {boom}"
     print(f"creeper ok: explosion removed {boom['air']} block(s)")
 
+    # ---- behaviour: sunlight burns zombies, zombies hit survival players, skeletons shoot, sheep shear ----
+    cmd(c, "time set noon")
+    cmd(c, f"summon zombie {sx - 6} {sy} {sz} {{Tags:[\"sun\"]}}")
+    zid = {}
+    def on_burn(pid, b):
+        if pid == PLAY_CB["add_entity"]:
+            e = add_entity(b)
+            if e[1] == ENTITY["zombie"]: zid["id"] = e[0]
+        elif pid == PLAY_CB["set_entity_data"] and "id" in zid and b.varint() == zid["id"]:
+            while True:
+                idx = b.u8()
+                if idx == 0xFF: break
+                ser = b.varint()
+                if idx == 0 and ser == 0 and b.u8() & 1: return True
+                return False
+        return False
+    assert pump(c, 15, on_burn), "zombie didn't catch fire in daylight"
+    print("sunlight ok: zombie on fire")
+    cmd(c, "kill @e[type=zombie]")
+    cmd(c, "time set midnight")
+    cmd(c, "gamemode survival")
+    cmd(c, "difficulty normal")
+    cmd(c, f"summon zombie {sx + 1.5} {sy} {sz}")
+    cmd(c, f"summon skeleton {sx} {sy} {sz + 8}")
+    hits = {"health": 20.0, "arrow": False}
+    def on_attack(pid, b):
+        if pid == PLAY_CB["set_health"]: hits["health"] = struct.unpack(">f", b.take(4))[0]
+        elif pid == PLAY_CB["add_entity"] and add_entity(b)[1] == ENTITY["arrow"]: hits["arrow"] = True
+        return hits["health"] < 20.0 and hits["arrow"]
+    assert pump(c, 20, on_attack), f"mobs did not attack: {hits}"
+    print(f"hostile AI ok: health {hits['health']:.1f}, skeleton arrow seen")
+    cmd(c, "gamemode creative")
+    cmd(c, "kill @e[type=!player]")
+    cmd(c, "time set noon")
+    cmd(c, "clear Sam")
+    cmd(c, "give Sam minecraft:shears")
+    cmd(c, f"summon sheep {sx + 1.5} {sy} {sz} {{NoAI:1b,Color:14b}}")
+    sheep = {}
+    pump(c, 5, lambda pid, b: pid == PLAY_CB["add_entity"] and (lambda e: e[1] == ENTITY["sheep"] and sheep.update(id=e[0]) is None)(add_entity(b)))
+    assert "id" in sheep
+    time.sleep(0.2)
+    c.send(PLAY_SB["interact"], varint(sheep["id"]) + varint(0) + b"\0" + b"\0")
+    wool = {"n": 0}
+    pump(c, 3, lambda pid, b: pid == PLAY_CB["add_entity"] and add_entity(b)[1] == ENTITY["item"] and wool.__setitem__("n", wool["n"] + 1) is None and wool["n"] >= 1)
+    assert wool["n"] >= 1, "shearing dropped no wool"
+    print(f"shearing ok: {wool['n']} wool item(s)")
+    cmd(c, "kill @e[type=!player]")
+
     # ---- natural spawning at night ----
     cmd(c, "difficulty normal")
     cmd(c, "time set midnight")
