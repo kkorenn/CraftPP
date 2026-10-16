@@ -76,6 +76,7 @@ static void handle(int fd) {
         // Login (offline mode: trust the client's name + uuid, no encryption).
         Reader hello = wait_for(fd, pkt, login_sb::hello);
         std::string name = hello.str(16);
+        if (!valid_player_name(name)) throw std::runtime_error("Invalid characters in username");
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
         if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
         if (find_player(name)) return disconnect_login(fd, "You are already logged in", name);
@@ -103,7 +104,10 @@ static void handle(int fd) {
         player->uuid_hi = uuid_hi;
         player->uuid_lo = uuid_lo;
         player->eid = next_entity_id++;
-        player->gamemode = std::max(0, gamemode_id(props["gamemode"]));
+        {
+            std::lock_guard lock(cmd_mtx);  // /defaultgamemode rewrites props["gamemode"] on the tick thread
+            player->gamemode = std::max(0, gamemode_id(props["gamemode"]));
+        }
         if (!load_player(*player)) place_new_player(*player);
         record_usercache(name, uuid_dashed(uuid_hi, uuid_lo));
         log_info("%s[%s] logged in with entity id %d at ([%s]%s, %s, %s)", name.c_str(), peer_address(fd).c_str(),
@@ -113,20 +117,7 @@ static void handle(int fd) {
     } catch (const std::exception& e) {
         if (!player && strcmp(e.what(), "disconnected")) log_warn("Connection error: %s", e.what());
     }
-    if (player) {
-        save_player(*player);
-        bool registered = false;
-        {
-            std::lock_guard lock(players_mtx);
-            auto it = std::find(players.begin(), players.end(), player);
-            if (it != players.end()) { players.erase(it); registered = true; }
-        }
-        if (registered) {
-            broadcast(Writer().varint(play_cb::remove_entities).varint(1).varint(player->eid));
-            broadcast(Writer().varint(play_cb::player_info_remove).varint(1).i64(player->uuid_hi).i64(player->uuid_lo));
-            broadcast_message(player->name + " left the game", "yellow");
-        }
-    }
+    // play() returns only after the tick thread has run the leave hooks and saved the player (tick.hpp).
 }
 
 static void request_shutdown(int) { shutdown_requested = 1; }
@@ -245,9 +236,21 @@ int main(int argc, char** argv) {
 
     for (;;) {
         int fd = accept(srv, nullptr, nullptr);
-        if (fd < 0) continue;
+        if (fd < 0) {  // e.g. EMFILE: the pending connection stays queued, so back off instead of spinning
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof yes);
+        // Vanilla's 30 s ReadTimeoutHandler; the send timeout bounds blocking sends during login/configuration.
+        timeval timeout{30, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
         // ponytail: thread per connection; move to an event loop once player counts matter.
-        std::thread([fd] { handle(fd); close(fd); }).detach();
+        try {
+            std::thread([fd] { handle(fd); close(fd); }).detach();
+        } catch (const std::system_error& e) {  // out of threads: drop this connection, keep serving
+            log_warn("Connection refused: %s", e.what());
+            close(fd);
+        }
     }
 }
