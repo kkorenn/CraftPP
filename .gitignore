@@ -7,4 +7,4 @@ logs/
 compile_commands.json
 tools/vineflower.jar
 .DS_Store
-build-linux-*/
+build-*/
