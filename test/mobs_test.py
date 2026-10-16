@@ -178,8 +178,20 @@ def main(host, port):
     cmd(c, "gamerule spawn_mobs false")
     cmd(c, "time set noon")
     cmd(c, "kill @e[type=!player]")
-    time.sleep(0.3)
+    pump(c, 1.5, lambda pid, b: False)
+    cmd(c, f'summon cow {sx} {sy} {sz} {{CustomName:"keeper",NoAI:1b,Tags:["persist"]}}')
+    pump(c, 1, lambda pid, b: False)
     print("mobs ok")
 
+def after_restart(host, port):
+    c, _ = login("Sam", host, port)
+    cmd(c, "execute if entity @e[type=cow,name=keeper,tag=persist]")
+    wait(c, PLAY_CB["system_chat"], lambda b: b"commands.execute.conditional.pass" in b.d or b"conditional.fail" in b.d and (_ for _ in ()).throw(AssertionError("keeper cow lost")))
+    cmd(c, "kill @e[type=cow,name=keeper]")
+    print("mob persistence ok: named cow survived restart")
+
 if __name__ == "__main__":
+    if "--after-restart" in sys.argv:
+        after_restart(sys.argv[1], int(sys.argv[2]))
+        sys.exit(0)
     main(sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1", int(sys.argv[2]) if len(sys.argv) > 2 else 25565)
