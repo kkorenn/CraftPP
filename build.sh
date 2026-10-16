@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
-[ -f data/game.json ] || python3 tools/gen_game_data.py
+[ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
 TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac
@@ -38,7 +38,7 @@ if [ -n "$TEST" ]; then
   [ ! -d $B/eula-test/world ] || fail "world created before eula was accepted"
 
   rm -rf $B/test-world $B/logs
-  printf 'server-port=%s\nlevel-name=%s/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\n' "$PORT" $B > $B/test.properties
+  printf 'server-port=%s\nlevel-name=%s/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\nspawn-protection=0\n' "$PORT" $B > $B/test.properties
   echo "eula=true" > $B/eula.txt
   rm -f $B/banned-players.json $B/banned-ips.json $B/whitelist.json
   printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}]\n' > $B/ops.json  # bot.py and survival.py run op commands
@@ -54,6 +54,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"
