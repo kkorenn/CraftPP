@@ -1,0 +1,22 @@
+name: PrismTestPlugin
+version: 1.0.0
+main: prism.testplugin.PrismTestPlugin
+api-version: '1.21'
+description: Exercises the PrismMC plugin bridge
+author: PrismMC
+commands:
+  prismtest:
+    description: Bridge smoke command
+    usage: /<command> [text]
+  prismop:
+    description: Operator-only bridge command
+    permission: prismtest.op
+  prismgui:
+    description: Opens a test GUI
+  prismnms:
+    description: Sends a packet through server internals (NMS)
+  prismspawn:
+    description: Spawns a named zombie and exercises world APIs
+permissions:
+  prismtest.op:
+    default: op
