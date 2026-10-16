@@ -196,6 +196,29 @@ inline void read_client_information(Player& p, Reader& in) {
     p.net.main_hand = in.varint();
 }
 
+// PlayerList.broadcastChatMessage for an unsigned message (offline mode): logged as "[Not Secure] <name> text",
+// sent as ClientboundPlayerChatPacket with chat type minecraft:chat, so clients apply their chat settings.
+inline void broadcast_player_chat(Player& from, const std::string& msg) {
+    log_info("[Not Secure] <%s> %s", from.name.c_str(), msg.c_str());
+    int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch()).count();
+    Writer tail;  // everything after the per-receiver index
+    tail.i64(from.uuid_hi).i64(from.uuid_lo).varint(0)  // sender, link index (unsigned link)
+        .boolean(false)                                  // no signature
+        .str(msg).i64(now).i64(0).varint(0)              // body: content, timestamp, salt, last seen
+        .boolean(false)                                  // unsigned content = content
+        .varint(0)                                       // FilterMask.PASS_THROUGH
+        .varint(1);                                      // chat type holder: registry id 0 (minecraft:chat) + 1
+    write_nbt(tail, player_name(from));
+    tail.boolean(false);                                 // no target name
+    for (auto& q : players) {
+        if (q->net.chat_visibility != 0) continue;       // ChatVisiblity.FULL only (shouldFilterMessageTo aside)
+        Writer w;
+        w.varint(play_cb::player_chat).varint(q->net.chat_index++).bytes(tail.b);
+        q->send(w);
+    }
+}
+
 inline bool chat_illegal(const std::string& s) {  // isChatMessageIllegal (UTF-16 units; only ASCII ones matter)
     for (unsigned char c : s)
         if (c == 127 || c < 32) return true;

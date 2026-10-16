@@ -136,6 +136,7 @@ struct NetState {
     int sent_flags = -1, sent_pose = -1, sent_skin = -1;
     bool was_dead = false;
     int last_dig_state = -1;  // ServerPlayerGameMode.lastSentState
+    int chat_index = 0;       // nextChatIndex: the client disconnects on a gap
 };
 
 struct Player;
