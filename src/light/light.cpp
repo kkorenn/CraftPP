@@ -973,7 +973,8 @@ uint32_t write(Writer& w, Chunk& c) {
 int level(bool sky, int x, int y, int z) {
     std::lock_guard lock(mutex());
     Engine& e = engine();
-    Column* c = e.col(x >> 4, z >> 4);
+    auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
+    Column* c = it == e.columns.end() ? nullptr : it->second.get();
     if (!c) return sky ? 15 : 0;
     bool was = e.sky;
     e.sky = sky;
