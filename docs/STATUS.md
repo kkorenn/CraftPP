@@ -25,10 +25,11 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | mobs-bosses | ender dragon, wither, warden |
 | blockticks | scheduled/random ticks, fluids, falling blocks, door/bed physics |
 | placement | block placement states (facing/axis/half/slab/stairs/doors/beds/waterlogging), BlockItem.useOn parity |
-| bug-hunt | ASan/UBSan/TSan, fuzzing, bot stress, soaks |
+| bug-hunt | sanitizers, fuzz/stress, input hardening — done, merging (stress.py fix for player chat pending) |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
 | startup-perf | parallel spawn-region generation, fast restart (worldgen data cache), startup log hygiene |
+| feature-parity | 0 stable-block worldgen mismatches vs vanilla: sculk, lush caves, decoration order, untested biomes |
 
 ## Left
 - Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
