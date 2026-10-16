@@ -4,6 +4,9 @@
 #include <cstdio>
 #include <stdexcept>
 
+#include "storage/chunk_nbt.hpp"
+#include "storage/nbt_io.hpp"
+#include "storage/region.hpp"
 #include "worldgen/block_state.hpp"
 
 namespace worldgen {
@@ -143,14 +146,30 @@ ProtoPtr Pipeline::find(int cx, int cz) const {
   return it == chunks.end() ? nullptr : it->second;
 }
 
+// Shared hold on `gen` for the outermost ensure/take of this thread (they nest; a shared_mutex is not recursive).
+struct Pipeline::GenLock {
+  static thread_local int depth;
+  Pipeline& p;
+  explicit GenLock(Pipeline& p) : p(p) { if (depth++ == 0) p.gen.lock_shared(); }
+  ~GenLock() { if (--depth == 0) p.gen.unlock_shared(); }
+};
+thread_local int Pipeline::GenLock::depth = 0;
+
 ProtoPtr Pipeline::get_or_create(int cx, int cz) {
+  {
+    std::lock_guard lock(m);
+    auto it = chunks.find(key(cx, cz));
+    if (it != chunks.end()) return it->second;
+  }
+  ProtoPtr loaded = persist ? load(cx, cz) : nullptr;  // outside the lock: disk I/O
   std::lock_guard lock(m);
   auto& slot = chunks[key(cx, cz)];
-  if (!slot) slot = std::make_shared<ProtoChunk>(cx, cz, this);
+  if (!slot) slot = loaded ? loaded : std::make_shared<ProtoChunk>(cx, cz, this);
   return slot;
 }
 
 ProtoPtr Pipeline::ensure(int cx, int cz, Status target) {
+  GenLock hold(*this);
   ProtoPtr p = get_or_create(cx, cz);
   for (Status s = Status(int(p->get_status()) + 1); s <= target; s = Status(int(s) + 1)) {
     if (p->get_status() >= s) continue;
@@ -199,6 +218,7 @@ void Pipeline::run_step(ProtoChunk& c, Status s) {
 }
 
 void Pipeline::take(int cx, int cz, Chunk& out) {
+  GenLock hold(*this);
   ProtoPtr p = ensure(cx, cz, Status::FULL);
   {
     std::lock_guard lock(p->m);
@@ -225,6 +245,109 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     if (++takes % 64) return;
   }
   sweep();
+}
+
+// ---------------------------------------------------------------- persistence (proto chunks)
+namespace {
+Status status_from(const std::string& name) {
+  for (int i = 0; i < STATUS_COUNT; i++)
+    if (name == std::string("minecraft:") + status_name(Status(i))) return Status(i);
+  return Status::EMPTY;
+}
+}  // namespace
+
+void Pipeline::save(ProtoChunk& c) {  // gen held exclusively: no step runs
+  Status st = c.get_status();
+  if (st >= Status::INITIALIZE_LIGHT) st = Status::FEATURES;  // light is not saved: redo INITIALIZE_LIGHT, LIGHT
+  unsigned mask = st >= Status::TERRAIN ? 0x3F : 0;
+  Nbt root = storage::encode(*c.chunk, std::string("minecraft:") + status_name(st), {}, &c.heightmaps, mask);
+  // ProtoChunk.getPostProcessing: per section, packed x | z << 4 | y << 8 (section-local).
+  Nbt& pp = *root.get("PostProcessing");  // encode wrote chunk->level.post (terrain's fluid marks) already
+  for (int32_t v : c.post_processing)
+    pp.list[size_t((v >> 8) >> 4)].list.push_back(Nbt::num(Nbt::Short, (v & 255) | ((v >> 8) & 15) << 8));
+  Nbt& ticks = *root.get("block_ticks");  // leaf ticks scheduled by worldgen (SavedTick: i, x, y, z, t, p)
+  for (int32_t v : c.leaf_ticks) {
+    int x = c.cx * 16 + (v & 15), z = c.cz * 16 + (v >> 4 & 15), y = (v >> 8) + MIN_Y;
+    Nbt t = Nbt::compound();
+    t.set("i", Nbt::str("minecraft:" + bs::R().block(bs::R().block_of(c.chunk->get(v & 15, y, v >> 4 & 15))).name));
+    t.set("x", Nbt::num(Nbt::Int, x)), t.set("y", Nbt::num(Nbt::Int, y)), t.set("z", Nbt::num(Nbt::Int, z));
+    t.set("t", Nbt::num(Nbt::Int, 0)), t.set("p", Nbt::num(Nbt::Int, 0));
+    ticks.list.push_back(t);
+  }
+  storage::write(storage::region_dir(), c.cx, c.cz, nbtio::write(root));
+}
+
+ProtoPtr Pipeline::load(int cx, int cz) {
+  auto raw = storage::read(storage::region_dir(), cx, cz);
+  if (raw.empty()) return nullptr;
+  try {
+    Nbt root = nbtio::parse(raw);
+    Status st = status_from(storage::status_of(root));
+    if (st == Status::EMPTY) return nullptr;
+    if (st >= Status::INITIALIZE_LIGHT && st < Status::FULL) st = Status::FEATURES;  // relight (as saved)
+    auto p = std::make_shared<ProtoChunk>(cx, cz, this);
+    if (st == Status::FULL) {  // the World's chunk: a header only (nothing reads a FULL chunk's blocks)
+      p->taken = true;
+    } else if (st >= Status::BIOMES) {
+      p->chunk = std::make_unique<Chunk>();
+      p->chunk->cx = cx, p->chunk->cz = cz;
+      storage::decode(root, *p->chunk, nullptr);
+      if (st >= Status::TERRAIN) {
+        storage::Heightmaps hm;
+        unsigned got = storage::decode_heightmaps(root, hm);
+        if (got != 0x3F) p->prime_heightmaps();
+        else p->heightmaps = hm;
+      }
+      // One PostProcessing list on disk; the FULL step sends fluid marks on to Chunk::level.post again.
+      for (uint32_t v : p->chunk->level.post) p->post_processing.push_back(int32_t(v));
+      p->chunk->level.post.clear(), p->chunk->level.post_processed = true;
+      if (const Nbt* t = root.get("block_ticks"))
+        for (auto& e : t->list) {
+          auto I = [&](const char* k) { const Nbt* n = e.get(k); return n ? int(n->i) : 0; };
+          int x = I("x"), y = I("y"), z = I("z");
+          if ((x >> 4) == cx && (z >> 4) == cz && y >= MIN_Y && y < MIN_Y + HEIGHT)
+            p->leaf_ticks.push_back((y - MIN_Y) << 8 | (z & 15) << 4 | (x & 15));
+        }
+    }
+    // Structure starts / references are deterministic: recompute them like the steps did.
+    for (Status s : {Status::STRUCTURE_STARTS, Status::STRUCTURE_REFERENCES})
+      if (st >= s && steps[size_t(s)].fn) {
+        Region r{*this, s, cx, cz, 0, -1, {p.get()}};
+        steps[size_t(s)].fn(r);
+      }
+    p->status.store(st, std::memory_order_release);
+    return p;
+  } catch (const std::exception& e) {
+    fprintf(stderr, "worldgen: couldn't load proto chunk [%d, %d]: %s\n", cx, cz, e.what());
+    return nullptr;
+  }
+}
+
+size_t Pipeline::evict(const std::function<bool(int, int)>& keep, bool all) {
+  std::unique_lock exclusive(gen);  // waits for running steps; ensure/take wait meanwhile
+  std::vector<ProtoPtr> drop;
+  {
+    std::lock_guard lock(m);
+    for (auto it = chunks.begin(); it != chunks.end();) {
+      ProtoChunk& c = *it->second;
+      bool kept = keep(c.cx, c.cz);
+      if (kept && !(all && persist)) { ++it; continue; }
+      if (kept) {  // save-all: store the work in progress, keep it in memory
+        if (!c.taken && c.chunk && c.get_status() >= Status::TERRAIN) drop.push_back(it->second);
+        ++it;
+        continue;
+      }
+      drop.push_back(it->second);
+      it = chunks.erase(it);
+    }
+  }
+  size_t dropped = 0;
+  for (auto& p : drop) {
+    dropped += p.use_count() == 1;
+    if (persist && !p->taken && p->chunk && p->get_status() >= Status::TERRAIN) save(*p);
+  }
+  if (on_evict) on_evict(keep);
+  return dropped;
 }
 
 void Pipeline::sweep() {

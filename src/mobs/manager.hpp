@@ -10,9 +10,12 @@
 //    is in its view. Watchers update when the entity changes section or the player changes chunk. Movement goes out
 //    as move_entity_pos/_pos_rot/_rot deltas (VecDeltaCodec, 1/4096 block) at the type's update interval, with
 //    entity_position_sync every 400 updates or when on_ground flips, plus rotate_head, set_entity_motion and dirty data.
-//  * Persistence: <world>/entities/e.<cx>.<cz>.nbt (binary NBT {Entities:[...]}). A chunk's entities load when a
+//  * Persistence: vanilla entities/r.X.Z.mca region files (storage/chunk_nbt.hpp; old e.X.Z.nbt files still read). A chunk's entities load when a
 //    player's view reaches it and are saved and unloaded when no player is within view distance + 1.
 #include <unordered_set>
+
+#include "../storage/chunk_nbt.hpp"
+#include "../storage/region.hpp"
 
 using EntityFactory = std::unique_ptr<Entity> (*)();
 
@@ -325,50 +328,45 @@ inline Nbt read_nbt_payload(Reader& r, int t, int depth = 0) {
     }
     return n;
 }
+// Entity chunks live in the vanilla entities/ region files (storage::save_entities / load_entities, EntityStorage
+// layout). The old <world>/entities/e.X.Z.nbt files are still read.
 inline std::string entity_chunk_path(int cx, int cz) {
     return world_dir + "/entities/e." + std::to_string(cx) + "." + std::to_string(cz) + ".nbt";
 }
 inline void save_entity_chunk(int cx, int cz) {
-    Nbt list = Nbt::make_list();
+    std::vector<Nbt> list;
     if (auto it = ent_detail::by_chunk.find(mth::chunk_key(cx, cz)); it != ent_detail::by_chunk.end())
         for (Entity* e : it->second.list)
             if (e->should_save()) {
                 Nbt c = Nbt::compound();
                 e->save(c);
-                list.list.push_back(std::move(c));
+                list.push_back(std::move(c));
             }
-    std::string path = entity_chunk_path(cx, cz);
     std::error_code ec;
-    if (list.list.empty()) { std::filesystem::remove(path, ec); return; }
-    Nbt root = Nbt::compound();
-    root.set("Entities", std::move(list));
-    Writer w;
-    write_nbt(w, root);
-    std::filesystem::create_directories(world_dir + "/entities", ec);
-    {
-        std::ofstream f(path + ".tmp", std::ios::binary);
-        f.write(reinterpret_cast<const char*>(w.b.data()), std::streamsize(w.b.size()));
-    }
-    std::filesystem::rename(path + ".tmp", path, ec);
+    std::filesystem::remove(entity_chunk_path(cx, cz), ec);  // migrated
+    // Vanilla writes nothing for a chunk that never had entities; an emptied one gets an empty list.
+    if (list.empty() && storage::read(storage::entities_dir(), cx, cz).empty()) return;
+    storage::save_entities(cx, cz, list);
 }
 inline void ensure_entity_chunk_loaded(int cx, int cz) {
     if (!ent_detail::loaded.insert(mth::chunk_key(cx, cz)).second) return;
-    std::ifstream f(entity_chunk_path(cx, cz), std::ios::binary);
-    if (!f) return;
-    std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)), {});
-    try {
-        Reader r(buf);
-        int t = r.u8();
-        Nbt root = read_nbt_payload(r, t);
-        if (const Nbt* l = root.get("Entities"))
-            for (auto& c : l->list)
-                if (auto e = load_entity_nbt(c)) {
-                    if (entity_by_uuid(e->uuid_hi, e->uuid_lo)) continue;  // already present (moved in meanwhile)
-                    add_entity(std::move(e));
-                }
-    } catch (const std::exception& ex) {
-        fprintf(stderr, "entities: bad file %s (%s)\n", entity_chunk_path(cx, cz).c_str(), ex.what());
+    std::vector<Nbt> list = storage::load_entities(cx, cz);
+    if (std::ifstream f{entity_chunk_path(cx, cz), std::ios::binary}) {  // old format
+        std::vector<uint8_t> buf((std::istreambuf_iterator<char>(f)), {});
+        try {
+            Reader r(buf);
+            int t = r.u8();
+            Nbt root = read_nbt_payload(r, t);
+            if (const Nbt* l = root.get("Entities")) list.insert(list.end(), l->list.begin(), l->list.end());
+        } catch (const std::exception& ex) {
+            fprintf(stderr, "entities: bad file %s (%s)\n", entity_chunk_path(cx, cz).c_str(), ex.what());
+        }
     }
+    for (auto& c : list)
+        if (auto e = load_entity_nbt(c)) {
+            if (entity_by_uuid(e->uuid_hi, e->uuid_lo)) continue;  // already present (moved in meanwhile)
+            add_entity(std::move(e));
+        }
 }
 // Saves and frees the entities of chunks no player is near (EntityStorage + unloading).
 inline void unload_far_entity_chunks(bool all = false) {

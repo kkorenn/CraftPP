@@ -42,9 +42,15 @@
 // bytes + its structure_data. take() copies the FULL chunk out to the World. A taken FULL chunk frees its block
 // storage once all 8 neighbours are past LIGHT (nothing reads its blocks any more); the header and
 // structure_data stay, so later steps of chunks up to 8 away still see its structure starts.
-// ponytail: chunks below FULL keep their blocks (they may hold feature writes from neighbours) and headers are
-// never dropped; vanilla saves proto chunks to disk instead. Add proto persistence if long exploration
-// sessions grow memory on the Pi. A freed chunk requested again (World lost it) gets terrain only.
+// EVICTION (vanilla: proto chunks without a ticket are saved and unloaded). evict(keep), from the World's
+// autosave, drops every chunk `keep` rejects, under an exclusive lock that waits for running generation:
+//   status < TERRAIN      dropped: recomputed from the seed when needed again (no neighbour writes yet)
+//   TERRAIN .. LIGHT      saved to the region file as a vanilla proto chunk (Status + sections + heightmaps +
+//                         PostProcessing + block_ticks; INITIALIZE_LIGHT and later are saved as FEATURES: their
+//                         light is recomputed), then dropped; get_or_create loads it back from disk
+//   FULL (taken)          dropped: the World saved it; loaded back as a header if a neighbour needs it
+// on_evict (lighting) then drops the light columns of the same chunks. Steps never see a chunk vanish: ensure()
+// and take() hold the lock shared. A freed chunk requested again (World lost it) gets terrain only.
 #pragma once
 #include <array>
 #include <atomic>
@@ -53,6 +59,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -147,6 +154,13 @@ class Pipeline {
   // (lighting hook: stop reading the proto blocks). May be empty.
   std::function<void(ProtoChunk&, Chunk& out)> on_take;
 
+  // Proto chunks are saved to / loaded from the region files (storage/) on eviction. Off: never read from disk.
+  bool persist = false;
+  // Drops what keep(cx, cz) rejects (see EVICTION). `all`: also save the kept proto chunks (shutdown, save-all).
+  // Returns the number of chunks dropped.
+  size_t evict(const std::function<bool(int, int)>& keep, bool all);
+  std::function<void(const std::function<bool(int, int)>& keep)> on_evict;  // lighting: drop its columns too
+
   // Brings (cx, cz) to at least `target` (and its dependencies), on the calling thread.
   ProtoPtr ensure(int cx, int cz, Status target);
   // ensure(FULL), then copies blocks, biomes and block entities into `out` (World::generator).
@@ -171,7 +185,11 @@ class Pipeline {
   std::unordered_map<int64_t, ProtoPtr> chunks;
   int takes = 0;
 
+  std::shared_mutex gen;  // shared: generating (ensure / take); exclusive: evict
+  struct GenLock;
   ProtoPtr get_or_create(int cx, int cz);
+  ProtoPtr load(int cx, int cz);  // from the region file, null if not stored
+  void save(ProtoChunk& c);
   ProtoPtr find(int cx, int cz) const;
   void run_step(ProtoChunk& c, Status s);
   void sweep();

@@ -17,6 +17,8 @@ constexpr int LIGHT_SECTIONS = SECTIONS + 2, MIN_SECTION = (MIN_Y >> 4);  // lig
 
 Nbt I(int64_t v) { return Nbt::num(Nbt::Int, v); }
 Nbt L(int64_t v) { return Nbt::num(Nbt::Long, v); }
+const char* const FLUID_NAMES[5] = {"minecraft:empty", "minecraft:flowing_water", "minecraft:water", "minecraft:flowing_lava",
+                                     "minecraft:lava"};  // Fluids registry order (src/level Fluid ids)
 Nbt B(int64_t v) { return Nbt::num(Nbt::Byte, v); }
 int64_t num(const Nbt* n, int64_t d = 0) { return n && n->is_num() ? n->i : d; }
 
@@ -204,10 +206,33 @@ Nbt encode(const Chunk& c, const std::string& status, const std::vector<uint8_t>
         bes.list.push_back(std::move(t));
     }
     root.set("block_entities", bes);
-    root.set("block_ticks", Nbt::make_list());
-    root.set("fluid_ticks", Nbt::make_list());
+    // Scheduled ticks (src/level ChunkLevelData::ticks: block list then fluid list, each varint n then
+    // type, local xz, y - MIN_Y, delay, priority) -> SavedTick lists {i, x, y, z, t, p}.
+    Nbt lists[2] = {Nbt::make_list(), Nbt::make_list()};
+    if (!c.level.ticks.empty()) {
+        Reader r(c.level.ticks);
+        const auto& R = bs::Registry::get();
+        for (int k = 0; k < 2 && r.i < r.n; k++)
+            for (int n = r.varint(); n > 0; n--) {
+                int type = r.varint(), xz = r.u8(), y = r.varint() + MIN_Y, delay = r.i32(), pr = int8_t(r.u8());
+                if (k == 0 && (type < 0 || type >= R.block_count())) continue;
+                if (k == 1 && (type < 0 || type > 4)) continue;
+                Nbt t = Nbt::compound();
+                t.set("i", Nbt::str(k == 0 ? "minecraft:" + R.block(type).name : FLUID_NAMES[type]));
+                t.set("x", I(c.cx * 16 + (xz & 15))), t.set("y", I(y)), t.set("z", I(c.cz * 16 + (xz >> 4)));
+                t.set("t", I(delay)), t.set("p", I(pr));
+                lists[k].list.push_back(std::move(t));
+            }
+    }
+    root.set("block_ticks", std::move(lists[0]));
+    root.set("fluid_ticks", std::move(lists[1]));
+    // Pending post-processing (ProtoChunk.postProcessing; a LevelChunk saved before postProcessGeneration ran):
+    // per section, x | z << 4 | (y & 15) << 8.
     Nbt pp = Nbt::make_list();
     for (int i = 0; i < SECTIONS; i++) pp.list.push_back(Nbt::make_list());
+    if (!c.level.post_processed || status != "minecraft:full")
+        for (uint32_t v : c.level.post)
+            if ((v >> 12) < uint32_t(SECTIONS)) pp.list[v >> 12].list.push_back(Nbt::num(Nbt::Short, (v & 255) | ((v >> 8) & 15) << 8));
     root.set("PostProcessing", pp);
 
     Heightmaps computed;
@@ -278,6 +303,40 @@ void decode(const Nbt& root, Chunk& c, std::vector<uint8_t>* light) {
                 for (auto v : l->arr) light->push_back(uint8_t(v));
             }
         }
+    }
+    c.level.post.clear();
+    if (const Nbt* pp = root.get("PostProcessing"))
+        for (size_t si = 0; si < pp->list.size() && si < size_t(SECTIONS); si++)
+            for (auto& v : pp->list[si].list)
+                c.level.post.push_back(uint32_t((si * 16 + size_t(v.i >> 8 & 15)) << 8 | size_t(v.i & 255)));
+    c.level.post_processed = c.level.post.empty();
+    {  // SavedTick lists -> ChunkLevelData::ticks
+        const auto& R = bs::Registry::get();
+        Writer w;
+        size_t total = 0;
+        for (int k = 0; k < 2; k++) {
+            std::vector<const Nbt*> keep;
+            if (const Nbt* l = root.get(k ? "fluid_ticks" : "block_ticks"))
+                for (auto& t : l->list) {
+                    int64_t x = num(t.get("x")), y = num(t.get("y")), z = num(t.get("z"));
+                    if ((x >> 4) == c.cx && (z >> 4) == c.cz && y >= MIN_Y && y < MIN_Y + HEIGHT && t.get("i")) keep.push_back(&t);
+                }
+            w.varint(int32_t(keep.size()));
+            total += keep.size();
+            for (const Nbt* t : keep) {
+                const std::string& id = t->get("i")->s;
+                int type = 0;
+                if (k == 0) type = R.block_index(id);
+                else
+                    for (int f = 0; f < 5; f++)
+                        if (full(id) == FLUID_NAMES[f]) type = f;
+                if (type < 0) type = 0;
+                int64_t x = num(t->get("x")), y = num(t->get("y")), z = num(t->get("z"));
+                w.varint(type).u8(uint8_t((x & 15) | (z & 15) << 4)).varint(int32_t(y - MIN_Y)).i32(int32_t(num(t->get("t"))))
+                    .u8(uint8_t(num(t->get("p"))));
+            }
+        }
+        c.level.ticks = total ? std::move(w.b) : std::vector<uint8_t>{};
     }
     c.block_entities.clear();
     if (const Nbt* bes = root.get("block_entities"))

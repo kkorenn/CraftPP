@@ -12,6 +12,8 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
+#include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <condition_variable>
@@ -490,6 +492,25 @@ struct World {
     size_t loaded() {
         std::lock_guard lock(m);
         return chunks.size();
+    }
+    // Snapshot predicate: chunk within `margin` of a player's view square, or loaded / being loaded here. What
+    // worldgen and lighting keep in memory (World::on_flush -> Pipeline::evict).
+    std::function<bool(int, int)> near_view(int margin) {
+        std::lock_guard lock(m);
+        auto cols = std::make_shared<std::unordered_map<int, std::pair<int, int>>>();  // x -> viewed z range
+        for (auto& [k, n] : viewers) {
+            auto [it, fresh] = cols->try_emplace(k.first, k.second, k.second);
+            if (!fresh) it->second.first = std::min(it->second.first, k.second), it->second.second = std::max(it->second.second, k.second);
+        }
+        auto held = std::make_shared<std::set<Key>>();
+        for (auto& [k, c] : chunks) held->insert(k);
+        for (auto& [k, f] : inflight) held->insert(k);
+        return [cols, held, margin](int cx, int cz) {
+            if (held->count({cx, cz})) return true;
+            for (int x = cx - margin; x <= cx + margin; x++)
+                if (auto it = cols->find(x); it != cols->end() && it->second.first - margin <= cz && cz <= it->second.second + margin) return true;
+            return false;
+        };
     }
 
     // View square bookkeeping (ViewTicket): +1/-1 for every chunk of the square.

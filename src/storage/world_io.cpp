@@ -46,6 +46,13 @@ bool load_legacy(Chunk& c) {
         if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
         r.i += len;
     }
+    if (r.i < r.n && r.u8() == 1) {  // level data (src/level): post-processing, tick lists
+        c.level.post_processed = r.u8();
+        c.level.post.resize(size_t(r.varint()));
+        for (auto& v : c.level.post) v = uint32_t(r.i32());
+        c.level.ticks.resize(size_t(r.varint()));
+        for (auto& b : c.level.ticks) b = r.u8();
+    }
     if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);
     c.dirty = true;  // move it into the region file at the next save
     return true;

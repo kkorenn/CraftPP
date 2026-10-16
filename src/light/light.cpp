@@ -607,6 +607,31 @@ struct Engine {
     }
 
     // ---------- chunk lifecycle ----------
+    // Unloading (ThreadedLevelLightEngine.updateChunkStatus): the column's sections become empty for its
+    // neighbours, its light is gone (saved with the chunk, or recomputed for a proto chunk), and columns left
+    // without any section state are erased. The caller made sure no chunk in use reads it.
+    void forget(int cx, int cz) {
+        Column* c = col(cx, cz);
+        if (!c) return;
+        for (int si = 0; si < SECTIONS; si++)
+            if (c->state[si + 1] & 32) update_section_status(cx, si + (MIN_Y >> 4), cz, true);
+        remove_sections();
+        c->status = NEW, c->chunk = nullptr, c->hold.reset();
+        c->adopted = c->resolve = c->from_disk = c->light_on = c->resend = false;
+        c->queued = 0;
+        std::fill(std::begin(c->sources), std::end(c->sources), int16_t(SRC_MIN_Y));
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dz = -1; dz <= 1; dz++) erase_if_unused(cx + dx, cz + dz);
+    }
+    void erase_if_unused(int cx, int cz) {
+        Column* c = col(cx, cz);
+        if (!c || c->status != NEW || c->chunk) return;
+        for (uint8_t st : c->state)
+            if (st) return;
+        int64_t k = key(cx, cz);
+        columns.erase(k), dirty.erase(k), touched.erase(k);
+        cache_key[0] = cache_key[1] = INT64_MIN;
+    }
     void initialize(int cx, int cz, Chunk* blocks = nullptr) {  // ChunkStatusTasks.initializeLight
         Column& c = col_create(cx, cz);
         if (c.status != NEW) return;
@@ -751,6 +776,17 @@ void attach(World& world, worldgen::Pipeline& p) {
     p.on_block_changed = [](worldgen::ProtoChunk& c, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
         std::lock_guard lock(mutex());
         block_changed(c.cx * 16 + x, y, c.cz * 16 + z, old_state, new_state);
+    };
+    p.on_evict = [](const std::function<bool(int, int)>& keep) {  // pipeline evict: generation is paused
+        std::lock_guard lock(mutex());
+        Engine& e = engine();
+        e.run();  // pending updates may read the columns about to go
+        std::vector<int64_t> gone;
+        for (auto& [k, c] : e.columns)
+            if (!keep(int(k >> 32), int(int32_t(uint32_t(k))))) gone.push_back(k);
+        for (int64_t k : gone) e.forget(int(k >> 32), int(int32_t(uint32_t(k))));
+        e.run();
+        save_affected(e);  // nobody views these columns: no light_update for them
     };
     p.on_take = [](worldgen::ProtoChunk& c, Chunk& out) {
         std::lock_guard lock(mutex());

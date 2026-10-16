@@ -194,6 +194,7 @@ inline void deliver_chunks(Player& p);
 inline void setup_world() {
     world.start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
     compression_threshold = std::stoi(props["network-compression-threshold"]);
+    storage::sync_writes = props["sync-chunk-writes"] != "false";
     on_player_sync(deliver_chunks);
     auto level = read_level_data();
     std::string type, seed_str;
@@ -222,6 +223,10 @@ inline void setup_world() {
     }
     auto gen = ow->terrain;
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    // Proto chunks and light columns beyond every view (+ the generation pyramid's reach) are saved / dropped.
+    ow->pipeline.persist = true;
+    int margin = int(ow->pipeline.accumulated(worldgen::Status::FULL).size()) + 1;
+    world.on_flush = [ow, margin](bool all) { ow->pipeline.evict(world.near_view(margin), all); };
     light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
