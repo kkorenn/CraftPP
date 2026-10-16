@@ -207,7 +207,10 @@ inline void setup_world() {
     auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
     const std::string& stages = props["worldgen-stages"];
     if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
+    {
         structure_world = std::make_shared<structure::StructureWorld>(*ow, true);
+        world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
+    }
     auto gen = ow->terrain;
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
     printf("Level seed %lld\n", (long long)seed);

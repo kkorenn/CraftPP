@@ -6,6 +6,7 @@
 #include "worldgen/features.hpp"
 #include "worldgen/material.hpp"
 #include "worldgen/overworld.hpp"
+#include "world.hpp"
 
 namespace structure {
 namespace {
@@ -130,6 +131,19 @@ StructureWorld::StructureWorld(worldgen::Overworld& ow, bool place) : impl_(std:
     if (d) d->references = m->references(r.cx, r.cz);
   });
   ow.beardifier = [m](int cx, int cz) { return m->beardifier(cx, cz); };
+  // Persistence: piece state per start region file, starts/references in each chunk file.
+  m->setPersistDir(world_dir + "/structures");
+  chunk_save_extra = [m](const Chunk& c, Writer& w) {
+    std::vector<uint8_t> blob;
+    m->encodeChunk(c.cx, c.cz, blob);
+    w.i32(int32_t(blob.size())).bytes(blob.data(), blob.size());
+  };
+  chunk_load_extra = [m](Chunk& c, Reader& r) {
+    int32_t n = r.i32();
+    if (n < 0 || r.i + size_t(n) > r.n) return;
+    m->decodeChunk(c.cx, c.cz, r.p + r.i, size_t(n));
+    r.i += size_t(n);
+  };
   if (!place) return;
   worldgen::TerrainGenerator* terrain = ow.terrain.get();
   worldgen::Features* features = ow.features.get();

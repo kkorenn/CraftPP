@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <typeinfo>
 
 #include "worldgen/overworld.hpp"
@@ -11,6 +12,52 @@
 #include "worldgen/structure/jigsaw.hpp"
 #include "worldgen/structure/nbt_io.hpp"
 #include "worldgen/structure/template.hpp"
+
+namespace {
+struct FakeLevel : structure::Level {  // flat world at y = height, everything else air
+  int height;
+  explicit FakeLevel(int h) : height(h) {}
+  int getBlock(int, int y, int) override { return y < height ? blocks::stone : blocks::air; }
+  void setBlock(int, int, int, int) override {}
+  int getHeight(structure::Heightmap, int, int) override { return height; }
+  int64_t seed() const override { return 12345; }
+  int biomeAt(int, int, int) override { return 0; }
+  RandomSource& random() override { return r; }
+  LegacyRandomSource r{1};
+};
+
+// Piece state written by one manager is restored by a fresh one (restart), not recomputed.
+void persistCheck(worldgen::Overworld& ow) {
+  std::string dir = "build/structure_test_persist";
+  std::filesystem::remove_all(dir);
+  std::vector<int> before;
+  structure::BlockPos at;
+  {
+    structure::StructureWorld sw(ow, false);
+    auto& m = sw.manager();
+    m.setPersistDir(dir);
+    auto f = m.findNearest({m.structure("minecraft:desert_pyramid")}, {0, 64, 0}, 100);
+    assert(f);
+    at = f->pos;
+    auto st = m.starts(at.x >> 4, at.z >> 4);
+    assert(st.size() == 1);
+    FakeLevel level(70);  // first placement fixes heightPosition from this level
+    LegacyRandomSource r(5);
+    structure::BoundingBox bb(at.x, -63, at.z, at.x + 15, 319, at.z + 15);
+    st[0]->placeInChunk(level, r, bb, at.x >> 4, at.z >> 4);
+    for (auto& p : st[0]->pieces) p->saveState(before);
+    m.saveDirty();
+  }
+  structure::StructureWorld sw(ow, false);
+  auto& m = sw.manager();
+  m.setPersistDir(dir);
+  std::vector<int> after;
+  for (auto& p : m.starts(at.x >> 4, at.z >> 4)[0]->pieces) p->saveState(after);
+  assert(before == after);
+  std::filesystem::remove_all(dir);
+  printf("persist ok (%zu ints)\n", before.size());
+}
+}  // namespace
 
 int main(int argc, char** argv) {
   int64_t seed = argc > 1 ? std::stoll(argv[1]) : 12345;
@@ -21,6 +68,7 @@ int main(int argc, char** argv) {
     // Self-checks: template loading and a known start invariant.
     const auto& t = structure::Template::get("minecraft:igloo/top");
     assert(t.size.x == 7 && t.size.y == 5 && t.size.z == 8 && !t.palettes.empty());
+    persistCheck(*std::make_unique<worldgen::Overworld>(seed, "structures"));
     ids = {"minecraft:village_plains", "minecraft:stronghold", "minecraft:desert_pyramid", "minecraft:monument",
            "minecraft:mineshaft", "minecraft:ruined_portal", "minecraft:shipwreck", "minecraft:ancient_city"};
   }
