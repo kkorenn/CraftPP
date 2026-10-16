@@ -133,7 +133,7 @@ def login(name, host, port, view=8, decode=False, uid=None):
     c.send(0, varint(PROTO) + string(host) + struct.pack(">H", port) + varint(2))
     c.send(0, string(name) + (uid or uuid.uuid4()).bytes)
     pid, b = c.recv()
-    assert pid == LOGIN_CB["login_finished"], pid
+    assert pid == LOGIN_CB["login_finished"], (pid, b.d[b.i:])
     c.send(3)  # login acknowledged
     c.send(CFG_SB["client_information"], string("en_us") + bytes([view]) + varint(0) + b"\x01\x7f" + varint(1) + b"\x00\x01" + varint(0))
     while True:
