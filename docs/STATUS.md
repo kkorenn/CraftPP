@@ -30,9 +30,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 ## Left
 - Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
-- Block entities & containers (chests, furnaces, brewing, enchanting, anvils/grindstone/smithing, beacons, shulkers, signs/books, lecterns, jukeboxes, banners)
 - Potions/effects, enchantments, XP, advancements, recipe book, statistics, maps
 - Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
-- Anvil-format (vanilla region file) saving
 - Online-mode auth + encryption + compression, signed chat, resource packs, server-list favicon, query, RCON
 - Pi deployment guide (systemd), plugin API coverage
