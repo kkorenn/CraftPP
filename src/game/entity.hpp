@@ -144,12 +144,9 @@ inline void track_players() {
 }
 
 // ---------- collision ----------
-inline bool solid_at(int x, int y, int z) {  // unloaded chunks don't collide (getChunkForCollisions == null)
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
-    ChunkPtr c = world.get_if_loaded(x >> 4, z >> 4);
-    if (!c) return false;
-    std::lock_guard lock(c->m);
-    return block_of(c->get(x & 15, y, z & 15)).collision;
+inline bool solid_at(int x, int y, int z) {
+    if (y < MIN_Y) return false;
+    return block_of(world.get_block(x, y, z)).collision;
 }
 
 // Entity.move for an axis-aligned box against full-cube solid blocks (y first, then x, z).
@@ -273,8 +270,6 @@ inline void item_merge(ItemEntity& a) {  // ItemEntity.mergeWithNeighbours
 
 inline void tick_item(ItemEntity& e) {
     if (e.stack.empty()) { e.removed = true; return; }
-    // Entities in chunks that aren't loaded don't tick (and must not make the tick thread generate them).
-    if (!world.get_if_loaded(int(std::floor(e.x)) >> 4, int(std::floor(e.z)) >> 4)) return;
     e.tick_count++;
     if (e.pickup_delay > 0 && e.pickup_delay != 32767) e.pickup_delay--;
     double ox = e.x, oy = e.y, oz = e.z;
