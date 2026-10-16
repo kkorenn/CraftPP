@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <typeinfo>
 
+#include "world.hpp"
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
 #include "worldgen/structure/jigsaw.hpp"
@@ -75,6 +76,24 @@ int main(int argc, char** argv) {
   worldgen::Overworld ow(seed, "structures");
   structure::StructureWorld sw(ow, false);
   auto& m = sw.manager();
+  if (getenv("BENCH")) {  // BENCH=n: ms/chunk for an n x n square through the pipeline, structures on vs off
+    int n = atoi(getenv("BENCH"));
+    for (int on = 0; on < 2; on++) {
+      worldgen::Overworld o(seed, "structures");
+      std::unique_ptr<structure::StructureWorld> w;
+      if (on) w = std::make_unique<structure::StructureWorld>(o, true);
+      auto t0 = std::chrono::steady_clock::now();
+      for (int cx = 0; cx < n; cx++)
+        for (int cz = 0; cz < n; cz++) {
+          Chunk c;
+          c.cx = x / 16 + cx, c.cz = z / 16 + cz;
+          o.pipeline.take(c.cx, c.cz, c);
+        }
+      double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / (n * n);
+      printf("structures %s: %.2f ms/chunk\n", on ? "on" : "off", ms);
+    }
+    return 0;
+  }
   if (getenv("BOXQ")) {  // BOXQ=x0,y0,z0,x1,y1,z1: pieces of nearby starts intersecting the box
     int a[6];
     sscanf(getenv("BOXQ"), "%d,%d,%d,%d,%d,%d", a, a + 1, a + 2, a + 3, a + 4, a + 5);

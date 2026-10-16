@@ -18,17 +18,23 @@ class TerrainView : public Generator {
   int baseHeight(int x, int z, Heightmap type) override {
     bool ocean = type == Heightmap::OCEAN_FLOOR_WG || type == Heightmap::OCEAN_FLOOR;
     int64_t key = (int64_t)(uint32_t)x | (int64_t)(uint32_t)z << 32;
-    auto& cache = ocean ? ocean_ : surface_;
     {
       std::lock_guard lock(m_);
-      auto it = cache.find(key);
-      if (it != cache.end()) return it->second;
+      auto it = heights_.find(key);
+      if (it != heights_.end()) return ocean ? it->second.second : it->second.first;
     }
-    int h = t_->baseHeight(x, z, ocean);
+    // One noise column gives both WORLD_SURFACE_WG and OCEAN_FLOOR_WG (same column iteration as vanilla).
+    std::vector<int> col;
+    t_->baseColumn(x, z, col);
+    int surface = MIN_Y, floor = MIN_Y;
+    for (int y = GEN_HEIGHT - 1; y >= 0 && (surface == MIN_Y || floor == MIN_Y); y--) {
+      if (surface == MIN_Y && col[y] != blocks::air) surface = MIN_Y + y + 1;
+      if (floor == MIN_Y && col[y] == blocks::stone) floor = MIN_Y + y + 1;
+    }
     std::lock_guard lock(m_);
-    if (cache.size() > 1 << 16) cache.clear();  // ponytail: crude bound; heights are cheap to recompute
-    cache.emplace(key, h);
-    return h;
+    if (heights_.size() > 1 << 16) heights_.clear();  // ponytail: crude bound; heights are cheap to recompute
+    heights_.emplace(key, std::pair{surface, floor});
+    return ocean ? floor : surface;
   }
   void baseColumn(int x, int z, std::vector<int>& out) override { t_->baseColumn(x, z, out); }
   int noiseBiome(int qx, int qy, int qz) override {
@@ -45,7 +51,7 @@ class TerrainView : public Generator {
  private:
   std::shared_ptr<worldgen::TerrainGenerator> t_;
   std::mutex m_;
-  std::unordered_map<int64_t, int> surface_, ocean_;
+  std::unordered_map<int64_t, std::pair<int, int>> heights_;  // (WORLD_SURFACE_WG, OCEAN_FLOOR_WG)
 };
 
 worldgen::Heightmap mapHeightmap(Heightmap h) {
