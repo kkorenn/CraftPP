@@ -17,7 +17,7 @@ def slot_item(b):  # ItemStack.OPTIONAL_STREAM_CODEC -> (count, item)
     return (n, b.varint()) if n > 0 else (0, -1)
 
 def move(c, x, y, z, ground):
-    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x, y, z, 1 if ground else 0))
+    walk(c, x, y, z, ground, step=3.0)  # falls at about terminal velocity
 
 def click(c, slot, button, kind):  # container 0, no predicted changes
     c.send(PLAY_SB["container_click"], varint(0) + varint(getattr(c, "state", 0)) + struct.pack(">hb", slot, button) + varint(kind) + varint(0) + b"\0")

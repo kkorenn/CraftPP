@@ -50,11 +50,6 @@ def join(name):
         pid, b = c.recv()
         if pid == PLAY_CB["commands"]: seen["tree"] = parse_tree(b)
         elif pid == PLAY_CB["set_time"] and "time" not in seen: seen["time"] = read_time(b)
-        elif pid == PLAY_CB["player_position"]:
-            tid, pos = b.varint(), b.take(24)
-            b.take(24)
-            c.pos = struct.unpack(">ddd", pos)
-            c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
         return pid
     bot.play_step = step
     try:

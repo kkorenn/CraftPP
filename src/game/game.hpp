@@ -4,6 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../level/glue.hpp"
+#include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
 
@@ -44,19 +45,13 @@ inline void unregister_player(const PlayerPtr& pp) {
     plugins::announce_quit(*pp);  // PlayerQuitEvent may rewrite/suppress it
 }
 
-inline void keepalive_tick(Player& p) {
-    if (++p.g.keepalive_timer < 200) return;  // every 10 s
-    p.g.keepalive_timer = 0;
-    p.send(Writer().varint(play_cb::keep_alive).i64(server_tick));
-}
-
 // Called once from main() after register_core_handlers().
 inline void start_game() {
     game_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
+    register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
-    on_player_tick(keepalive_tick);
     start_tick_thread();
 }
 

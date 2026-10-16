@@ -172,11 +172,6 @@ inline void broadcast_changes() {
             if (sees_chunk(*p, sx, sz)) p->send(w);
     }
     changed.clear();
-    for (auto& p : players)  // BlockChangedAck after the updates, so the client never shows its old prediction
-        if (p->g.ack_seq >= 0) {
-            p->send(Writer().varint(play_cb::block_changed_ack).varint(p->g.ack_seq));
-            p->g.ack_seq = -1;
-        }
 }
 
 // ---------- scheduled ticks (LevelAccessor.scheduleTick) ----------

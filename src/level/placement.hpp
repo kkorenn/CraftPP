@@ -382,29 +382,29 @@ inline bool item_ends_with(int item, const char* suffix) {
 }
 
 // ServerPlayerGameMode.useItemOn
-inline void use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
+inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     Pos hit{x, y, z};
     ItemStack& slot = pl.inv[hand == 1 ? 40u : size_t(pl.selected)];
     bool hands = !pl.inv[size_t(pl.selected)].empty() || !pl.inv[40].empty();
     bool suppress = pl.g.sneaking && hands;
     int s = get(hit);
-    if (!suppress && hand == 0 && use_without_item(pl, hit, s)) return;
-    if (slot.empty() || pl.gamemode == 2) return;  // ponytail: adventure can_place_on not checked
+    if (!suppress && hand == 0 && use_without_item(pl, hit, s)) return true;
+    if (slot.empty() || pl.gamemode == 2) return false;  // ponytail: adventure can_place_on not checked
     int item = slot.item;
     if (item_name_is(item, "bone_meal")) {
-        if (bonemeal(hit)) consume(pl, slot);
-        return;
+        if (!bonemeal(hit)) return false;
+        consume(pl, slot);
+        return true;
     }
     if (item_ends_with(item, "_hoe")) {  // block_transformer/hoe.json
-        if (face == DOWN || !is_air(get(hit.above()))) return;
+        if (face == DOWN || !is_air(get(hit.above()))) return false;
         int ns = -1;
         if (is(s, tag("turns_into_farmland"))) ns = def(ID.farmland);
         else if (block(s) == ID.coarse_dirt) ns = blocks::dirt;
-        if (ns >= 0) {
-            set(hit, ns, UPDATE_ALL_IMMEDIATE);
-            if (pl.gamemode != 1) slot.damage++;
-        }
-        return;
+        if (ns < 0) return false;
+        set(hit, ns, UPDATE_ALL_IMMEDIATE);
+        if (pl.gamemode != 1) slot.damage++;
+        return true;
     }
     if (item_name_is(item, "flint_and_steel")) {  // FlintAndSteelItem.useOn (campfires/candles not ported)
         Pos t = hit.rel(face);
@@ -413,19 +413,17 @@ inline void use_item_on(Player& pl, int hand, int x, int y, int z, int face, flo
             if (can_survive(fs, t)) {
                 set(t, fs, UPDATE_ALL_IMMEDIATE);
                 if (pl.gamemode != 1) slot.damage++;
+                return true;
             }
         }
-        return;
+        return false;
     }
     int b = item_block(item);
-    if (b < 0) return;
+    if (b < 0) return false;
     PlaceCtx c{pl, hit, face, cy, cx, cz, item};
-    if (place_block_item(c, b)) consume(pl, slot);
-    else {  // resync the client's prediction
-        pl.send(block_update(c.hit.x, c.hit.y, c.hit.z, get(c.hit)));
-        Pos n = c.hit.rel(face);
-        pl.send(block_update(n.x, n.y, n.z, get(n)));
-    }
+    if (!place_block_item(c, b)) return false;
+    consume(pl, slot);
+    return true;
 }
 
 // ---------- buckets (BucketItem.use, raycast from the eye) ----------

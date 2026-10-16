@@ -43,8 +43,6 @@ def pump(seconds):
                 set_block(c, sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15), e >> 12)
         elif pid == PLAY_CB["add_entity"]:
             eid = b.varint(); b.take(16); c.entities[eid] = b.varint()
-        elif pid == PLAY_CB["keep_alive"]:
-            c.send(PLAY_SB["keep_alive"], b.take(8))
 
 def cmd(s):
     c.send(PLAY_SB["chat_command"], string(s))
