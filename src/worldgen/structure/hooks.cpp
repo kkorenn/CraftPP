@@ -74,11 +74,20 @@ class RegionLevel : public Level {
     return c ? c->height(mapHeightmap(type), x & 15, z & 15) : MIN_Y;
   }
   int64_t seed() const override { return t_.seed; }
+  // WorldGenRegion.getBiome: BiomeManager zoom over the region's stored noise biomes.
   int biomeAt(int x, int y, int z) override {
-    worldgen::ProtoChunk* c = r_.chunk(x >> 4, z >> 4);
-    int qy = std::clamp((y >> 2) - (MIN_Y >> 2), 0, GEN_HEIGHT / 4 - 1);
-    // ponytail: stored quart biome without BiomeManager's fuzzy zoom (no piece reads biomes yet)
-    return c && c->chunk ? c->chunk->get_biome((x >> 2) & 3, qy, (z >> 2) & 3) : 0;
+    struct Ctx : material::MaterialContext {
+      worldgen::Region& r;
+      explicit Ctx(worldgen::Region& r) : r(r) {}
+      float sampleDensity(const std::string&, int, int, int) override { return 0; }
+      void sampleDensityVolume(const std::string&, DensityBuffer&, const DensityVolume&) override {}
+      int noiseBiome(int qx, int qy, int qz) override {
+        worldgen::ProtoChunk* c = r.chunk(qx >> 2, qz >> 2);
+        int y = std::clamp(qy - (MIN_Y >> 2), 0, GEN_HEIGHT / 4 - 1);
+        return c && c->chunk ? c->chunk->get_biome(qx & 3, y, qz & 3) : 0;
+      }
+    } ctx(r_);
+    return t_.materials ? t_.materials->zoomedBiome(ctx, x, y, z, true) : ctx.noiseBiome(x >> 2, y >> 2, z >> 2);
   }
   RandomSource& random() override {
     if (!rand_) rand_ = t_.dfs.randomState().getOrCreateRandomFactory("minecraft:worldgen_region_random").at(r_.cx * 16, 0, r_.cz * 16);

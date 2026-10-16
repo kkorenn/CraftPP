@@ -1,4 +1,4 @@
-// ponytail: placeholder pieces for the big legacy structures still being ported (mineshaft, stronghold,
+// ponytail: placeholder pieces for the big legacy structures still being ported (stronghold,
 // fortress, monument, mansion, end city): one marker piece at the start so starts, references and /locate work.
 #include "worldgen/structure/legacy.hpp"
 
@@ -10,7 +10,6 @@ struct Marker : Piece {
 };
 }  // namespace
 
-void generateMineshaft(Builder& b, RandomSource&, int x, int z, bool) { b.add(std::make_unique<Marker>(BlockPos{x, 50, z})); }
 StrongholdResult generateStronghold(Builder& b, RandomSource&, int x, int z) {
   b.add(std::make_unique<Marker>(BlockPos{x, 64, z}));
   return {true};

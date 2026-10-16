@@ -246,15 +246,16 @@ void addOceanRuinPieces(BlockPos position, Rotation rotation, Builder& builder, 
   BoundingBox parentBB = BoundingBox::fromCorners(parentPos, parentCorner);
   BlockPos o{std::min(parentPos.x, parentCorner.x), parentPos.y, std::min(parentPos.z, parentCorner.z)};
   auto ni = [&](int a, int b) { return a >= b ? a : random.nextInt(b - a + 1) + a; };  // Mth.nextInt
+  // (draws sequenced explicitly: C++ leaves argument evaluation order unspecified)
   std::vector<BlockPos> all;
-  all.push_back(o.offset(-16 + ni(1, 8), 0, 16 + ni(1, 7)));
-  all.push_back(o.offset(-16 + ni(1, 8), 0, ni(1, 7)));
-  all.push_back(o.offset(-16 + ni(1, 8), 0, -16 + ni(4, 8)));
-  all.push_back(o.offset(ni(1, 7), 0, 16 + ni(1, 7)));
-  all.push_back(o.offset(ni(1, 7), 0, -16 + ni(4, 6)));
-  all.push_back(o.offset(16 + ni(1, 7), 0, 16 + ni(3, 8)));
-  all.push_back(o.offset(16 + ni(1, 7), 0, ni(1, 7)));
-  all.push_back(o.offset(16 + ni(1, 7), 0, -16 + ni(4, 8)));
+  { int dx = -16 + ni(1, 8); int dz = 16 + ni(1, 7); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = -16 + ni(1, 8); int dz = ni(1, 7); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = -16 + ni(1, 8); int dz = -16 + ni(4, 8); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = ni(1, 7); int dz = 16 + ni(1, 7); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = ni(1, 7); int dz = -16 + ni(4, 6); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = 16 + ni(1, 7); int dz = 16 + ni(3, 8); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = 16 + ni(1, 7); int dz = ni(1, 7); all.push_back(o.offset(dx, 0, dz)); }
+  { int dx = 16 + ni(1, 7); int dz = -16 + ni(4, 8); all.push_back(o.offset(dx, 0, dz)); }
   int ruins = ni(4, 8);
   for (int i = 0; i < ruins; i++) {
     if (all.empty()) continue;
