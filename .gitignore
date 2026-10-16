@@ -10,3 +10,5 @@ tools/vineflower.jar
 cache/
 /plugins/
 /ops.json
+/vanilla
+java/.gradle/

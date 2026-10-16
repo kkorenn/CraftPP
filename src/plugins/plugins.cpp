@@ -23,6 +23,8 @@
 
 #if CRAFTPP_JNI
 #include <jni.h>
+#else
+#pragma GCC diagnostic ignored "-Wunused-function"  // built without JDK headers: only the stubs are live
 #endif
 
 namespace plugins {
@@ -114,10 +116,13 @@ void kick_player(Player& p, const std::string& reason) {
     Writer w;
     w.varint(play_cb::disconnect);
     legacy_component(w, reason);
-    try { p.send(w); p.out.flush(); } catch (...) {}
+    p.send(w);
+    p.out.flush();
     printf("%s was kicked: %s\n", p.name.c_str(), strip_codes(reason).c_str());
     fflush(stdout);
-    shutdown(p.fd, SHUT_RDWR);  // the connection thread sees EOF and runs the normal leave path
+    // Read side only: the connection thread sees EOF and runs the normal leave path, whose writer
+    // shutdown still delivers the queued disconnect packet.
+    shutdown(p.fd, SHUT_RD);
 }
 
 // ---------- JSON helpers ----------
@@ -352,7 +357,7 @@ void log_line(const std::string& level, const std::string& logger, const std::st
 #if CRAFTPP_JNI
 JavaVM* vm = nullptr;
 jclass main_cls;
-jmethodID m_request, m_move, m_tick, m_exit, m_dump_cds;
+jmethodID m_request, m_move, m_tick;
 
 struct ThreadEnv {
     JNIEnv* env = nullptr;
@@ -934,15 +939,17 @@ bool boot_jvm() {
         opts.push_back("-Dprismmc.nms=true");
         opts.push_back("--enable-final-field-mutation=ALL-UNNAMED");
     }
-    std::string cds_file, cds_dump;
+    // AppCDS: the first run records the classes it loads; a background child JVM then dumps a static
+    // archive that later runs map read-only (faster start, less metaspace). Keyed by jars + flags.
+    std::string cds_file, cds_list;
     if (jvm_conf["cds"] == "true") {
         mkdir("cache", 0755);
-        std::string tag = file_key(bridge);
+        std::string tag = file_key(bridge) + jvm_conf["max-heap"] + std::to_string(java_major(home));
         for (auto& e : nms) tag += "-" + file_key(e);
-        cds_file = "cache/craftpp-bridge-" + std::to_string(std::hash<std::string>{}(tag) & 0xFFFFFFFF) + "-" +
-                   jvm_conf["c1-only"] + ".jsa";
+        std::string base = "cache/craftpp-bridge-" + std::to_string(std::hash<std::string>{}(tag) & 0xFFFFFFFF);
+        cds_file = base + ".jsa";
         if (stat(cds_file.c_str(), &st) == 0) opts.push_back("-XX:SharedArchiveFile=" + cds_file);
-        else { opts.push_back("-XX:+RecordDynamicDumpInfo"); cds_dump = cds_file; }
+        else { cds_list = base + ".classlist"; opts.push_back("-XX:DumpLoadedClassList=" + cds_list); }
     }
     std::istringstream extra(jvm_conf["extra-args"]);
     for (std::string o; extra >> o;) opts.push_back(o);
@@ -985,8 +992,6 @@ bool boot_jvm() {
     m_request = e->GetStaticMethodID(main_cls, "request", "([B[B)[B");
     m_move = e->GetStaticMethodID(main_cls, "move", "(JJDDDFFDDDFF)[D");
     m_tick = e->GetStaticMethodID(main_cls, "tick", "()V");
-    m_exit = e->GetStaticMethodID(main_cls, "exit", "(I)V");
-    m_dump_cds = e->GetStaticMethodID(main_cls, "dumpCds", "(Ljava/lang/String;)V");
     e->CallStaticVoidMethod(main_cls, e->GetStaticMethodID(main_cls, "boot", "()V"));
     if (auto err = take_exception(e); !err.empty()) { log_line("ERROR", "", "bridge boot failed: " + err); return false; }
 
@@ -1018,15 +1023,24 @@ bool boot_jvm() {
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     log_line("INFO", "", "[PluginInitializerManager] Initialized " + std::to_string(plugin_list.size()) +
                              " plugin(s) in " + std::to_string(int(secs * 1000)) + " ms (Java " +
-                             std::to_string(java_major(home)) + (nms.empty() ? "" : ", NMS") + (cds_dump.empty() && !cds_file.empty() ? ", CDS" : "") + ")");
+                             std::to_string(java_major(home)) + (nms.empty() ? "" : ", NMS") + (!cds_file.empty() && cds_list.empty() ? ", CDS" : "") + ")");
     for (auto& [n, v] : plugin_list) log_line("INFO", "", " - " + n + " (" + v + ")");
-    if (!cds_dump.empty()) {
-        e = env();
-        e->PushLocalFrame(4);
-        e->CallStaticVoidMethod(main_cls, m_dump_cds, e->NewStringUTF(cds_dump.c_str()));
-        take_exception(e);
-        e->PopLocalFrame(nullptr);
-    }
+    if (!cds_list.empty())
+        std::thread([java = home + "/bin/java", cp, cds_list, cds_file, heap = jvm_conf["max-heap"]] {
+            std::this_thread::sleep_for(std::chrono::seconds(10));  // let startup-time class loading settle
+            std::string list, trimmed = cds_list + ".trim";
+            {
+                std::ifstream in(cds_list);
+                list.assign(std::istreambuf_iterator<char>(in), {});
+            }
+            list.resize(list.rfind('\n') + 1);  // the JVM may still be mid-line
+            std::ofstream(trimmed) << list;
+            std::string cmd = "'" + java + "' -Xshare:dump -XX:+UseSerialGC -Xmx" + heap + " -XX:SharedClassListFile='" +
+                              trimmed + "' -XX:SharedArchiveFile='" + cds_file + ".tmp' -cp '" + cp + "' >/dev/null 2>&1";
+            if (system(cmd.c_str()) == 0) rename((cds_file + ".tmp").c_str(), cds_file.c_str());
+            else log_line("WARN", "", "Could not write the AppCDS archive " + cds_file);
+            unlink(trimmed.c_str());
+        }).detach();
     return true;
 }
 
