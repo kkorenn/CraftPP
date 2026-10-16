@@ -129,6 +129,11 @@ struct Level {
   virtual int64_t seed() const = 0;
   virtual int biomeAt(int x, int y, int z) = 0;  // getBiome(pos) (noise biome of the quart containing pos)
   virtual RandomSource& random() = 0;              // WorldGenRegion.getRandom (worldgen_region_random at the chunk)
+  // EntityType.create(STRUCTURE) + snapTo(block bottom center) + finalizeSpawn + addFreshEntity, queued with the chunk
+  // holding pos (spawned by the tick thread). persistent: setPersistenceRequired; heal: heal(getMaxHealth()).
+  virtual void addMob(int entityType, BlockPos pos, bool persistent, bool heal = false, bool finalize = true) {
+    (void)entityType, (void)pos, (void)persistent, (void)heal, (void)finalize;
+  }
   // ChunkAccess.markPosForPostProcessing: the FULL step runs updateFromNeighbourShapes there.
   virtual void markPostProcessing(int x, int y, int z) { (void)x, (void)y, (void)z; }
   // StructureTemplate.placeInWorld without knownShape: updateShapeAtEdge over the placed positions (their box

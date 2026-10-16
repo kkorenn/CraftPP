@@ -20,9 +20,10 @@ struct EndCityPiece : TemplatePiece {
   void handleDataMarker(const std::string& marker, BlockPos pos, Level& level, RandomSource& random, const BoundingBox& chunkBB) override {
     if (marker.rfind("Chest", 0) == 0) {
       if (chunkBB.isInside(pos.below())) setLootTable(level, random, pos.below());
+    } else if (chunkBB.isInside(pos) && marker.rfind("Sentry", 0) == 0) {
+      level.addMob(entity_types::shulker, pos, false, false, false);  // vanilla: setPos + addFreshEntity only
     }
-    // ponytail: "Sentry" (shulker) and "Elytra" (item frame) entities are not spawned; spawn them through the entity
-    // API at chunkBB.isInside(pos) once entities exist in worldgen (no random draws are involved).
+    // ponytail: the "Elytra" item frame is not placed (no item frame entity yet).
   }
 };
 

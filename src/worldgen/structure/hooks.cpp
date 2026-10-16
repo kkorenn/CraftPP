@@ -111,6 +111,10 @@ class RegionLevel : public Level {
     } ctx(r_);
     return t_.materials ? t_.materials->zoomedBiome(ctx, x, y, z, true) : ctx.noiseBiome(x >> 2, y >> 2, z >> 2);
   }
+  void addMob(int type, BlockPos p, bool persistent, bool heal, bool finalize) override {
+    worldgen::ProtoChunk* c = r_.chunk(p.x >> 4, p.z >> 4);
+    if (c && c->chunk) c->chunk->structure_mobs.push_back({type, p.x + 0.5, double(p.y), p.z + 0.5, persistent, heal, finalize});
+  }
   void markPostProcessing(int x, int y, int z) override { blockLevel().mark_post_processing({x, y, z}); }
   void updatePlacedShapes(BlockPos mn, BlockPos mx, const std::vector<BlockPos>& placed) override {
     namespace feat = worldgen::feat;
