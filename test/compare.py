@@ -23,6 +23,7 @@ ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
 ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
+ap.add_argument("--threads", type=int, default=0, help="craftpp worker-threads (0 = auto)")
 ap.add_argument("--stable", action="store_true", help="run vanilla twice; compare only blocks both vanilla runs agree on")
 ap.add_argument("--cache", help="directory to cache vanilla runs in (keyed by seed/radius/pack/structures)")
 ap.add_argument("--pairs", type=int, default=8)
@@ -106,7 +107,7 @@ def run_craftpp(center):
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
-                           f"worldgen-stages={stage}\n" + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
+                           f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
     p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
