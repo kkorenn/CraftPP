@@ -93,7 +93,7 @@ try:
                     have.add((b.i32(), b.i32())); last_chunk[0] = time.time()
                 elif pid == PLAY_CB["forget_level_chunk"]:
                     v = b.i64(); have.discard((struct.unpack(">i", struct.pack(">I", v & 0xFFFFFFFF))[0], v >> 32))
-                elif pid == PLAY_CB["system_chat"] and b"players online" in b.d and pings:
+                elif pid == PLAY_CB["system_chat"] and (b"players online" in b.d or b"commands.list.players" in b.d) and pings:
                     lat.append(time.time() - pings.pop(0))
                 elif pid == PLAY_CB["player_position"]:
                     tid, pos = b.varint(), b.take(24); b.take(24)
