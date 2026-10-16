@@ -7,6 +7,7 @@
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
 #include "worldgen/overworld.hpp"
+#include "worldgen/structure/hooks.hpp"
 
 #include <array>
 #include <atomic>
@@ -21,6 +22,8 @@
 #include <random>
 #include <thread>
 
+#include <unistd.h>
+
 // Filled from server.properties by load_properties (paper.hpp), which also supplies vanilla's defaults.
 inline std::map<std::string, std::string> props = {
     {"motd", "A Minecraft Server"},
@@ -31,14 +34,21 @@ inline std::map<std::string, std::string> props = {
     {"level-name", "world"},
     {"level-seed", ""},
     {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
-    {"worldgen-stages", "features"},  // noise | surface | carvers | features (debug: stop after a vanilla stage)
+    {"worldgen-stages", "features"},  // noise | surface | carvers | structures | features (debug: stop after a vanilla stage)
+    {"generate-structures", "true"},
 };
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
 inline World world;
 inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
+inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
+    shutdown_requested = 1;
+    if (shutdown_pipe[1] >= 0) (void)!write(shutdown_pipe[1], "x", 1);
+}
 inline bool flat_world = false;
+inline std::shared_ptr<structure::StructureWorld> structure_world;  // null: structures off (flat, generate-structures=false)
 struct SpawnPos { int x, y, z; };
 inline SpawnPos world_spawn{0, -60, 0};  // LevelData respawn position (flat: the old fixed spawn)
 
@@ -77,11 +87,9 @@ struct Player {
     std::string quit_reason;   // logged as "<name> lost connection: <reason>" (empty = "Disconnected")
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
-    void send(const Writer& body) {
-        thread_local std::vector<uint8_t> f;
-        f.clear();
-        frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);  // net.hpp
-        out.push_framed(f);
+    void send(const Writer& body) {  // framed straight into the outbox (net.hpp)
+        std::lock_guard lock(out.m);
+        if (!out.closed) frame_packet(out.buf, body.b.data(), body.b.size(), compression_threshold >= 0);
     }
     void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
@@ -201,7 +209,13 @@ inline void setup_world() {
     flat_world = type == "flat";
     if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
-    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "vanilla/src/data", props["worldgen-datapack"]);
+    const std::string& stages = props["worldgen-stages"];
+    if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
+    {
+        structure_world = std::make_shared<structure::StructureWorld>(*ow, true);
+        world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
+    }
     auto gen = ow->terrain;
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
     light::attach(world, ow->pipeline);
@@ -231,9 +245,12 @@ inline PlayerPtr find_player(const std::string& name) {
 }
 
 inline void broadcast(const Writer& body, const Player* except = nullptr) {
-    std::lock_guard lock(players_mtx);  // no copy: send() only appends to the player's outbox
+    thread_local std::vector<uint8_t> f;  // framed (and compressed) once for everyone
+    f.clear();
+    frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);
+    std::lock_guard lock(players_mtx);  // no copy: push_framed only appends to the player's outbox
     for (auto& p : players)
-        if (p.get() != except) p->send(body);
+        if (p.get() != except) p->out.push_framed(f);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {

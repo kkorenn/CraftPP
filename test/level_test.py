@@ -60,7 +60,7 @@ cmd("gamemode creative")
 pump(1.0)
 
 # 1. Water source on flat grass: spreads to level 7 in a diamond (manhattan distance d -> level d), 5 ticks a step.
-X, Y, Z = 8, -60, 40
+X, Y, Z = 8, -60, 300  # away from the other tests (light_test reads block light near 40, 40)
 cmd(f"tp Alice {X} {Y + 3} {Z - 12}")
 pump(1.5)
 t0 = time.time()
@@ -81,7 +81,7 @@ assert 1.5 < dt < 4.5, f"spread to distance 7 took {dt:.2f}s (vanilla: 7 steps x
 print(f"water: diamond to level 7 in {dt:.2f}s")
 
 # 2. Flowing lava touching water turns into cobblestone (LiquidBlock.shouldSpreadLiquid).
-LX, LZ = 30, 40
+LX, LZ = 30, 300
 cmd(f"setblock {LX} {Y} {LZ} lava")
 wait_until(lambda: at(LX + 1, Y, LZ) == LAVA + 2, 4, "lava should flow one block (level 2, 30 ticks)")
 cmd(f"setblock {LX + 2} {Y} {LZ} water")
@@ -90,10 +90,33 @@ assert at(LX, Y, LZ) in (LAVA, state("obsidian")), "lava source"
 print("lava + water: cobblestone")
 
 # 3. Sand in the air falls as a falling_block entity and lands on the grass.
-SX, SZ = 50, 40
+SX, SZ = 50, 300
 cmd(f"setblock {SX} {Y + 6} {SZ} sand")
 wait_until(lambda: ENTITY["falling_block"] in c.entities.values(), 3, "falling_block entity")
 wait_until(lambda: at(SX, Y, SZ) == state("sand") and at(SX, Y + 6, SZ) == AIR, 4, "sand should land on the ground")
 print("sand: fell and landed")
+# 4. Placing a door places both halves (DoorBlock.setPlacedBy); breaking the lower half removes the upper one.
+DX, DZ = 70, 300
+cmd(f"tp Alice {DX + 0.5} {Y} {DZ - 2.5}")
+pump(0.5)
+c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(ITEMS["minecraft:oak_door"]["protocol_id"]) + varint(0) + varint(0))
+c.send(PLAY_SB["use_item_on"], varint(0) + pos(DX, Y - 1, DZ) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(50))
+lower = state("oak_door", half="lower", facing="south", hinge="left", open=False, powered=False)
+upper = state("oak_door", half="upper", facing="south", hinge="left", open=False, powered=False)
+wait_until(lambda: at(DX, Y, DZ) == lower and at(DX, Y + 1, DZ) == upper, 3, f"door halves: {at(DX, Y, DZ)} {at(DX, Y + 1, DZ)}")
+c.send(PLAY_SB["use_item_on"], varint(0) + pos(DX, Y, DZ) + varint(1) + struct.pack(">fff", .5, .5, .5) + b"\0\0" + varint(51))
+wait_until(lambda: at(DX, Y, DZ) == state("oak_door", half="lower", facing="south", hinge="left", open=True, powered=False), 3, "door opens")
+c.send(PLAY_SB["player_action"], varint(0) + pos(DX, Y, DZ) + b"\x01" + varint(52))
+wait_until(lambda: at(DX, Y, DZ) == AIR and at(DX, Y + 1, DZ) == AIR, 3, "breaking the lower half removes the door")
+print("door: both halves placed, opened, broken together")
+
+# 5. A torch pops off when its support goes.
+TX = 74
+cmd(f"setblock {TX} {Y} {DZ} dirt")
+cmd(f"setblock {TX} {Y + 1} {DZ} torch")
+wait_until(lambda: at(TX, Y + 1, DZ) == state("torch"), 3, "torch placed")
+cmd(f"setblock {TX} {Y} {DZ} air")
+wait_until(lambda: at(TX, Y + 1, DZ) == AIR, 3, "torch should pop off")
+print("torch: popped off without support")
 c.s.close()
 print("level test passed")

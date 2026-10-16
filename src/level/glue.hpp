@@ -1,6 +1,7 @@
 #pragma once
 // Wires the level tick system into the server: tick hooks, change_block, player block breaking.
 #include "run.hpp"
+#include "placement.hpp"
 
 namespace lvl {
 
