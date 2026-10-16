@@ -28,9 +28,9 @@ inline void join(const PlayerPtr& pp) {
                .varint(std::stoi(props["max-players"]))
                .varint(v)
                .varint(v)       // simulation distance
-               .boolean(false)  // reduced debug info
-               .boolean(true)   // show death screen
-               .boolean(false)  // limited crafting
+               .boolean(rule("reduced_debug_info"))
+               .boolean(!rule("immediate_respawn"))  // show death screen
+               .boolean(rule("limited_crafting"))
                .varint(dimension_types::overworld)
                .str("minecraft:overworld")
                .i64(0)          // hashed seed
@@ -46,7 +46,7 @@ inline void join(const PlayerPtr& pp) {
     commands_on_join(p);  // commands tree, op level, border, time, spawn, difficulty, weather, scoreboard
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));  // level chunks load start
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(1)
+    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
     for (size_t i = 0; i < p.inv.size(); i++)
         if (p.inv[i].item >= 0)
@@ -64,62 +64,27 @@ inline void play(const PlayerPtr& pp) {
 
 // Core handlers: movement, inventory, blocks, chat, commands.
 inline void register_core_handlers() {
-    on(play_sb::move_player_pos, [](Player& p, Reader& in, int id) {
-        (void)id;
-        if (id == play_sb::move_player_pos || id == play_sb::move_player_pos_rot) {
-            p.x = in.f64(); p.y = in.f64(); p.z = in.f64();
-        }
-        if (id == play_sb::move_player_rot || id == play_sb::move_player_pos_rot) {
-            p.yaw = in.f32(); p.pitch = in.f32();
-        }
-        p.on_ground = in.u8() & 1;
-        // ponytail: client is trusted (no anti-cheat / collision checks).
-        int ncx = int(std::floor(p.x)) >> 4, ncz = int(std::floor(p.z)) >> 4;
-        if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);
-        broadcast_position(p);
-    });
-    on(play_sb::move_player_pos_rot, [](Player& p, Reader& in, int id) {
-        (void)id;
-        if (id == play_sb::move_player_pos || id == play_sb::move_player_pos_rot) {
-            p.x = in.f64(); p.y = in.f64(); p.z = in.f64();
-        }
-        if (id == play_sb::move_player_rot || id == play_sb::move_player_pos_rot) {
-            p.yaw = in.f32(); p.pitch = in.f32();
-        }
-        p.on_ground = in.u8() & 1;
-        // ponytail: client is trusted (no anti-cheat / collision checks).
-        int ncx = int(std::floor(p.x)) >> 4, ncz = int(std::floor(p.z)) >> 4;
-        if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);
-        broadcast_position(p);
-    });
-    on(play_sb::move_player_rot, [](Player& p, Reader& in, int id) {
-        (void)id;
-        if (id == play_sb::move_player_pos || id == play_sb::move_player_pos_rot) {
-            p.x = in.f64(); p.y = in.f64(); p.z = in.f64();
-        }
-        if (id == play_sb::move_player_rot || id == play_sb::move_player_pos_rot) {
-            p.yaw = in.f32(); p.pitch = in.f32();
-        }
-        p.on_ground = in.u8() & 1;
-        // ponytail: client is trusted (no anti-cheat / collision checks).
-        int ncx = int(std::floor(p.x)) >> 4, ncz = int(std::floor(p.z)) >> 4;
-        if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);
-        broadcast_position(p);
-    });
-    on(play_sb::move_player_status_only, [](Player& p, Reader& in, int id) {
-        (void)id;
-        if (id == play_sb::move_player_pos || id == play_sb::move_player_pos_rot) {
-            p.x = in.f64(); p.y = in.f64(); p.z = in.f64();
-        }
-        if (id == play_sb::move_player_rot || id == play_sb::move_player_pos_rot) {
-            p.yaw = in.f32(); p.pitch = in.f32();
-        }
-        p.on_ground = in.u8() & 1;
-        // ponytail: client is trusted (no anti-cheat / collision checks).
-        int ncx = int(std::floor(p.x)) >> 4, ncz = int(std::floor(p.z)) >> 4;
-        if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);
-        broadcast_position(p);
-    });
+    for (int move_id : {play_sb::move_player_pos, play_sb::move_player_pos_rot, play_sb::move_player_rot,
+                        play_sb::move_player_status_only})
+        on(move_id, [](Player& p, Reader& in, int id) {
+            bool has_pos = id == play_sb::move_player_pos || id == play_sb::move_player_pos_rot;
+            bool has_rot = id == play_sb::move_player_rot || id == play_sb::move_player_pos_rot;
+            double x = p.x, y = p.y, z = p.z;
+            float yaw = p.yaw, pitch = p.pitch;
+            if (has_pos) x = in.f64(), y = in.f64(), z = in.f64();
+            if (has_rot) yaw = in.f32(), pitch = in.f32();
+            // ServerGamePacketListenerImpl.containsInvalidValues, then clampHorizontal / clampVertical.
+            if (std::isnan(x) || std::isnan(y) || std::isnan(z) || !std::isfinite(yaw) || !std::isfinite(pitch))
+                throw std::runtime_error("Invalid move player packet received");
+            p.x = std::clamp(x, -3.0e7, 3.0e7), p.y = std::clamp(y, -2.0e7, 2.0e7), p.z = std::clamp(z, -3.0e7, 3.0e7);
+            auto wrap = [](float a) { a = std::fmod(a, 360.0f); return a >= 180.0f ? a - 360.0f : a < -180.0f ? a + 360.0f : a; };
+            p.yaw = wrap(yaw), p.pitch = std::clamp(wrap(pitch), -90.0f, 90.0f);  // Mth.wrapDegrees, Entity.setXRot
+            p.on_ground = in.u8() & 1;
+            // ponytail: client is trusted (no anti-cheat / collision checks).
+            int ncx = int(std::floor(p.x)) >> 4, ncz = int(std::floor(p.z)) >> 4;
+            if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);
+            broadcast_position(p);
+        });
     on(play_sb::set_carried_item, [](Player& p, Reader& in, int id) {
         (void)id;
         int slot = int16_t(in.u16());
@@ -129,9 +94,11 @@ inline void register_core_handlers() {
         (void)id;
         int inv = menu_to_inv(int16_t(in.u16()));
         int count = in.varint();
-        int item = count > 0 ? in.varint() : -1;  // component patch ignored
-        if (inv >= 0 && p.gamemode == 1)
-            p.inv[size_t(inv)] = item >= 0 && item < ITEM_COUNT ? Player::Slot{item, count} : Player::Slot{};
+        int item = count > 0 ? in.varint() : -1, damage = 0;
+        if (item >= 0 && in.varint() > 0 && in.varint() == component_ids["damage"]) damage = in.varint();
+        // ponytail: other components in the patch are dropped (no codecs for them yet).
+        if (item >= ITEM_COUNT || (item >= 0 && count > max_stack(item))) return;  // handleSetCreativeModeSlot validData
+        if (inv >= 0 && p.gamemode == 1) p.inv[size_t(inv)] = item >= 0 ? Player::Slot{item, count, damage} : Player::Slot{};
     });
     on(play_sb::player_action, [](Player& p, Reader& in, int id) {
         (void)id;
@@ -177,17 +144,20 @@ inline void register_core_handlers() {
     on(play_sb::chat, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string msg = in.str(256);
-        broadcast_message("<" + p.name + "> " + msg);
+        if (!chat_allowed(msg)) throw std::runtime_error("Illegal characters in chat");
+        broadcast_player_chat(p, msg);
     });
     on(play_sb::chat_command, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
+        if (!chat_allowed(cmd)) throw std::runtime_error("Illegal characters in chat");
         log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });
     on(play_sb::chat_command_signed, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
+        if (!chat_allowed(cmd)) throw std::runtime_error("Illegal characters in chat");
         log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });

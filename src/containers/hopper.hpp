@@ -158,21 +158,19 @@ inline void HopperBE::tick() {
             int above = world.get_block(x, y + 1, z);
             bool blocked = (bs::R().flags(above) & bs::FULL_COLLISION) && !bs::R().in(above, bs::R().tag("minecraft:does_not_block_hoppers"));
             if (!blocked)
-                for (auto& e : item_entities) {  // getItemsAtAndAbove: suck box (x, y+11/16, z)..(x+1, y+2, z+1)
-                    if (e.removed || e.stack.empty()) continue;
-                    if (e.x + ITEM_HALF_W <= x || e.x - ITEM_HALF_W >= x + 1 || e.z + ITEM_HALF_W <= z || e.z - ITEM_HALF_W >= z + 1 ||
-                        e.y + ITEM_H <= y + 11.0 / 16 || e.y >= y + 2)
-                        continue;
+                for_each_entity_in(AABB{double(x), y + 11.0 / 16, double(z), x + 1.0, y + 2.0, z + 1.0}, [&](Entity& o) {
+                    if (sucked || o.removed || o.type != entity_types::item) return;  // getItemsAtAndAbove
+                    auto& e = static_cast<ItemEntity&>(o);
+                    if (e.stack.empty()) return;
                     ItemStack rest = add_item(nullptr, self, e.stack, -1);
                     if (rest.empty()) {
-                        e.stack = {};
-                        e.removed = true;
+                        e.set_item({});
+                        e.discard();
                         sucked = true;
-                        break;
+                    } else if (rest.count != e.stack.count) {
+                        e.set_item(rest);
                     }
-                    if (rest.count != e.stack.count) e.dirty_item = true;
-                    e.stack = rest;
-                }
+                }, false);
         }
         changed |= sucked;
     }

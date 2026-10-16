@@ -58,7 +58,10 @@ def close(c, cid):
 
 host, port = sys.argv[1], int(sys.argv[2])
 c, _ = login("Cora", host, port, uid=UID)
-c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 21.5, -60, 22.5, 1))
+x0, _, z0 = c.pos
+for k in range(1, 9):  # walk over in small steps (the server rejects moves that are too fast)
+    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x0 + (21.5 - x0) * k / 8, -60, z0 + (22.5 - z0) * k / 8, 1))
+    time.sleep(0.06)
 
 if "--after-restart" in sys.argv:
     cid, items = open_menu(c, CHEST, 1, "generic_9x3")

@@ -13,20 +13,23 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Worldgen pipeline (26.3 ChunkStatus, WorldGenRegion), carvers bit-exact, all overworld features except template/fossil (0.06–0.36% diff vs vanilla run-to-run noise 0.2–4.5%). `data/blocks.bin` generated at tool time by tools/gen_block_data.sh.
 - perf-2: buffered reads, single-frame broadcast, get_ptr fast path (get_block 76→16 ns), density vectorized (worldgen −14–17%), idle wakeups 5→0.3/s, level.dat saved per 5 min.
 - Structures: all overworld structures (random_spread, concentric rings, jigsaw + processors, legacy pieces), beardifier exact, /locate matches vanilla (29/29 types). Monument 0 block diffs; village 0.03% at full stage. `data/block_states.bin` generated at tool time by tools/gen_block_dump.py. Mutable piece state in world/structures/r.X.Z.bin (deviation from vanilla, documented).
+- Parity audit: real 26.3 client stays connected (set_entity_data fix), keep-alive timeout, teleport confirm, vanilla movement checks, block acks, spawn protection, game modes, armor, 10 damage game rules, fall-damage modifiers, unsigned player chat, inventory click parity. Findings: side-session notes parity-audit.md.
+- Bug hunt: ASan/UBSan/TSan builds (`./build.sh [test] asan|tsan`), test/stress.py (fuzz, cmdfuzz, 50+ bots, reconnect storms, soak), 15 crash/DoS/race fixes (NaN moves, unbounded inbox, 2 MiB per-connection prealloc, socket timeouts, deep SNBT, int-overflow UB → -fwrapv, ghost players).
+- Mobs core (src/mobs/): entity manager, vanilla TrackedEntity tracking (players too), A* pathfinding, GoalSelector + Brain, NaturalSpawner, explosions, combat (cooldown/crits/sweep/PvP/armour/killer death messages), XP orbs, /summon + @e selectors; cow, pig, sheep, chicken, zombie, skeleton, spider, creeper. ~0.45 ms mspt at 100 mobs. Tool-time extractor: tools/gen_mob_data.py + MobDump.java → data/mob_dump.json.
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
 | structures-2 | structure edge shape updates, nether fortress/bastion/end city pieces, bounded structure caches, structure entities hooks |
 | dimensions | Nether, End, portals |
-| mobs-core | entity framework, first mobs, spawning, /summon |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
 | blockticks | scheduled/random ticks, fluids, falling blocks, door/bed physics |
-| parity-audit | packet coverage, per-subsystem diffs vs vanilla, real-client log checks |
-| bug-hunt | ASan/UBSan/TSan, fuzzing, bot stress, soaks |
+| placement | block placement states (facing/axis/half/slab/stairs/doors/beds/waterlogging), BlockItem.useOn parity |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
+| startup-perf | parallel spawn-region generation, fast restart (worldgen data cache), startup log hygiene |
+| feature-parity | 0 stable-block worldgen mismatches vs vanilla: sculk, lush caves, decoration order, untested biomes |
 
 ## Left
 - Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
@@ -34,3 +37,10 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
 - Online-mode auth + encryption + compression, signed chat, resource packs, server-list favicon, query, RCON
 - Pi deployment guide (systemd), plugin API coverage
+
+## Known issues
+- light::Engine::state() reads chunks while worldgen workers write them (TSan, possible use-after-free) — needs chunk locking.
+- No vanilla "moved too quickly" check; pick_item_from_block has no reach check (chunk-generation DoS).
+- Duplicate UUID with two names can be online at once.
+- Flaky: plugin_test second start under heavy load; test-server.log occasionally misses lines after restart.
+- vanilla/client (real client for tools/run_client.py) was lost on 2026-10-17 and is not restored; vanilla/ server data was rebuilt from the verified server.jar.
