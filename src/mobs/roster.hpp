@@ -1,13 +1,11 @@
 #pragma once
-// Mob roster entry point (vanilla mob behaviours on top of the mob framework). Included from game/game.hpp.
-#include "breeding.hpp"
-#include "riding.hpp"
+// Mob roster entry point: villager trading data + merchant menu (game side). Mob classes: src/mobs/roster/*.cpp.
 #include "merchant_menu.hpp"
-#include "trading.hpp"
+#include "riding.hpp"
 
 #include <unistd.h>
 
 inline void roster_init() {
-    if (!load_roster_data()) _exit(1);
+    if (!load_trading()) _exit(1);
     merchant_menu_init();
 }

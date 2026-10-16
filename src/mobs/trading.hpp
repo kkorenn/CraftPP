@@ -3,7 +3,7 @@
 // MerchantOffer, offer generation from trade sets, demand/restock/special prices, gossip and the
 // merchant_offers packet. Entity-agnostic: a villager/wandering trader embeds a MerchantState.
 #include "../game/entity.hpp"
-#include "roster_data.hpp"
+#include "../worldgen/json.hpp"
 
 #include <array>
 #include <optional>
@@ -61,7 +61,14 @@ inline int poi_for_block(int block) {  // PoiTypes.forState
     return -1;
 }
 
-inline void load_trading(const Json& j) {
+inline bool load_trading(const std::string& path = "data/roster.json") {
+    Json j;
+    try {
+        j = Json::parseFile(path);
+    } catch (const std::exception& e) {
+        fprintf(stderr, "%s: %s (run: python3 tools/gen_roster_data.py)\n", path.c_str(), e.what());
+        return false;
+    }
     for (auto& v : j["villager_types"].arr) villager_types.push_back(v.asString());
     for (auto& t : j["trades"].arr) {
         VillagerTrade vt;
@@ -110,6 +117,7 @@ inline void load_trading(const Json& j) {
         if (auto* s = p.find("secondary_poi")) pr.secondary_poi = blocks(*s);
         professions.push_back(std::move(pr));
     }
+    return true;
 }
 
 // ---------- MerchantOffer ----------

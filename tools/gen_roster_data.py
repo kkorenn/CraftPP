@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Mob roster data for CraftPP -> data/roster.json (loaded once by src/mobs/roster_data.hpp).
+"""Villager data for CraftPP -> data/roster.json (loaded once by src/mobs/trading.hpp).
 
-Complements the mob framework's data/mobs.json (attributes, sizes, synched data, loot, spawns) with what the
-roster needs: breeding / tempt / taming items per entity type, villager trades, trade sets, POI types and
-professions. Sources: item tags (<mob>_food, _tempt_items), villager_trade + trade_set + tags/villager_trade,
-PoiTypes.java and VillagerProfession.java.
+Complements the mob framework's data/mobs.json with villager trades, trade sets, POI types and professions.
+Sources: villager_trade + trade_set + tags/villager_trade, PoiTypes.java and VillagerProfession.java.
 """
 import json, os, re, sys
 
@@ -14,7 +12,7 @@ DATA = os.path.join(VAN, "src", "data", "minecraft")
 SRC = os.path.join(VAN, "src", "net", "minecraft")
 registries = json.load(open(os.path.join(VAN, "generated", "reports", "registries.json")))
 reg = lambda r: {k[10:]: v["protocol_id"] for k, v in registries["minecraft:" + r]["entries"].items()}
-entity_ids, item_ids, block_names = reg("entity_type"), reg("item"), set(reg("block"))
+item_ids, block_names = reg("item"), set(reg("block"))
 fails = []
 
 
@@ -47,25 +45,8 @@ def load_tags(kind):
     return out
 
 
-item_tags, trade_tags, block_tags = load_tags("item"), load_tags("villager_trade"), load_tags("block")
+trade_tags, block_tags = load_tags("villager_trade"), load_tags("block")
 items = lambda names: sorted(item_ids[n] for n in names if n in item_ids)
-
-# ---------- breeding / tempt / taming items ----------
-types = {}
-for name in entity_ids:
-    t = {"id": entity_ids[name]}
-    if name + "_spawn_egg" in item_ids:
-        t["egg"] = item_ids[name + "_spawn_egg"]
-    if name + "_food" in item_tags:
-        t["food"] = items(item_tags[name + "_food"])
-    if name + "_tempt_items" in item_tags:
-        t["tempt"] = items(item_tags[name + "_tempt_items"])
-    types[name] = t
-# Taming items that no tag names (Wolf.tryToTame bone; Cat/Ocelot/Parrot reuse their food tags).
-for name, tame in {"wolf": ["bone"], "cat": item_tags["cat_food"], "ocelot": item_tags["ocelot_food"],
-                   "parrot": item_tags["parrot_food"]}.items():
-    types[name]["tame"] = items(tame)
-types["parrot"]["poison"] = items(item_tags["parrot_poisonous_food"])
 
 # ---------- villager trades ----------
 trades, trade_index = [], {}
@@ -143,13 +124,13 @@ for n, i in reg("villager_profession").items():
         professions[n]["id"] = i
 
 vt = reg("villager_type")
-out = {"types": types, "trades": trades, "trade_sets": trade_sets, "poi": poi, "professions": professions,
+out = {"trades": trades, "trade_sets": trade_sets, "poi": poi, "professions": professions,
        "villager_types": sorted(vt, key=vt.get)}
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
 json.dump(out, open(os.path.join(ROOT, "data", "roster.json"), "w"), separators=(",", ":"), sort_keys=True)
 for f in fails:
     print("gen_roster_data: " + f, file=sys.stderr)
-print(f"roster.json: {len(types)} entity types, {len(trades)} trades "
+print(f"roster.json: {len(trades)} trades "
       f"({sum('unsupported' in t for t in trades)} need item components), {len(trade_sets)} trade sets, "
       f"{len(poi)} poi, {len(professions)} professions")
 sys.exit(1 if fails else 0)

@@ -1,4 +1,4 @@
-// Roster data / trading / breeding self-checks against vanilla constants. Run from the repo root.
+// Villager trading / gossip self-checks against vanilla constants. Run from the repo root.
 #include "play.hpp"
 
 #include <cassert>
@@ -9,41 +9,7 @@
 int main() {
     CHECK(load_game_data());
     CHECK(load_mob_data());
-    CHECK(load_roster_data());
-    const RosterType& cow = roster(entity_types::cow);
-    CHECK(cow.name == "cow" && entity_type_id("minecraft:cow") == entity_types::cow);
-    CHECK(cow.is_food(item_by_name["minecraft:wheat"]) && !cow.is_food(item_by_name["minecraft:bone"]));
-    CHECK(cow.egg == item_by_name["minecraft:cow_spawn_egg"]);
-    const RosterType& wolf = roster(entity_types::wolf);
-    CHECK(wolf.tame == std::vector<uint16_t>{uint16_t(item_by_name["minecraft:bone"])});
-    CHECK(roster(entity_types::horse).is_tempt(item_by_name["minecraft:golden_carrot"]));
-
-    // Breeding: feed two cows, mate, cooldown, baby grows up.
-    AgeState a, b;
-    LoveState la, lb;
-    int wheat = item_by_name["minecraft:wheat"];
-    CHECK(animal_feed(cow, a, la, wheat, 1, 2) == FeedResult::in_love);
-    CHECK(animal_feed(cow, a, la, wheat, 1, 2) == FeedResult::pass);  // already in love
-    CHECK(animal_feed(cow, b, lb, wheat, 1, 2) == FeedResult::in_love);
-    CHECK(can_mate(entity_types::cow, la, entity_types::cow, lb) && !can_mate(entity_types::cow, la, entity_types::pig, lb));
-    int xp = finish_breeding(a, la, b, lb);
-    CHECK(xp >= 1 && xp <= 7 && a.age == 6000 && !la.is_in_love());
-    CHECK(animal_feed(cow, a, la, wheat, 1, 2) == FeedResult::pass);  // cooldown
-    AgeState baby;
-    CHECK(baby.set_age(BABY_START_AGE) && baby.baby());
-    CHECK(animal_feed(cow, baby, la, wheat, 1, 2) == FeedResult::aged_up && baby.age == -24000 + 120 * 20);
-    bool flipped = false;
-    for (int i = 0; i < 30000; i++) flipped |= baby.tick();
-    CHECK(flipped && !baby.baby() && baby.age == 0);
-
-    // Taming: a bone eventually tames a wolf and it sits; 1/3 per bone.
-    int bone = item_by_name["minecraft:bone"], tamed = 0;
-    for (int i = 0; i < 3000; i++) {
-        TameState s;
-        tamed += try_tame(wolf, s, bone, 7, 8);
-        if (s.tame) CHECK(s.ordered_to_sit && s.owned_by(7, 8) && s.flags() == 5);
-    }
-    CHECK(tamed > 850 && tamed < 1150);
+    CHECK(load_trading());
 
     // Trading: a farmer gets 2 level-1 offers, levels up at 10 XP and gains 2 more.
     MerchantState m;
