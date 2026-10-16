@@ -1,3 +1,8 @@
+> **CraftPP:** this is PrismMC's bridge, moved to Minecraft 26.3 and embedded in-process through JNI
+> (`Native`/`Rpc`/`Main`) instead of a sidecar over NDJSON. Build with `../tools/build_bridge.sh`
+> (output: `../build/java/libs/craftpp-bridge.jar`). Design: `../docs/plugins.md`. The notes below
+> describe the original PrismMC setup; `smoke.py` speaks the old stdio protocol and no longer applies.
+
 # prism-bridge
 
 The Java half of PrismMC's Bukkit/Paper plugin support: `paper-api` 26.2

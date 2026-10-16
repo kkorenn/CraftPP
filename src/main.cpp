@@ -144,7 +144,6 @@ int main(int argc, char** argv) {
     build_commands_packet();
     register_core_handlers();
     register_command_handlers();
-    plugins::start();  // Bukkit plugins (no-op without plugins/*.jar); wraps handlers, hooks the tick
     on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
     start_game();  // tick thread (game/tick.hpp)
     int port = std::stoi(props["server-port"]);
