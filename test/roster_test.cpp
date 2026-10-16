@@ -1,7 +1,5 @@
 // Roster data / trading / breeding self-checks against vanilla constants. Run from the repo root.
 #include "play.hpp"
-#include "mobs/breeding.hpp"
-#include "mobs/trading.hpp"
 
 #include <cassert>
 #include <cstdio>

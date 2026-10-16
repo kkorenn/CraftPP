@@ -183,9 +183,20 @@ struct SlotRef {
     SlotKind kind = S_INV;
     int inv = -1;  // inventory index for S_INV/S_ARMOR
 };
-inline int menu_size(const Player& p) { return p.g.container ? 46 : 46; }
+// MerchantMenu (p.g.merchant_eid >= 0): 0-1 payment (S_GRID), 2 result, 3-29 main, 30-38 hotbar.
+inline bool in_merchant(const Player& p) { return p.g.merchant_eid >= 0; }
+inline void merchant_update_sell(Player& p);            // mobs/merchant_menu.hpp
+inline void merchant_take(Player& p);                   // mobs/merchant_menu.hpp
+inline ItemStack merchant_quick_move(Player& p, int i);  // mobs/merchant_menu.hpp
+inline void merchant_closed(Player& p);                 // mobs/merchant_menu.hpp
+inline int menu_size(const Player& p) { return in_merchant(p) ? 39 : 46; }
 inline SlotRef menu_slot(Player& p, int i) {
     auto inv = [&](int k, SlotKind kind = S_INV) { return SlotRef{&p.inv[size_t(k)], kind, k}; };
+    if (in_merchant(p)) {
+        if (i < 2) return {&p.g.pay[size_t(i)], S_GRID};
+        if (i == 2) return {&p.g.result, S_RESULT};
+        return i < 30 ? inv(i + 6) : inv(i - 30);
+    }
     if (i == 0) return {&p.g.result, S_RESULT};
     if (p.g.container == 0) {
         if (i <= 4) return {&p.g.craft2[size_t(i - 1)], S_GRID};
@@ -211,12 +222,14 @@ inline int slot_max(const SlotRef& r, const ItemStack& s) {
 }
 
 inline void update_result(Player& p) {
+    if (in_merchant(p)) return merchant_update_sell(p);
     const Recipe* r = find_recipe(grid(p), grid_width(p));
     p.g.result = r ? r->result : ItemStack{};
 }
 
 // ResultSlot.onTake: consume one of each grid item, leaving crafting remainders (buckets, bottles).
 inline void take_result(Player& p) {
+    if (in_merchant(p)) return merchant_take(p);
     ItemStack* g = grid(p);
     int n = grid_width(p) * grid_width(p);
     for (int i = 0; i < n; i++) {
@@ -289,6 +302,7 @@ inline bool move_to(Player& p, ItemStack& s, int a, int b, bool backwards) {
 
 // InventoryMenu / CraftingMenu.quickMoveStack. Returns the stack before moving (empty = nothing moved).
 inline ItemStack quick_move(Player& p, int i) {
+    if (in_merchant(p)) return merchant_quick_move(p, i);
     SlotRef r = menu_slot(p, i);
     if (r.s->empty()) return {};
     ItemStack stack = *r.s, clicked = stack;
@@ -453,7 +467,7 @@ inline void do_click(Player& p, int slot, int button, int type) {
         if (r.kind == S_GRID) update_result(p);
         return;
     }
-    if (type == 6 && valid && !carried.empty()) {
+    if (type == 6 && valid && !carried.empty() && !in_merchant(p)) {  // MerchantMenu: no pick-all
         SlotRef r0 = menu_slot(p, slot);
         if (!r0.s->empty()) return;
         int start = button == 0 ? 0 : n - 1, step = button == 0 ? 1 : -1;
@@ -512,7 +526,8 @@ inline void return_grid(Player& p) {
         if (inventory_add(p, s), s.count > 0) player_drop(p, s, false);
         s = {};
     };
-    if (p.g.container) for (auto& s : p.g.craft3) give_back(s);
+    if (in_merchant(p)) merchant_closed(p);
+    else if (p.g.container) for (auto& s : p.g.craft3) give_back(s);
     else for (auto& s : p.g.craft2) give_back(s);
     give_back(p.g.carried);
     update_result(p);

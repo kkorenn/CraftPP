@@ -333,7 +333,7 @@ inline void vitals_tick(Player& p) {
     if (p.y < MIN_Y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
-    if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
+    if (g.container && g.merchant_eid < 0) {  // CraftingMenu.stillValid (merchant: mobs/merchant_menu.hpp): table still there and within 8 blocks
         double dx = p.x - (g.table_x + 0.5), dy = p.y - (g.table_y + 0.5), dz = p.z - (g.table_z + 0.5);
         if (block_index(world.get_block(g.table_x, g.table_y, g.table_z)) != block_index(blocks::crafting_table) ||
             dx * dx + dy * dy + dz * dz > 64)

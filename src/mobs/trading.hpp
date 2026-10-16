@@ -250,9 +250,24 @@ struct MerchantState {
     MerchantOffers offers;
     GossipContainer gossips;
     int profession = -1, villager_type = 0, level = 1, xp = 0;
-    int restocks_today = 0;
+    int restocks_today = 0, trading_player = -1;  // trading player's entity id
+    bool traded = false;                          // lastTradedPlayer set (consumed by ai_step)
+    int64_t last_traded_uh = 0, last_traded_ul = 0;
     int64_t last_restock_time = 0, last_restock_check_day = 0, last_gossip_time = 0, last_gossip_decay = 0;
 
+    // Villager.customServerAiStep trade bookkeeping: ReputationEventType.TRADE gossip. Returns true when the
+    // villager should broadcast entity_event 14 (happy particles).
+    bool ai_step() {
+        if (!traded) return false;
+        gossips.add(last_traded_uh, last_traded_ul, GossipType::trading, 2);
+        traded = false;
+        return true;
+    }
+    // Villager.maybeDecayGossip.
+    void maybe_decay_gossip(int64_t game_time) {
+        if (last_gossip_decay == 0) last_gossip_decay = game_time;
+        else if (game_time >= last_gossip_decay + 24000) gossips.decay(), last_gossip_decay = game_time;
+    }
     // Villager.updateTrades: adds the trade set for the current level.
     void update_trades() {
         if (profession >= 0 && level >= 1 && level <= 5)

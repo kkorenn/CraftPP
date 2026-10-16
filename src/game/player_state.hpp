@@ -107,6 +107,9 @@ struct PlayerGame {
     std::array<ItemStack, 9> craft3;  // crafting table 3x3 grid
     int container = 0, next_container = 0, state_id = 0;
     int table_x = 0, table_y = 0, table_z = 0;
+    // merchant menu (mobs/merchant_menu.hpp): trader entity id (-1 = not trading), MerchantContainer state
+    int merchant_eid = -1, merchant_active = -1, merchant_hint = 0;
+    std::array<ItemStack, 2> pay;
     int qc_status = 0, qc_type = 0;  // quick craft (drag)
     uint64_t qc_slots = 0;
     std::array<ItemStack, MENU_SLOTS> remote{};  // what the client shows for the open menu
