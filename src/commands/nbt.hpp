@@ -44,7 +44,7 @@ struct Nbt {
 };
 
 // ---- network (unnamed root) ----
-inline void nbt_str(Writer& w, const std::string& s) {
+inline void nbt_string(Writer& w, const std::string& s) {
     // ponytail: plain UTF-8, not modified UTF-8 (differs only for NUL and 4-byte chars).
     w.u8(uint8_t(s.size() >> 8)).u8(uint8_t(s.size()));
     w.bytes(s.data(), s.size());
@@ -57,13 +57,13 @@ inline void nbt_payload(Writer& w, const Nbt& n) {
         case Nbt::Long: w.i64(n.i); break;
         case Nbt::Float: w.f32(float(n.d)); break;
         case Nbt::Double: w.f64(n.d); break;
-        case Nbt::String: nbt_str(w, n.s); break;
+        case Nbt::String: nbt_string(w, n.s); break;
         case Nbt::List:
             w.u8(n.list.empty() ? 0 : n.list[0].t).i32(int32_t(n.list.size()));
             for (auto& e : n.list) nbt_payload(w, e);
             break;
         case Nbt::Compound:
-            for (auto& [k, v] : n.comp) { w.u8(v.t); nbt_str(w, k); nbt_payload(w, v); }
+            for (auto& [k, v] : n.comp) { w.u8(v.t); nbt_string(w, k); nbt_payload(w, v); }
             w.u8(0);
             break;
         case Nbt::ByteArray: w.i32(int32_t(n.arr.size())); for (auto v : n.arr) w.u8(uint8_t(v)); break;
