@@ -62,6 +62,23 @@ inline std::vector<std::string> custom_suggestions(const Segment& seg, int node,
     } else if (cmd == "tick") {
         out = {name == "rate" ? "20" : "1t"};
     }
+    if (!out.empty()) return out;
+    // Argument types the client completes locally; the console (Paper's server-side Brigadier) needs them here.
+    switch (n.parser) {
+        case arg_types::entity: case arg_types::game_profile:
+            online();
+            if (n.parser == arg_types::entity) for (const char* sel : {"@a", "@e", "@n", "@p", "@r", "@s"}) out.push_back(sel);
+            break;
+        case arg_types::gamemode: out = {"survival", "creative", "adventure", "spectator"}; break;
+        case arg_types::bool_: out = {"true", "false"}; break;
+        case arg_types::dimension: out = {"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}; break;
+        case arg_types::item_stack: case arg_types::item_predicate: case arg_types::block_state: case arg_types::block_predicate:
+            for (size_t i = 0; i < std::size(gen::ITEM_NAMES); i++)
+                if ((n.parser != arg_types::block_state && n.parser != arg_types::block_predicate) || (i < std::size(ITEM_TO_BLOCK) && ITEM_TO_BLOCK[i] >= 0))
+                    out.push_back(std::string("minecraft:") + gen::ITEM_NAMES[i]);
+            break;
+        default: break;
+    }
     return out;
 }
 
@@ -73,8 +90,7 @@ inline void register_command_handlers() {
         int mode = in.varint();
         if (mode < 0 || mode > 3) return;
         if (perm_level(p) < 2) {
-            printf("Player %s tried to change game mode to %s without required permissions\n", p.name.c_str(), names[mode]);
-            fflush(stdout);
+            log_warn("Player %s tried to change game mode to %s without required permissions", p.name.c_str(), names[mode]);
             return;
         }
         if (auto pp = find_player(p.name)) perform(source_for(pp), std::string("gamemode ") + names[mode]);
