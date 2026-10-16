@@ -22,6 +22,9 @@ ap.add_argument("--vanilla-datapack", help="datapack dir copied into the vanilla
 ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
 ap.add_argument("--no-structures", action="store_true", help="generate-structures=false without a datapack")
 ap.add_argument("--port", type=int, default=25611)
+ap.add_argument("--vanilla-cache", help="pickle of the vanilla run: loaded if it exists, else written (iterate on craftpp only)")
+ap.add_argument("--dump", help="pickle (A, B) chunk data for offline analysis")
+ap.add_argument("--center", nargs=2, type=int, help="block x z to compare around instead of the world spawn")
 ap.add_argument("--run-dir", default=RUN, help="vanilla server directory (one per parallel compare run)")
 ap.add_argument("--examples", type=int, default=10)
 ap.add_argument("--timeout", type=float, default=300)
@@ -37,7 +40,7 @@ def wait_log(path, needle, proc, timeout):
         time.sleep(0.5)
     raise TimeoutError(f"no {needle!r} in {path}")
 
-def collect(port, center):
+def collect(port, center, tp=None):
     """Join, walk to center (block pos; None = stay at spawn) and gather the chunk square around it."""
     c, _ = login("Cmp", "127.0.0.1", port, view=view, decode=True)
     c.s.settimeout(args.timeout)
@@ -45,7 +48,8 @@ def collect(port, center):
     center = center or c.spawn
     ccx, ccz = center[0] >> 4, center[2] >> 4
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
-    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
+    if tp and args.center: tp(center)  # vanilla rejects long moves ("moved too quickly"): teleport from the console
+    else: c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
     c.s.close()
     return {k: c.chunks[k] for k in need}, c.biomes, center
@@ -58,14 +62,16 @@ def run_vanilla(n, center):
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures="false" if args.vanilla_datapack or args.no_structures else "true", sync_chunk_writes="false")
+                 generate_structures="false" if (args.vanilla_datapack and not os.path.basename(os.path.normpath(args.vanilla_datapack)).startswith("structures")) or args.no_structures else "true", sync_chunk_writes="false")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
     p = subprocess.Popen([JAVA, "-Xmx2G", "-jar", f"{ROOT}/vanilla/server.jar", "nogui"], cwd=RUN,
                          stdin=subprocess.PIPE, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     try:
         wait_log(log, "Done (", p, 600)
-        return collect(args.port, center)
+        def tp(pos):
+            p.stdin.write(f"tp Cmp {pos[0]} {pos[1]} {pos[2]}\n".encode()); p.stdin.flush()
+        return collect(args.port, center, tp)
     finally:
         p.stdin.write(b"stop\n"); p.stdin.flush()
         try: p.wait(120)
@@ -73,7 +79,7 @@ def run_vanilla(n, center):
 
 def run_craftpp(center):
     pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
-    stage = next((s for s in ("noise", "surface", "carvers") if pack.startswith(s)), "features")
+    stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s)), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
@@ -101,10 +107,16 @@ CLASS = {i: 0 if n.split("[")[0] in AIR else 1 if n.split("[")[0] in FLUID else 
 CLASS_NAME = ["air", "fluid", "solid"]
 
 print(f"vanilla run (seed {args.seed}, radius {args.radius}, view {view}) ...", flush=True)
-A, bioA, center = run_vanilla(1, None)
+import pickle
+if args.vanilla_cache and os.path.exists(args.vanilla_cache):
+    A, bioA, center = pickle.load(open(args.vanilla_cache, "rb"))
+else:
+    A, bioA, center = run_vanilla(1, (args.center[0], 120, args.center[1]) if args.center else None)
+    if args.vanilla_cache: pickle.dump((A, bioA, center), open(args.vanilla_cache, "wb"))
 print(f"spawn {center}, chunk {center[0] >> 4},{center[2] >> 4}; {args.against} run ...", flush=True)
 B, bioB, _ = run_vanilla(2, center) if args.against == "vanilla" else run_craftpp(center)
 
+if args.dump: pickle.dump((A, B, center), open(args.dump, "wb"))
 per_section, per_chunk, examples, block_pairs = collections.Counter(), collections.Counter(), [], collections.Counter()
 bio_pairs, bio_examples, total = collections.Counter(), [], 0
 for (cx, cz) in sorted(A):
