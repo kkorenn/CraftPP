@@ -1,6 +1,6 @@
 #pragma once
 #include "gen/ids.hpp"
-#include "protocol.hpp"
+#include "net.hpp"
 
 #include <algorithm>
 #include <array>
@@ -137,7 +137,7 @@ struct Chunk {
     std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
     bool on_disk = false;
-    std::shared_ptr<const std::vector<uint8_t>> body;  // cached encoding (write_chunk_body), reset by set() + autosave
+    std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
 
     uint16_t get(int x, int y, int z) const {
         return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
@@ -165,19 +165,12 @@ inline const std::array<uint8_t, BLOCK_STATE_COUNT>& state_flags() {
     return flags;
 }
 
-// VarInt padded to exactly 3 bytes (valid for the vanilla reader, max 2 MiB), so a length can be patched in
-// after the payload is written in place instead of copying the payload.
-inline void patch_varint3(std::vector<uint8_t>& b, size_t at, size_t v) {
-    b[at] = uint8_t(v & 0x7F) | 0x80, b[at + 1] = uint8_t((v >> 7) & 0x7F) | 0x80, b[at + 2] = uint8_t(v >> 14);
-}
-
-// level_chunk_with_light up to (not including) the light data, framed: 3-byte length placeholder + packet id.
-// Caller holds c.m. The light part is the same for every chunk (chunk_light_tail), so it isn't cached per chunk.
-inline std::vector<uint8_t> write_chunk_body(const Chunk& c, int packet_id) {
+// level_chunk_with_light (packet id + body + light), after `reserve` bytes left free at the front. Caller holds c.m.
+inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve) {
     Writer w;
-    w.b.reserve(8192);
-    w.b.resize(3);
-    w.varint(packet_id).i32(c.cx).i32(c.cz);
+    w.b.reserve(80 << 10);
+    w.b.resize(reserve);
+    w.varint(play_cb::level_chunk_with_light).i32(c.cx).i32(c.cz);
 
     // Heightmaps WORLD_SURFACE(1), MOTION_BLOCKING(4), MOTION_BLOCKING_NO_LEAVES(5): 9 bits, 7 per long.
     // ponytail: all three = highest non-air block; split once leaves/fluids/glass matter.
@@ -198,6 +191,7 @@ inline std::vector<uint8_t> write_chunk_body(const Chunk& c, int packet_id) {
         for (uint64_t l : hm) w.i64(int64_t(l));
     }
 
+    // Section data, written in place behind a 3-byte padded VarInt length (valid for the vanilla reader).
     size_t len_at = w.b.size();
     w.b.resize(len_at + 3);
     for (auto& s : c.sections) {
@@ -218,49 +212,48 @@ inline std::vector<uint8_t> write_chunk_body(const Chunk& c, int packet_id) {
         s.blocks.write(w);
         s.biomes.write(w);
     }
-    patch_varint3(w.b, len_at, w.b.size() - len_at - 3);
+    size_t n = w.b.size() - len_at - 3;
+    w.b[len_at] = uint8_t(n & 0x7F) | 0x80, w.b[len_at + 1] = uint8_t((n >> 7) & 0x7F) | 0x80, w.b[len_at + 2] = uint8_t(n >> 14);
     w.varint(0);  // block entities
+
+    // Light: full sky light everywhere, no block light. 26 sections (one below + one above).
+    // ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
+    w.varint(4).u8(0xFF).u8(0xFF).u8(0xFF).u8(0x03);  // sky mask (BitSet as LE bytes)
+    w.varint(0);                                       // block mask
+    w.varint(0);                                       // empty sky mask
+    w.varint(0);                                       // empty block mask
+    w.varint(SECTIONS + 2);
+    for (int i = 0; i < SECTIONS + 2; i++) {
+        w.varint(2048);
+        w.b.insert(w.b.end(), 2048, 0xFF);
+    }
+    w.varint(0);
     return std::move(w.b);
 }
 
-// Light: full sky light everywhere, no block light. 26 sections (one below + one above).
-// ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
-inline const std::vector<uint8_t>& chunk_light_tail() {
-    static const std::vector<uint8_t> tail = [] {
-        Writer w;
-        w.varint(4).u8(0xFF).u8(0xFF).u8(0xFF).u8(0x03);  // sky mask (BitSet as LE bytes)
-        w.varint(0);                                       // block mask
-        w.varint(0);                                       // empty sky mask
-        w.varint(0);                                       // empty block mask
-        std::vector<uint8_t> full(2048, 0xFF);
-        w.varint(SECTIONS + 2);
-        for (int i = 0; i < SECTIONS + 2; i++) w.byte_array(full);
-        w.varint(0);
-        return std::move(w.b);
-    }();
-    return tail;
-}
-
-// Cached encoding of the packet up to the light data, framed: send it, then chunk_light_tail().
-inline std::shared_ptr<const std::vector<uint8_t>> chunk_body(Chunk& c, int packet_id) {
+// The chunk's packet as a ready frame for the current network settings (net.hpp), cached in the chunk until
+// it changes. Compressed (~3 KB) frames stay cached; uncompressed ones (~75 KB) are dropped at autosave.
+inline std::shared_ptr<const std::vector<uint8_t>> chunk_frame(Chunk& c) {
     std::lock_guard lock(c.m);
-    if (!c.body) {
-        auto b = write_chunk_body(c, packet_id);
-        patch_varint3(b, 0, b.size() - 3 + chunk_light_tail().size());
-        c.body = std::make_shared<const std::vector<uint8_t>>(std::move(b));
+    if (c.body) return c.body;
+    std::vector<uint8_t> f;
+    if (compression_threshold >= 0) {
+        auto pk = chunk_packet(c, 0);
+        frame_packet(f, pk.data(), pk.size(), true);
+        f.shrink_to_fit();
+    } else {
+        f = chunk_packet(c, 3);  // frame length in place: no copy of the packet
+        size_t n = f.size() - 3;
+        f[0] = uint8_t(n & 0x7F) | 0x80, f[1] = uint8_t((n >> 7) & 0x7F) | 0x80, f[2] = uint8_t(n >> 14);
     }
-    return c.body;
+    return c.body = std::make_shared<const std::vector<uint8_t>>(std::move(f));
 }
 
 // Body of clientbound level_chunk_with_light (without packet id).
 inline void write_chunk(Writer& w, Chunk& c) {
-    std::vector<uint8_t> b;
-    {
-        std::lock_guard lock(c.m);
-        b = write_chunk_body(c, 0);
-    }
-    w.bytes(b.data() + 4, b.size() - 4);  // drop length placeholder + packet id 0
-    w.bytes(chunk_light_tail());
+    std::lock_guard lock(c.m);
+    auto pk = chunk_packet(c, 0);
+    w.bytes(pk.data() + 1, pk.size() - 1);  // packet id is one byte
 }
 
 // Worker pool for chunk load/generate/encode, one thread per core of the CPU quota (cgroup cpu.max) or core
@@ -444,8 +437,8 @@ struct World {
         {
             std::lock_guard lock(m);
             for (auto& [k, c] : chunks) {
-                {
-                    std::lock_guard cl(c->m);  // encodings are for the sends right after generation; ~20 KB each
+                if (compression_threshold < 0) {
+                    std::lock_guard cl(c->m);  // uncompressed frames are ~75 KB: only for the sends right after generation
                     c->body.reset();
                 }
                 if (c->dirty) dirty.push_back(c);
@@ -531,7 +524,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
-        if (encode) chunk_body(*c, play_cb::level_chunk_with_light);
+        if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
             chunks[{cx, cz}] = c;

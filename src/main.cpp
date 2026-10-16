@@ -79,6 +79,7 @@ static void handle(int fd) {
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
         if (find_player(name)) return disconnect_login(fd, "You are already logged in");
         if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!");
+        start_compression(fd, login_cb::login_compression);  // net.hpp, network-compression-threshold
         send_packet(fd, Writer()
                             .varint(login_cb::login_finished)
                             .i64(uuid_hi).i64(uuid_lo).str(name).varint(0)  // profile, no properties
@@ -92,7 +93,8 @@ static void handle(int fd) {
                             .varint(config_cb::select_known_packs)
                             .varint(1).str("minecraft").str("core").str(GAME_VERSION));
         wait_for(fd, pkt, config_sb::select_known_packs);
-        send_raw(fd, config_packets.data(), config_packets.size());
+        auto cfg = reframe(config_packets, conn_compressed);
+        send_raw(fd, cfg.data(), cfg.size());
         send_packet(fd, Writer().varint(config_cb::finish_configuration));
         wait_for(fd, pkt, config_sb::finish_configuration);
 
