@@ -80,6 +80,7 @@ struct ProtoChunk {
   std::array<std::array<int16_t, 256>, 6> heightmaps{};
   bool taken = false;  // handed to the World
   std::atomic<int16_t> carver_biome{-1};  // ChunkAccess.carverBiome cache (biome id), -1 = not computed
+  std::vector<int32_t> post_processing;   // markPosForPostProcessing: (y - MIN_Y) << 8 | z << 4 | x
   std::shared_ptr<void> structure_data, light_data;  // owned by the structures / lighting steps
 
   ProtoChunk(int cx, int cz, Pipeline* owner) : cx(cx), cz(cz), owner(owner) {}
