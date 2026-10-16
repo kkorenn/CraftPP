@@ -293,7 +293,7 @@ inline void destroy_block_progress(const Player& p, int x, int y, int z, int sta
 
 namespace lvl {
 inline bool player_destroy(Player& p, int x, int y, int z, int state);  // level/glue.hpp: playerWillDestroy + removeBlock
-inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
+inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
 inline bool use_bucket(Player& pl, ItemStack& slot);
 }
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
@@ -560,7 +560,7 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
         return 1;
     }
     if (p.gamemode == 2) return 0;  // !mayBuild; ponytail: can_place_on (adventure predicates) not supported
-    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz) ? 1 : 0;  // block use, item useOn, BlockItem.place
+    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);  // block use, item useOn, BlockItem.place
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
