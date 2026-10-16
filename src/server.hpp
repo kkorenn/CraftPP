@@ -6,7 +6,8 @@
 #include "world.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
-#include "worldgen/terrain.hpp"
+#include "worldgen/overworld.hpp"
+#include "worldgen/structure/hooks.hpp"
 
 #include <array>
 #include <atomic>
@@ -21,6 +22,8 @@
 #include <random>
 #include <thread>
 
+#include <unistd.h>
+
 // Filled from server.properties by load_properties (paper.hpp), which also supplies vanilla's defaults.
 inline std::map<std::string, std::string> props = {
     {"motd", "A Minecraft Server"},
@@ -31,14 +34,21 @@ inline std::map<std::string, std::string> props = {
     {"level-name", "world"},
     {"level-seed", ""},
     {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
-    {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
+    {"worldgen-stages", "features"},  // noise | surface | carvers | structures | features (debug: stop after a vanilla stage)
+    {"generate-structures", "true"},
 };
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
 inline World world;
 inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
+inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
+    shutdown_requested = 1;
+    if (shutdown_pipe[1] >= 0) (void)!write(shutdown_pipe[1], "x", 1);
+}
 inline bool flat_world = false;
+inline std::shared_ptr<structure::StructureWorld> structure_world;  // null: structures off (flat, generate-structures=false)
 struct SpawnPos { int x, y, z; };
 inline SpawnPos world_spawn{0, -60, 0};  // LevelData respawn position (flat: the old fixed spawn)
 
@@ -77,11 +87,9 @@ struct Player {
     std::string quit_reason;   // logged as "<name> lost connection: <reason>" (empty = "Disconnected")
 
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
-    void send(const Writer& body) {
-        thread_local std::vector<uint8_t> f;
-        f.clear();
-        frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);  // net.hpp
-        out.push_framed(f);
+    void send(const Writer& body) {  // framed straight into the outbox (net.hpp)
+        std::lock_guard lock(out.m);
+        if (!out.closed) frame_packet(out.buf, body.b.data(), body.b.size(), compression_threshold >= 0);
     }
     void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
@@ -201,8 +209,16 @@ inline void setup_world() {
     flat_world = type == "flat";
     if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
-    auto gen = std::make_shared<worldgen::TerrainGenerator>(seed, "vanilla/src/data", props["worldgen-stages"] != "noise");
-    world.generator = [gen](Chunk& c) { gen->generate(c); };
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "vanilla/src/data", props["worldgen-datapack"]);
+    const std::string& stages = props["worldgen-stages"];
+    if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
+    {
+        structure_world = std::make_shared<structure::StructureWorld>(*ow, true);
+        world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
+    }
+    auto gen = ow->terrain;
+    world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -229,9 +245,12 @@ inline PlayerPtr find_player(const std::string& name) {
 }
 
 inline void broadcast(const Writer& body, const Player* except = nullptr) {
-    std::lock_guard lock(players_mtx);  // no copy: send() only appends to the player's outbox
+    thread_local std::vector<uint8_t> f;  // framed (and compressed) once for everyone
+    f.clear();
+    frame_packet(f, body.b.data(), body.b.size(), compression_threshold >= 0);
+    std::lock_guard lock(players_mtx);  // no copy: push_framed only appends to the player's outbox
     for (auto& p : players)
-        if (p.get() != except) p->send(body);
+        if (p.get() != except) p->out.push_framed(f);
 }
 
 inline void broadcast_message(const std::string& text, const std::string& color = "") {
@@ -330,7 +349,10 @@ inline int menu_to_inv(int slot) {
 
 inline int view_distance() { return std::stoi(props["view-distance"]); }
 
-inline void push_chunk(Player& p, Chunk& c) { p.out.push_framed(*chunk_frame(c)); }
+inline void push_chunk(Player& p, Chunk& c) {
+    light::ensure_lit(world, c);  // 3x3 lit: the light in the frame is final
+    p.out.push_framed(*chunk_frame(c));
+}
 inline void send_chunk(Player& p, int cx, int cz) { push_chunk(p, *world.get_ptr(cx, cz)); }
 
 // Tick thread (on_player_sync): send queued chunks whose generation finished, nearest first, a bounded batch per tick.
@@ -358,6 +380,24 @@ inline void deliver_chunks(Player& p) {
     }
     q.resize(keep);
     if (sent) p.send(Writer().varint(play_cb::chunk_batch_finished).varint(sent));
+}
+
+// Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
+// (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
+inline void broadcast_light() {
+    auto changes = light::take_changes();
+    if (changes.empty()) return;
+    int v = view_distance();
+    auto ps = snapshot();
+    for (auto& ch : changes) {
+        Writer w;
+        for (auto& p : ps) {
+            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
+            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
+            p->send(w);
+        }
+    }
 }
 
 // Send chunks entering the view square, forget ones leaving it. Chunks are generated on the worker pool and

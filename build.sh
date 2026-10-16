@@ -48,6 +48,7 @@ if [ "$1" = "test" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\[build/test-world\]' $LOG || fail "login line"
@@ -84,6 +85,7 @@ if [ "$1" = "test" ]; then
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
-  python3 -u test/plugin_test.py 25597  # Bukkit plugins; prints SKIP without a Java 25+ JDK
+  PLUGIN_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")
+  python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"
 fi

@@ -1,6 +1,7 @@
 #pragma once
 #include "gen/ids.hpp"
 #include "net.hpp"
+#include "light/light.hpp"
 
 #include <algorithm>
 #include <array>
@@ -131,13 +132,25 @@ struct Section {
     Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
+// Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
+// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+struct BlockEntity {
+    uint8_t x, z;
+    int16_t y;
+    int type;
+    std::vector<uint8_t> nbt{0x0a, 0x00};
+};
+
 struct Chunk {
     int cx, cz;
     std::array<Section, SECTIONS> sections;
+    std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
     bool dirty = false;  // modified since last save
     bool on_disk = false;
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
+    uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     uint16_t get(int x, int y, int z) const {
         return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
@@ -145,6 +158,8 @@ struct Chunk {
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
+        if (!block_entities.empty())
+            std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
     void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes.set(((qy & 3) * 4 + qz) * 4 + qx, b); }
@@ -168,8 +183,9 @@ inline const std::array<uint8_t, BLOCK_STATE_COUNT>& state_flags() {
     return flags;
 }
 
-// level_chunk_with_light (packet id + body + light), after `reserve` bytes left free at the front. Caller holds c.m.
-inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve) {
+// level_chunk_with_light (packet id + body + light), after `reserve` bytes left free at the front. Caller holds c.m;
+// `light` is the light tail from light::write (taken before c.m: lock order is light, then chunk).
+inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const Writer& light) {
     Writer w;
     w.b.reserve(80 << 10);
     w.b.resize(reserve);
@@ -217,35 +233,35 @@ inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve) {
     }
     size_t n = w.b.size() - len_at - 3;
     w.b[len_at] = uint8_t(n & 0x7F) | 0x80, w.b[len_at + 1] = uint8_t((n >> 7) & 0x7F) | 0x80, w.b[len_at + 2] = uint8_t(n >> 14);
-    w.varint(0);  // block entities
-
-    // Light: full sky light everywhere, no block light. 26 sections (one below + one above).
-    // ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
-    w.varint(4).u8(0xFF).u8(0xFF).u8(0xFF).u8(0x03);  // sky mask (BitSet as LE bytes)
-    w.varint(0);                                       // block mask
-    w.varint(0);                                       // empty sky mask
-    w.varint(0);                                       // empty block mask
-    w.varint(SECTIONS + 2);
-    for (int i = 0; i < SECTIONS + 2; i++) {
-        w.varint(2048);
-        w.b.insert(w.b.end(), 2048, 0xFF);
+    w.varint(int32_t(c.block_entities.size()));
+    for (auto& e : c.block_entities) {
+        w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
+        w.bytes(e.nbt.data(), e.nbt.size());
     }
-    w.varint(0);
+    w.bytes(light.b);
     return std::move(w.b);
 }
 
 // The chunk's packet as a ready frame for the current network settings (net.hpp), cached in the chunk until
 // it changes. Compressed (~3 KB) frames stay cached; uncompressed ones (~75 KB) are dropped at autosave.
 inline std::shared_ptr<const std::vector<uint8_t>> chunk_frame(Chunk& c) {
-    std::lock_guard lock(c.m);
+    Writer light;
+    std::unique_lock lock(c.m);
+    while (!c.body) {  // light first (its lock comes before c.m); retry if it changed meanwhile
+        lock.unlock();
+        light.b.clear();
+        uint32_t v = light::write(light, c);
+        lock.lock();
+        if (v == c.light_version) break;
+    }
     if (c.body) return c.body;
     std::vector<uint8_t> f;
     if (compression_threshold >= 0) {
-        auto pk = chunk_packet(c, 0);
+        auto pk = chunk_packet(c, 0, light);
         frame_packet(f, pk.data(), pk.size(), true);
         f.shrink_to_fit();
     } else {
-        f = chunk_packet(c, 3);  // frame length in place: no copy of the packet
+        f = chunk_packet(c, 3, light);  // frame length in place: no copy of the packet
         size_t n = f.size() - 3;
         f[0] = uint8_t(n & 0x7F) | 0x80, f[1] = uint8_t((n >> 7) & 0x7F) | 0x80, f[2] = uint8_t(n >> 14);
     }
@@ -254,8 +270,10 @@ inline std::shared_ptr<const std::vector<uint8_t>> chunk_frame(Chunk& c) {
 
 // Body of clientbound level_chunk_with_light (without packet id).
 inline void write_chunk(Writer& w, Chunk& c) {
+    Writer light;
+    light::write(light, c);
     std::lock_guard lock(c.m);
-    auto pk = chunk_packet(c, 0);
+    auto pk = chunk_packet(c, 0, light);
     w.bytes(pk.data() + 1, pk.size() - 1);  // packet id is one byte
 }
 
@@ -324,7 +342,9 @@ inline std::map<std::string, std::string> read_level_data() {
 }
 inline void write_level_data(const std::map<std::string, std::string>& changes) {
     auto kv = read_level_data();
+    auto old = kv;
     for (auto& [k, v] : changes) kv[k] = v;
+    if (kv == old && std::filesystem::exists(level_data_path())) return;  // unchanged: spare the SD card
     std::filesystem::create_directories(world_dir);
     std::string path = level_data_path();
     {
@@ -338,6 +358,10 @@ inline std::string chunk_path(int cx, int cz) {
     return world_dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
 }
 inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
+
+// Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
+inline std::function<void(const Chunk&, Writer&)> chunk_save_extra;
+inline std::function<void(Chunk&, Reader&)> chunk_load_extra;
 
 inline bool load_chunk(Chunk& c) {
     std::ifstream f(chunk_path(c.cx, c.cz), std::ios::binary);
@@ -359,6 +383,21 @@ inline bool load_chunk(Chunk& c) {
     if (uncompress(out.data(), &n, z.data(), uLong(z.size())) != Z_OK || n != raw) return false;
     Reader r(out);
     for (auto& s : c.sections) s.blocks.read(r), s.biomes.read(r);
+    if (r.i < out.size())  // block entities: count, then x z y type nbt-length nbt
+        for (int n = r.varint(); n > 0; n--) {
+            BlockEntity e;
+            e.x = r.u8(), e.z = r.u8(), e.y = int16_t(r.varint()), e.type = r.varint();
+            int len = r.varint();
+            e.nbt.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + size_t(len)));
+            r.i += size_t(len);
+            c.block_entities.push_back(std::move(e));
+        }
+    if (r.i < out.size()) {  // light (light::save)
+        size_t len = size_t(r.varint());
+        if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
+        r.i += len;
+    }
+    if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
     return c.on_disk = true;
 }
 
@@ -366,10 +405,17 @@ inline void save_chunk(Chunk& c) {
     std::filesystem::create_directories(world_dir + "/chunks");
     std::string path = chunk_path(c.cx, c.cz), tmp = path + ".tmp";
     Writer w;
+    uint32_t light_version;
+    std::vector<uint8_t> light = light::save(c, light_version);  // before c.m: lock order is light, then chunk
     {
         std::lock_guard lock(c.m);
         for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
-        c.dirty = false;
+        w.varint(int32_t(c.block_entities.size()));
+        for (auto& e : c.block_entities)
+            w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
+        w.varint(int32_t(light.size())).bytes(light);
+        if (chunk_save_extra) chunk_save_extra(c, w);
+        c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
     uLongf n = uLongf(z.size());
@@ -413,6 +459,10 @@ struct World {
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
     ChunkPtr get_ptr(int cx, int cz) {
+        {
+            std::lock_guard lock(m);  // fast path (every get_block/set_block): no promise/future allocation
+            if (auto it = chunks.find({cx, cz}); it != chunks.end()) return it->second;
+        }
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
         if (job) produce(cx, cz, *job, false);
@@ -439,13 +489,20 @@ struct World {
     bool set_block(int x, int y, int z, uint16_t state) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
-        std::lock_guard lock(c->m);
-        c->set(x & 15, y, z & 15, state);
-        c->dirty = true;
+        std::lock_guard light_lock(light::mutex());  // the light engine reads chunks under this lock
+        uint16_t old;
+        {
+            std::lock_guard lock(c->m);
+            old = c->get(x & 15, y, z & 15);
+            c->set(x & 15, y, z & 15, state);
+            c->dirty = true;
+        }
+        light::block_changed(x, y, z, old, state);
         return true;
     }
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
+    std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
     int save_dirty() {
         std::vector<ChunkPtr> dirty, idle;
         {
@@ -461,6 +518,7 @@ struct World {
         }
         int saved = int(dirty.size());
         for (auto& c : dirty) save_chunk(*c);
+        if (on_saved) on_saved();
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(*c);
         std::lock_guard lock(m);
@@ -543,10 +601,12 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
     try {
         auto c = std::make_shared<Chunk>();
         c->cx = cx, c->cz = cz;
-        if (!load_chunk(*c)) {
+        bool loaded = load_chunk(*c);
+        if (!loaded) {
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
+        light::produced(*this, *c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);

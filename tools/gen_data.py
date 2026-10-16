@@ -156,7 +156,8 @@ for reg, ns in [("minecraft:worldgen/biome", "biomes"), ("minecraft:dimension_ty
         h.append(f"inline constexpr int {ident(e)} = {i};")
     h.append(f"inline constexpr int COUNT = {len(id_maps[reg])};")
     h.append("}")
-for reg, ns in [("minecraft:entity_type", "entity_types"), ("minecraft:command_argument_type", "arg_types")]:
+for reg, ns in [("minecraft:entity_type", "entity_types"), ("minecraft:command_argument_type", "arg_types"),
+                ("minecraft:block_entity_type", "block_entity_types")]:
     h.append(f"namespace {ns} {{")
     for e, i in id_maps[reg].items():
         h.append(f"inline constexpr int {ident(e)} = {i};")
