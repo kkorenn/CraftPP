@@ -188,6 +188,8 @@ for name in item_names:
     if tool:
         it["tool"] = {"ds": tool.get("default_mining_speed", 1.0), "dpb": tool.get("damage_per_block", 1),
                       "r": [[block_set(r["blocks"]), r.get("speed"), r.get("correct_for_drops")] for r in tool["rules"]]}
+        if not tool.get("can_destroy_blocks_in_creative", True):
+            it["tool"]["nc"] = 1
     food = c.get("minecraft:food")
     if food:
         it["food"] = [food["nutrition"], food["saturation"], bool(food.get("can_always_eat", False))]
@@ -200,7 +202,16 @@ for name in item_names:
     if name in craft_rem:
         it["cr"] = item_ids[craft_rem[name]]
     if "minecraft:equippable" in c:
-        it["eq"] = c["minecraft:equippable"]["slot"]
+        eq = c["minecraft:equippable"]
+        it["eq"] = eq["slot"]
+        if not eq.get("damage_on_hurt", True):
+            it["nd"] = 1
+        # armor / armor_toughness add_value modifiers that apply in the item's own slot
+        ar = [sum(m["amount"] for m in c.get("minecraft:attribute_modifiers", [])
+                  if m["type"] == "minecraft:" + t and m.get("operation") == "add_value"
+                  and m.get("slot", "any") in (eq["slot"], "armor", "any")) for t in ("armor", "armor_toughness")]
+        if any(ar):
+            it["ar"] = ar
     out_items.append(it)
 
 # ---------- loot tables (blocks), predicate references inlined ----------
@@ -267,8 +278,17 @@ def json_ids(folder):
                   for dp, _, fs in os.walk(base) for f in fs if f.endswith(".json"))
 
 
+def damage_tag(t):
+    vals = set()
+    for v in json.load(open(os.path.join(DATA, "tags", "damage_type", t + ".json")))["values"]:
+        vals |= damage_tag(short(v[1:])) if v.startswith("#") else {v}
+    return vals
+
+
+bypasses_armor = damage_tag("bypasses_armor")
 reg = {
-    "damage_type": {short(n): [i, d["message_id"], d.get("exhaustion", 0.0), d.get("death_message_type", "default")]
+    "damage_type": {short(n): [i, d["message_id"], d.get("exhaustion", 0.0), d.get("death_message_type", "default"),
+                               n in bypasses_armor]
                     for i, n in enumerate(json_ids("damage_type"))
                     for d in [json.load(open(os.path.join(DATA, "damage_type", short(n) + ".json")))]},
     "menu": {short(k): v["protocol_id"] for k, v in registries["minecraft:menu"]["entries"].items()},
