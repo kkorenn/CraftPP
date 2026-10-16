@@ -86,7 +86,7 @@ tags = {t: sorted({index[v] for v in vs if v in index}) for t, vs in block_tags.
 fluid_tags = load_tags("fluid")
 print(f"gen_level_data: {len(dump['states'])} states, {len(dump['shapes'])} shapes, {len(tags)} block tags")
 defaults = {n.split(":")[1]: next(st["id"] for st in b["states"] if st.get("default")) for n, b in blocks_rep.items()}
-out = {"shapes": dump["shapes"], "states": dump["states"], "blocks": [b[1:] + [defaults[b[0]]] for b in dump["blocks"]], "tags": tags,
+out = {"shapes": dump["shapes"], "states": dump["states"], "blocks": [b[1:4] + [defaults[b[0]]] + b[4:] for b in dump["blocks"]], "tags": tags,
        "fluid_tags": fluid_tags}
 with open(os.path.join(ROOT, "data", "level.json"), "w") as f:
     json.dump(out, f, separators=(",", ":"))

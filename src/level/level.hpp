@@ -16,6 +16,7 @@
 #include "../game/entity.hpp"
 #include "../game/loot.hpp"
 #include "../worldgen/material.hpp"
+#include "../light/light.hpp"
 #include "ticks.hpp"
 
 #include <unordered_map>
@@ -296,13 +297,17 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
     if (!l) return false;
     Chunk& c = *l->c;
     int old;
-    {  // LevelChunk.setBlockState
-        std::lock_guard lock(c.m);
-        if (section_only_air(c, p.y) && is_air(state)) return false;
-        old = c.get(p.x & 15, p.y, p.z & 15);
-        if (old == state) return false;
-        c.set(p.x & 15, p.y, p.z & 15, uint16_t(state));
-        c.dirty = true;
+    {  // LevelChunk.setBlockState (lock order: light engine, then chunk; like World::set_block)
+        std::lock_guard light_lock(light::mutex());
+        {
+            std::lock_guard lock(c.m);
+            if (section_only_air(c, p.y) && is_air(state)) return false;
+            old = c.get(p.x & 15, p.y, p.z & 15);
+            if (old == state) return false;
+            c.set(p.x & 15, p.y, p.z & 15, uint16_t(state));
+            c.dirty = true;
+        }
+        light::block_changed(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
     }
     bool piston = flags & UPDATE_MOVE_BY_PISTON;
     bool changed_block = block(old) != block(state);
@@ -368,27 +373,12 @@ inline int motion_blocking_height(int x, int z) {
     }
     return MIN_Y;
 }
-// ponytail: no light engine yet (lighting branch). Sky light = 15 minus the light dampening of the blocks
-// above (0 under any opaque block), block light = the emission of the block itself or a direct neighbor minus 1.
-// Swap for the real LightEngine values when lighting lands.
-inline int sky_light(const Pos& p) {
-    LChunk* l = lchunk(p.x >> 4, p.z >> 4);
-    if (!l) return 15;
-    int light = 15;
-    std::lock_guard lock(l->c->m);
-    for (int y = p.y + 1; y < MIN_Y + HEIGHT && light > 0; y++) {
-        int s = l->c->get(p.x & 15, y, p.z & 15);
-        if (s == blocks::air) continue;
-        light -= std::max(light_dampening(s), (flags(s) & F_SKYLIGHT) ? 0 : 1);
-    }
-    return std::max(light, 0);
-}
-inline int block_light(const Pos& p) {
-    int b = light_emission(get(p));
-    for (int d = 0; d < 6; d++) b = std::max(b, light_emission(get(p.rel(d))) - 1);
-    return b;
-}
-// ServerLevel sky darkening (Level.updateSkyBrightness): 0 at noon .. 11 at night, more under rain/thunder.
+// Light from the light engine (src/light/): stored sky / block light, LevelReader.getRawBrightness.
+inline int sky_light(const Pos& p) { return in_height(p.y) ? light::level(true, p.x, p.y, p.z) : 15; }
+inline int block_light(const Pos& p) { return in_height(p.y) ? light::level(false, p.x, p.y, p.z) : 0; }
+inline int raw_light(const Pos& p, int darken) { return std::max(sky_light(p) - darken, block_light(p)); }
+// Level.skyDarken: 15 - SKY_LIGHT_LEVEL. ponytail: the overworld timeline curve approximated by the legacy
+// celestial-angle formula (0 at noon .. 11 at night, more under rain/thunder).
 inline int sky_darken() {
     int64_t t = clocks[0].total % 24000;
     double f = (double(t) / 24000.0 - 0.25);
@@ -403,8 +393,6 @@ inline int sky_darken() {
     d *= 1.0 - weather.thunder_level * 5.0f / 16.0;
     return int((1.0 - d) * 11.0);
 }
-inline int raw_brightness(const Pos& p, int darken) { return std::max(sky_light(p) - darken, block_light(p)); }
-inline int max_local_raw_brightness(const Pos& p) { return raw_brightness(p, sky_darken()); }
 inline bool can_see_sky(const Pos& p) { return p.y >= motion_blocking_height(p.x, p.z) || sky_light(p) >= 15; }
 
 // ---------- biomes / weather (Biome climate, BiomeManager zoom) ----------
