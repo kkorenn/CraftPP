@@ -2,7 +2,13 @@
 // Vanilla command implementations (net.minecraft.server.commands.*), keyed by root literal.
 #include "dispatcher.hpp"
 
-inline void kick(Player& p);  // game/tick.hpp
+// Survival module API (src/game/, included after this header).
+inline void kick(Player& p);
+inline bool give_item(Player& p, int item, int count, int damage);
+inline int clear_inventory(Player& p, int item, int max);
+inline void kill(Player& p, const std::string& type);
+inline bool hurt(Player& p, float amount, const std::string& type);
+inline void send_experience(Player& p);
 
 // ---------- helpers ----------
 inline std::string fmt_f(double v, int prec) {  // String.format(Locale.ROOT, "%.<prec>f")
@@ -54,29 +60,6 @@ struct BlockBatch {
         sections.clear();
     }
 };
-
-// Inventory add without the survival module (Inventory.add: stack onto matching, then empty slots; hotbar first).
-inline int add_items(Player& p, int item, int count) {
-    int max = gen::ITEM_MAX_STACK[item], left = count;
-    std::vector<int> changed;
-    for (int pass = 0; pass < 2 && left > 0; pass++)
-        for (int i = 0; i < 36 && left > 0; i++) {
-            auto& s = p.inv[size_t(i)];
-            bool match = pass == 0 ? (!s.empty() && s.item == item && s.damage == 0 && s.count < max) : s.empty();
-            if (!match) continue;
-            if (s.empty()) s = {item, 0, 0};
-            int n = std::min(max - s.count, left);
-            s.count += n;
-            left -= n;
-            changed.push_back(i);
-        }
-    for (int i : changed) send_slot(p, i);
-    return count - left;
-}
-
-// Hooks for systems owned by other modules (survival). Unset = command replies "not supported yet".
-inline std::function<bool(Player&)> kill_player_hook;                    // true when the player died
-inline std::function<bool(Player&, float, const std::string&)> damage_player_hook;
 
 // ---------- registration ----------
 inline void reg(const char* name, Handler h) { command_handlers()[name] = std::move(h); }
@@ -226,8 +209,7 @@ inline void register_vanilla_commands() {
         if (count > max) throw err("commands.give.failed.toomanyitems", {max, item_display(it.item)});
         auto targets = c.players("targets");
         for (auto& t : targets) {
-            int given = add_items(*t, it.item, count);
-            (void)given;  // ponytail: overflow should drop as an item entity (needs survival's spawn_item)
+            give_item(*t, it.item, count, 0);  // drops what doesn't fit
             t->send(pkt(play_cb::sound).varint(0).str("minecraft:entity.item.pickup").boolean(false).varint(7)
                         .i32(int32_t(t->x * 8)).i32(int32_t(t->y * 8)).i32(int32_t(t->z * 8)).f32(0.2f)
                         .f32(((float(cmd_rng() % 1000) / 1000.f - float(cmd_rng() % 1000) / 1000.f) * 0.7f + 1.f) * 2.f)
@@ -243,18 +225,25 @@ inline void register_vanilla_commands() {
         int max = int(c.num("maxCount", -1));
         int total = 0;
         for (auto& t : targets) {
-            int removed = 0;
-            for (int i = 0; i < 41; i++) {
-                auto& s = t->inv[size_t(i)];
-                if (s.empty() || (pred && !pred->matches(s.item))) continue;
-                if (max == 0) { removed += s.count; continue; }
-                int n = max < 0 ? s.count : std::min(s.count, max - removed);
-                s.count -= n;
-                removed += n;
-                if (s.count <= 0) s = {};
-                send_slot(*t, i);
-                if (max > 0 && removed >= max) break;
+            if (!pred || (pred->item >= 0 && pred->components.empty())) {
+                if (max == 0) {
+                    for (auto& st : t->inv) if (!st.empty() && (!pred || st.item == pred->item)) total += st.count;
+                } else total += clear_inventory(*t, pred ? pred->item : -1, max);
+                continue;
             }
+            // tag / '*' predicates: Inventory.clearOrCountMatchingItems over inventory, carried and 2x2 grid
+            int removed = 0;
+            auto take = [&](ItemStack& st) {
+                if (st.empty() || !pred->matches(st.item) || (max > 0 && removed >= max)) return;
+                if (max == 0) { removed += st.count; return; }
+                int n = max < 0 ? st.count : std::min(st.count, max - removed);
+                st.count -= n;
+                removed += n;
+                if (st.count <= 0) st = {};
+            };
+            for (auto& st : t->inv) take(st);
+            take(t->g.carried);
+            for (auto& st : t->g.craft2) take(st);
             total += removed;
         }
         if (total == 0) {
@@ -270,16 +259,14 @@ inline void register_vanilla_commands() {
     });
     reg("kill", [](Cmd& c) {
         auto targets = c.targets_or_self("targets");
-        if (!kill_player_hook) throw fail(not_supported("kill"));
-        for (auto& t : targets) kill_player_hook(*t);
+        for (auto& t : targets) kill(*t, "generic_kill");
         return respond(c, targets, true, [&](Text n) { return tr("commands.kill.success.single", {n}); },
                        [&](int k) { return tr("commands.kill.success.multiple", {k}); });
     });
     reg("damage", [](Cmd& c) {
         auto t = c.player("target");
-        if (!damage_player_hook) throw fail(not_supported("damage"));
         float amount = float(c.real("amount"));
-        if (!damage_player_hook(*t, amount, c.str("damageType", "minecraft:generic"))) throw err("commands.damage.invulnerable");
+        if (!hurt(*t, amount, short_id(c.str("damageType", "minecraft:generic")))) throw err("commands.damage.invulnerable");
         c.success(tr("commands.damage.success", {amount, player_name(*t)}), true);
         return 1;
     });
@@ -473,10 +460,10 @@ inline void register_vanilla_commands() {
     reg("difficulty", [](Cmd& c) {
         int want = -1;
         for (int i = 0; i < 4; i++) if (c.is(DIFFICULTY_NAMES[i])) want = i;
-        Text name = want >= 0 ? tr(std::string("options.difficulty.") + DIFFICULTY_NAMES[want]) : tr(std::string("options.difficulty.") + DIFFICULTY_NAMES[difficulty]);
-        if (want < 0) { c.success(tr("commands.difficulty.query", {name}), false); return difficulty; }
-        if (difficulty == want) throw err("commands.difficulty.failure", {DIFFICULTY_NAMES[want]});
-        difficulty = want;
+        Text name = want >= 0 ? tr(std::string("options.difficulty.") + DIFFICULTY_NAMES[want]) : tr(std::string("options.difficulty.") + DIFFICULTY_NAMES[world_difficulty]);
+        if (want < 0) { c.success(tr("commands.difficulty.query", {name}), false); return world_difficulty; }
+        if (world_difficulty == want) throw err("commands.difficulty.failure", {DIFFICULTY_NAMES[want]});
+        world_difficulty = want;
         broadcast(difficulty_packet());
         c.success(tr("commands.difficulty.success", {name}), true);
         return 0;
@@ -905,7 +892,7 @@ inline void register_vanilla_commands() {
 
     reg("experience", [](Cmd& c) {
         bool levels = c.is("levels");
-        auto send_xp = [](Player& p) { p.send(pkt(play_cb::set_experience).f32(p.g.xp_progress).varint(p.g.xp_level).varint(p.g.xp_total)); };
+        auto send_xp = [](Player& p) { send_experience(p); };
         auto need = [](int lvl) { return lvl >= 30 ? 112 + (lvl - 30) * 9 : lvl >= 15 ? 37 + (lvl - 15) * 5 : 7 + lvl * 2; };  // getXpNeededForNextLevel
         auto give_points = [&](Player& p, int amount) {  // Player.giveExperiencePoints
             p.g.xp_progress += float(amount) / float(need(p.g.xp_level));
