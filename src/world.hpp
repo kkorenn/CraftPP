@@ -555,6 +555,13 @@ struct World {
     // happens in save_dirty(). Prefer get_ptr() off the tick thread.
     Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
 
+    // Already loaded chunk, or null (never loads or generates). Holding the pointer keeps it from unloading.
+    ChunkPtr get_if_loaded(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+
     uint16_t get_block(int x, int y, int z) {
         if (y < min_y || y >= max_y()) return blocks::air;
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
@@ -691,16 +698,26 @@ inline World* level_by_id(const std::string& id) {
         if (w.id == id) return &w;
     return nullptr;
 }
+inline int dim_of(const World* w) { return int(w - worlds); }
+// Tick thread: per-level state of other subsystems (the entity manager) follows cur_level through this hook.
+inline void (*on_level_switch)(World* from, World* to) = nullptr;
+inline thread_local bool is_tick_thread = false;
+inline void set_level(World* w) {
+    if (w == cur_level) return;
+    if (is_tick_thread && on_level_switch) on_level_switch(cur_level, w);
+    cur_level = w;
+}
 struct InLevel {  // RAII: run a block of game code in level `w`
     World* prev;
-    explicit InLevel(World* w) : prev(cur_level) { cur_level = w; }
-    ~InLevel() { cur_level = prev; }
+    explicit InLevel(World* w) : prev(cur_level) { set_level(w); }
+    ~InLevel() { set_level(prev); }
 };
 inline struct LevelProxy {
     World* operator->() const { return cur_level; }
     World& operator*() const { return *cur_level; }
     Chunk& get(int cx, int cz) const { return cur_level->get(cx, cz); }
     ChunkPtr get_ptr(int cx, int cz) const { return cur_level->get_ptr(cx, cz); }
+    ChunkPtr get_if_loaded(int cx, int cz) const { return cur_level->get_if_loaded(cx, cz); }
     uint16_t get_block(int x, int y, int z) const { return cur_level->get_block(x, y, z); }
     // Game edits: fire on_block_changed (portal ignition / collapse: game/portal.hpp) after a real change.
     bool set_block(int x, int y, int z, uint16_t s) const;

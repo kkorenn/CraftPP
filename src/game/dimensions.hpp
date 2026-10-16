@@ -8,8 +8,8 @@
 // ---------- moving between levels ----------
 inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep) {
     World* from = p.level;
-    broadcast_level(remove_entities_packet({p.eid}), from, &p);   // removePlayerImmediately
-    for (auto& e : item_entities) std::erase(e.watchers, p.eid);  // the client drops its entities on respawn
+    (void)from;
+    entities_reset_view(p);  // the client drops its entities on respawn; the tracker resends the new level's
     if (p.g.container) close_container(p, false);                 // the client closes screens on respawn
     p.g.use_ticks = 0;                                             // stopUsingItem
     p.level = to;
@@ -40,9 +40,7 @@ inline void move_to_level(Player& p, World* to, double x, double y, double z, fl
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
-    broadcast_level(spawn_entity(p), to, &p);
-    for (auto& q : players)
-        if (q.get() != &p && q->level == to) p.send(spawn_entity(*q));
+    player_entity_respawned(p);  // old level's watchers drop the player; the new level's pair on the tracker tick
 }
 
 // ---------- the end ----------
@@ -137,7 +135,7 @@ inline void dragon_fight_tick() {
 inline void show_end_credits(Player& p) {
     if (p.won_game) return;
     p.won_game = true;
-    broadcast_level(remove_entities_packet({p.eid}), p.level, &p);
+    player_entity_hidden(p);  // removePlayerImmediately: nobody sees the player during the credits
     p.send(game_event(4, p.seen_credits ? 0.0f : 1.0f));  // WIN_GAME: 1 = roll the credits
     p.seen_credits = true;
 }

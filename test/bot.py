@@ -256,7 +256,17 @@ if __name__ == "__main__":
         if p == PLAY_CB["level_chunk_with_light"]: parse_chunk(buf); new += 1
         elif p == PLAY_CB["forget_level_chunk"]: forgot += 1
     assert (new, forgot) == (17, 17), (new, forgot)
-    wait(b, PLAY_CB["teleport_entity"], lambda p: (p.varint(), struct.unpack(">d", p.take(8))[0])[1] == 16.5)
+    seen_x = [0.5]  # Bob tracks Alice from her spawn x: relative moves (1/4096 block) or position syncs
+    def follow(pkt):
+        p, x = pkt
+        if p in (PLAY_CB["move_entity_pos"], PLAY_CB["move_entity_pos_rot"]):
+            x.varint(); x.varint(); seen_x[0] += struct.unpack(">h", x.take(2))[0] / 4096.0
+        elif p == PLAY_CB["entity_position_sync"]:
+            x.varint(); x.varint(); seen_x[0] = struct.unpack(">d", x.take(8))[0]
+        return abs(seen_x[0] - 16.5) < 1e-3
+    for _ in range(4000):
+        if follow(b.recv()): break
+    assert abs(seen_x[0] - 16.5) < 1e-3, seen_x
     print("streaming + movement ok")
 
     a.send(PLAY_SB["chat"], string("hello") + struct.pack(">qq", 0, 0) + b"\x00" + varint(0) + bytes(3) + b"\x00")

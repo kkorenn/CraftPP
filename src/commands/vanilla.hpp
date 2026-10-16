@@ -10,6 +10,12 @@ inline int clear_inventory(Player& p, int item, int max);
 inline void kill(Player& p, const std::string& type);
 inline bool hurt(Player& p, float amount, const std::string& type);
 inline void send_experience(Player& p);
+// Non-player entity operations (src/mobs/mobs.cpp).
+void entity_kill(Entity* e);
+bool entity_hurt(Entity* e, float amount, const std::string& type);
+void entity_teleport(Entity* e, double x, double y, double z, const float* yaw, const float* pitch);
+void entity_rotation(const Entity* e, float& yaw, float& pitch);
+double entity_eye_height(const Entity* e);
 
 // ---------- helpers ----------
 inline std::string fmt_f(double v, int prec) {  // String.format(Locale.ROOT, "%.<prec>f")
@@ -29,6 +35,11 @@ inline Text gamemode_text(int g) { static const char* n[] = {"survival", "creati
 template <class FS, class FM>
 inline int respond(Cmd& c, const std::vector<PlayerPtr>& t, bool broadcast_admins, FS single, FM multiple) {
     c.success(t.size() == 1 ? single(player_name(*t[0])) : multiple(int(t.size())), broadcast_admins);
+    return int(t.size());
+}
+template <class FS, class FM>
+inline int respond(Cmd& c, const std::vector<Target>& t, bool broadcast_admins, FS single, FM multiple) {
+    c.success(t.size() == 1 ? single(t[0].display()) : multiple(int(t.size())), broadcast_admins);
     return int(t.size());
 }
 
@@ -130,32 +141,46 @@ inline void register_vanilla_commands() {
 
     // teleport / tp
     reg("teleport", [](Cmd& c) {
-        auto do_tp = [&](Player& p, double x, double y, double z, std::optional<std::pair<float, float>> rot) {
+        World* to = level_by_id(c.src.dimension);  // TeleportCommand: into the source's level (or the destination's)
+        auto do_tp = [&](Target& t, double x, double y, double z, std::optional<std::pair<float, float>> rot) {
             if (std::abs(x) > 30000000 || std::abs(z) > 30000000 || y < -20000000 || y >= 20000000) throw err("commands.teleport.invalidPosition");
+            if (!t.p) {
+                float yw = 0, pt = 0;
+                if (rot) yw = std::remainder(rot->first, 360.0f), pt = std::clamp(std::remainder(rot->second, 360.0f), -90.f, 90.f);
+                entity_teleport(t.e, x, y, z, rot ? &yw : nullptr, rot ? &pt : nullptr);
+                return;
+            }
+            Player& p = *t.p;
             if (rot) {
                 p.yaw = std::remainder(rot->first, 360.0f);
                 p.pitch = std::clamp(std::remainder(rot->second, 360.0f), -90.f, 90.f);
             }
-            World* to = level_by_id(c.src.dimension);  // TeleportCommand: into the source's level
             if (p.level != to) change_dimension(p, to, x, y, z, p.yaw, p.pitch);
             else teleport(p, x, y, z);
         };
-        auto face = [&](Player& p, Vec3 at) {  // LookAt.perform (feet anchor of the victim's eyes)
-            double dx = at.x - p.x, dy = at.y - (p.y + 1.62), dz = at.z - p.z;
+        auto face = [&](Target& t, Vec3 at) {  // LookAt.perform (feet anchor of the victim's eyes)
+            Vec3 tp = t.pos();
+            double eye = t.p ? 1.62 : entity_eye_height(t.e);
+            double dx = at.x - tp.x, dy = at.y - (tp.y + eye), dz = at.z - tp.z;
             double h = std::sqrt(dx * dx + dz * dz);
-            p.pitch = float(-(std::atan2(dy, h) * 180 / M_PI));
-            p.yaw = float(std::atan2(dz, dx) * 180 / M_PI - 90);
-            teleport(p, p.x, p.y, p.z);
+            float pitch = float(-(std::atan2(dy, h) * 180 / M_PI)), yaw = float(std::atan2(dz, dx) * 180 / M_PI - 90);
+            if (t.p) { t.p->pitch = pitch, t.p->yaw = yaw; teleport(*t.p, tp.x, tp.y, tp.z); }
+            else entity_teleport(t.e, tp.x, tp.y, tp.z, &yaw, &pitch);
         };
-        std::vector<PlayerPtr> targets = c.has("targets") ? c.players("targets") : std::vector<PlayerPtr>{c.self_player(true)};
+        std::vector<Target> targets = c.has("targets") ? c.targets("targets") : c.targets_or_self_any("targets");
+        auto rot_of = [](const Target& t) {
+            float y, p;
+            if (t.p) y = t.p->yaw, p = t.p->pitch;
+            else entity_rotation(t.e, y, p);
+            return std::make_pair(y, p);
+        };
         if (c.has("destination")) {
-            auto dest = c.player("destination");
-            for (auto& t : targets) {
-                if (t->level != dest->level) change_dimension(*t, dest->level, dest->x, dest->y, dest->z, dest->yaw, dest->pitch);
-                else do_tp(*t, dest->x, dest->y, dest->z, std::make_pair(dest->yaw, dest->pitch));
-            }
-            return respond(c, targets, true, [&](Text n) { return tr("commands.teleport.success.entity.single", {n, player_name(*dest)}); },
-                           [&](int k) { return tr("commands.teleport.success.entity.multiple", {k, player_name(*dest)}); });
+            auto dest = c.targets("destination")[0];
+            Vec3 d = dest.pos();
+            to = dest.p ? dest.p->level : entity_level(dest.e);  // to an entity: into its level
+            for (auto& t : targets) do_tp(t, d.x, d.y, d.z, rot_of(dest));
+            return respond(c, targets, true, [&](Text n) { return tr("commands.teleport.success.entity.single", {n, dest.display()}); },
+                           [&](int k) { return tr("commands.teleport.success.entity.multiple", {k, dest.display()}); });
         }
         Vec3 pos = c.vec("location");
         for (auto& t : targets) {
@@ -163,17 +188,19 @@ inline void register_vanilla_commands() {
             if (c.has("rotation")) {
                 float yaw, pitch;
                 Source s = c.src;
-                s.yaw = t->yaw;
-                s.pitch = t->pitch;
+                auto r = rot_of(t);
+                s.yaw = r.first;
+                s.pitch = r.second;
                 c.get<Coords>("rotation").rotation(s, yaw, pitch);
                 rot = std::make_pair(yaw, pitch);
             }
-            do_tp(*t, pos.x, pos.y, pos.z, rot);
-            if (c.has("facingLocation")) face(*t, c.vec("facingLocation"));
+            do_tp(t, pos.x, pos.y, pos.z, rot);
+            if (c.has("facingLocation")) face(t, c.vec("facingLocation"));
             if (c.has("facingEntity")) {
-                auto e = c.player("facingEntity");
+                auto e = c.targets("facingEntity")[0];
                 bool eyes = c.str("facingAnchor", "feet") == "eyes";
-                face(*t, {e->x, e->y + (eyes ? 1.62 : 0), e->z});
+                Vec3 ep = e.pos();
+                face(t, {ep.x, ep.y + (eyes ? (e.p ? 1.62 : entity_eye_height(e.e)) : 0), ep.z});
             }
         }
         auto f6 = [](double v) { return fmt_f(v, 6); };
@@ -265,16 +292,20 @@ inline void register_vanilla_commands() {
         return total;
     });
     reg("kill", [](Cmd& c) {
-        auto targets = c.targets_or_self("targets", true);
-        for (auto& t : targets) kill(*t, "generic_kill");
+        auto targets = c.targets_or_self_any("targets");
+        for (auto& t : targets) {
+            if (t.p) kill(*t.p, "generic_kill");
+            else entity_kill(t.e);
+        }
         return respond(c, targets, true, [&](Text n) { return tr("commands.kill.success.single", {n}); },
                        [&](int k) { return tr("commands.kill.success.multiple", {k}); });
     });
     reg("damage", [](Cmd& c) {
-        auto t = c.player("target");
+        auto t = c.targets("target")[0];
         float amount = float(c.real("amount"));
-        if (!hurt(*t, amount, short_id(c.str("damageType", "minecraft:generic")))) throw err("commands.damage.invulnerable");
-        c.success(tr("commands.damage.success", {amount, player_name(*t)}), true);
+        std::string type = short_id(c.str("damageType", "minecraft:generic"));
+        if (!(t.p ? hurt(*t.p, amount, type) : entity_hurt(t.e, amount, type))) throw err("commands.damage.invulnerable");
+        c.success(tr("commands.damage.success", {amount, t.display()}), true);
         return 1;
     });
 

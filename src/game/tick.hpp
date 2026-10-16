@@ -161,6 +161,7 @@ inline void tick_once() {
 
 inline void start_tick_thread() {
     std::thread([] {
+        is_tick_thread = true;  // world.hpp InLevel: per-level entity state switches with cur_level
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::milliseconds(50);
         auto next = clock::now();
