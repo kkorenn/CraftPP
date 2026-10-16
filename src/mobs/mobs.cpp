@@ -2,6 +2,37 @@
 // combat/interaction packets and implements the api.hpp / command entry points. Overview: mobs.hpp.
 #include "mobs.hpp"
 
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <malloc/malloc.h>
+#else
+#include <malloc.h>
+#endif
+static long heap_in_use_kib() {  // allocator bytes in use (exact, unlike RSS)
+#ifdef __APPLE__
+    malloc_statistics_t st{};
+    malloc_zone_statistics(nullptr, &st);
+    return long(st.size_in_use / 1024);
+#elif defined(__GLIBC__)
+    return long(mallinfo2().uordblks / 1024);
+#else
+    return 0;
+#endif
+}
+
+static long current_rss_kib() {  // resident set now (rss_kib() in tick.hpp is the peak)
+#ifdef __APPLE__
+    mach_task_basic_info info{};
+    mach_msg_type_number_t n = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n) != KERN_SUCCESS) return 0;
+    return long(info.resident_size / 1024);
+#else
+    long pages = 0, res = 0;
+    if (FILE* f = fopen("/proc/self/statm", "r")) { if (fscanf(f, "%ld %ld", &pages, &res) != 2) res = 0; fclose(f); }
+    return res * (sysconf(_SC_PAGESIZE) / 1024);
+#endif
+}
+
 // ---------- registration ----------
 static void register_core_types() {
     register_entity_factory(entity_types::item, make_entity<ItemEntity>);
@@ -60,10 +91,12 @@ static void pre_tick() {
 static void post_tick() {
     tick_fresh_chunks();
     tick_natural_spawning();
-    static bool dbg = getenv("CRAFTPP_MOBDEBUG");
+    static bool dbg = getenv("CRAFTPP_MOBDEBUG"), dbg_verbose = dbg && std::string(getenv("CRAFTPP_MOBDEBUG")) == "2";
     if (dbg && server_tick % 40 == 0) {
-        fprintf(stderr, "[mobs] tick %lld entities %zu active %zu\n", (long long)server_tick, entity_count(), ent_detail::to_tick.size());
-        for (Entity* e : ent_detail::to_tick)
+        fprintf(stderr, "[mobs] tick %lld entities %zu active %zu mspt %.3f rss %ld KiB heap %ld KiB path nodes %lld searches %lld misses %lld\n",
+                (long long)server_tick, entity_count(), ent_detail::to_tick.size(), mspt_avg, current_rss_kib(), heap_in_use_kib(), (long long)path_nodes_total,
+                (long long)path_searches_total, (long long)path_budget_misses);
+        if (dbg_verbose) for (Entity* e : ent_detail::to_tick)
             if (Mob* m = e->as_mob()) {
                 std::string run;
                 for (auto& w : m->goal_selector.goals) if (w.running) run += std::string(typeid(*w.goal).name()) + " ";
@@ -290,7 +323,14 @@ void mobs_init() {
         c.success(tr("commands.summon.success", {entity_display_name(e)}), true);
         return 1;
     });
-    // Freshly generated chunks get their chunk-generation creature spawns on the tick thread.
+    // Freshly generated chunks get their chunk-generation creature spawns on the tick thread: the ones generated
+    // so far (spawn area, never saved) and, through the wrapped generator, every later one. Runs before the accept
+    // loop starts, so no worker is generating while the generator is replaced.
+    {
+        std::lock_guard lock(world.m);
+        for (auto& [k, c] : world.chunks)
+            if (!c->on_disk) fresh_chunks.emplace_back(k.first, k.second);
+    }
     auto gen = world.generator;
     world.generator = [gen](Chunk& c) {
         gen(c);

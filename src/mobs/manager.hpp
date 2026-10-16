@@ -82,21 +82,31 @@ template <class F> inline void for_each_entity(F&& f) {
         if (!e->removed) f(*e);
 }
 // Level.getEntities(box): entities whose bounding box intersects `box`, players included when `with_players`.
+// Matches are collected before `f` runs, so `f` may add, move or remove entities.
 template <class F> inline void for_each_entity_in(const AABB& box, F&& f, bool with_players = true) {
+    static std::vector<std::vector<Entity*>> stack;  // one buffer per nesting depth: no allocation in steady state
+    static size_t depth = 0;
+    if (stack.size() <= depth) stack.resize(depth + 1);
+    std::vector<Entity*>& hits = stack[depth];
+    hits.clear();
     int cx0 = mth::floor((box.x0 - 2.0) / 16.0), cx1 = mth::floor((box.x1 + 2.0) / 16.0);
     int cz0 = mth::floor((box.z0 - 2.0) / 16.0), cz1 = mth::floor((box.z1 + 2.0) / 16.0);
     for (int cx = cx0; cx <= cx1; cx++)
         for (int cz = cz0; cz <= cz1; cz++) {
             auto it = ent_detail::by_chunk.find(mth::chunk_key(cx, cz));
             if (it == ent_detail::by_chunk.end()) continue;
-            for (size_t i = 0; i < it->second.list.size(); i++) {
-                Entity* e = it->second.list[i];
-                if (!e->removed && e->bb.intersects(box)) f(*e);
-            }
+            for (Entity* e : it->second.list)
+                if (!e->removed && e->bb.intersects(box)) hits.push_back(e);
         }
     if (with_players)
         for (Entity* e : ent_detail::player_ents)
-            if (!e->removed && e->bb.intersects(box)) f(*e);
+            if (!e->removed && e->bb.intersects(box)) hits.push_back(e);
+    depth++;
+    for (size_t i = 0; i < stack[depth - 1].size(); i++) {
+        Entity* e = stack[depth - 1][i];
+        if (!e->removed) f(*e);
+    }
+    depth--;
 }
 inline const std::vector<Entity*>& player_entities() { return ent_detail::player_ents; }
 
