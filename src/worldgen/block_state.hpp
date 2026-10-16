@@ -100,6 +100,8 @@ class Registry {
   bool can_occlude(int s) const { return state_flags2[size_t(s)] & 4; }
   bool redstone_conductor(int s) const { return state_flags2[size_t(s)] & 8; }
   bool collision_face_full(int s, Dir d) const { return (state_flags2[size_t(s)] >> (4 + int(d))) & 1; }  // Block.isFaceFull(getCollisionShape(), d)
+  // WallBlock.isCovered(collision shape's DOWN face of s, test): test 0 = post, 1..4 = wall side N, S, W, E.
+  bool wall_covered(int s, int test) const { return (state_flags2[size_t(s)] >> (10 + test)) & 1; }
   bool has_fluid(int s) const { return fluid_type(s) != NO_FLUID; }
   bool is_water(int s) const { return fluid_type(s) == WATER || fluid_type(s) == FLOWING_WATER; }  // FluidTags.WATER
   bool is_lava(int s) const { return fluid_type(s) == LAVA || fluid_type(s) == FLOWING_LAVA; }

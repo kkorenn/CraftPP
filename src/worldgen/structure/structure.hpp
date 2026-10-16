@@ -129,6 +129,11 @@ struct Level {
   virtual int64_t seed() const = 0;
   virtual int biomeAt(int x, int y, int z) = 0;  // getBiome(pos) (noise biome of the quart containing pos)
   virtual RandomSource& random() = 0;              // WorldGenRegion.getRandom (worldgen_region_random at the chunk)
+  // ChunkAccess.markPosForPostProcessing: the FULL step runs updateFromNeighbourShapes there.
+  virtual void markPostProcessing(int x, int y, int z) { (void)x, (void)y, (void)z; }
+  // StructureTemplate.placeInWorld without knownShape: updateShapeAtEdge over the placed positions (their box
+  // starts at `min`), then updateFromNeighbourShapes for each in placement order.
+  virtual void updatePlacedShapes(BlockPos min, BlockPos max, const std::vector<BlockPos>& placed) { (void)min, (void)max, (void)placed; }
   // FeaturePoolElement / feature-placing pieces: place a placed_feature by id. False when unavailable.
   virtual bool placeFeature(const std::string& placedFeature, RandomSource& random, BlockPos pos) {
     (void)placedFeature, (void)random, (void)pos;

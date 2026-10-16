@@ -347,6 +347,141 @@ long multiface_spread_all(Level& l, const Spreader& sp, int state, const P& p, b
   return n;
 }
 
+namespace {
+// Blocks whose updateShape connects to / depends on neighbours (fences, bars, walls, stairs, attached blocks).
+enum ShapeKind : uint8_t { S_NONE, S_FENCE, S_BARS, S_WALL, S_GATE, S_STAIR, S_TORCH, S_WALL_TORCH, S_LADDER, S_DOOR, S_LANTERN };
+ShapeKind shape_kind(int block) {
+  static const std::vector<uint8_t> kinds = [] {
+    std::vector<uint8_t> k(size_t(R().block_count()), S_NONE);
+    for (int b = 0; b < R().block_count(); b++) {
+      const auto& B = R().block(b);
+      auto has = [&](const char* c) { return B.is_a(c); };
+      k[size_t(b)] = has("FenceBlock") ? S_FENCE : has("IronBarsBlock") ? S_BARS : has("WallBlock") ? S_WALL
+                   : has("FenceGateBlock") ? S_GATE : has("StairBlock") ? S_STAIR
+                   : has("WallTorchBlock") || has("RedstoneWallTorchBlock") ? S_WALL_TORCH : has("BaseTorchBlock") ? S_TORCH
+                   : has("LadderBlock") ? S_LADDER : has("DoorBlock") ? S_DOOR : has("LanternBlock") ? S_LANTERN : S_NONE;
+    }
+    return k;
+  }();
+  return ShapeKind(kinds[size_t(block)]);
+}
+bs::Dir facing(int s) { return dir_by_name(std::string(R().value(s, "facing"))); }
+int axis(bs::Dir d) { return d / 2; }
+bool exception_for_connection(int s) {  // Block.isExceptionForConnection
+  return R().block(R().block_of(s)).is_a("LeavesBlock") || is(s, blocks::barrier) || is(s, blocks::carved_pumpkin) ||
+         is(s, blocks::jack_o_lantern) || is(s, blocks::melon) || is(s, blocks::pumpkin) || in(s, "minecraft:shulker_boxes");
+}
+bool gate_connects(int s, bs::Dir d) {  // FenceGateBlock.connectsToDirection
+  return shape_kind(R().block_of(s)) == S_GATE && axis(facing(s)) == axis(clockwise(d));
+}
+bool wall_connects(int s, bool faceSolid, bs::Dir d) {  // WallBlock.connectsTo
+  return in(s, "minecraft:walls") || (!exception_for_connection(s) && faceSolid) || shape_kind(R().block_of(s)) == S_BARS || gate_connects(s, d);
+}
+const char* wall_side(int s, bs::Dir d) { return R().value(s, dir_name(d)) == "none" ? nullptr : ""; }
+// WallBlock.updateShape(level, state, topPos, topNeighbour, n, e, s, w): sides from the cover of the block above, then the post.
+int wall_shape(int state, int top, const bool conn[4]) {
+  static const bs::Dir sides[4] = {bs::NORTH, bs::EAST, bs::SOUTH, bs::WEST};
+  for (int i = 0; i < 4; i++)
+    state = R().with(state, dir_name(sides[i]), !conn[i] ? "none" : R().wall_covered(top, 1 + (sides[i] - bs::NORTH)) ? "tall" : "low");
+  bool post;
+  if (shape_kind(R().block_of(top)) == S_WALL && R().bool_value(top, "up")) {
+    post = true;
+  } else {
+    auto v = [&](bs::Dir d) { return R().value(state, dir_name(d)); };
+    bool n0 = v(bs::NORTH) == "none", s0 = v(bs::SOUTH) == "none", e0 = v(bs::EAST) == "none", w0 = v(bs::WEST) == "none";
+    if ((n0 && s0 && w0 && e0) || n0 != s0 || w0 != e0) post = true;
+    else if ((v(bs::NORTH) == "tall" && v(bs::SOUTH) == "tall") || (v(bs::EAST) == "tall" && v(bs::WEST) == "tall")) post = false;
+    else post = in(top, "minecraft:wall_post_override") || R().wall_covered(top, 0);
+  }
+  return R().with_bool(state, "up", post);
+}
+bool is_stairs(int s) { return shape_kind(R().block_of(s)) == S_STAIR; }
+const char* stairs_shape(Level& l, int state, const P& p) {  // StairBlock.getStairsShape
+  bs::Dir f = facing(state);
+  auto half = [&](int s) { return R().value(s, "half"); };
+  auto canTake = [&](bs::Dir d) {
+    int n = l.get(p.rel(d));
+    return !is_stairs(n) || facing(n) != f || half(n) != half(state);
+  };
+  int behind = l.get(p.rel(f));
+  if (is_stairs(behind) && half(state) == half(behind)) {
+    bs::Dir bf = facing(behind);
+    if (axis(bf) != axis(f) && canTake(bs::opposite(bf))) return bf == counter_clockwise(f) ? "outer_left" : "outer_right";
+  }
+  int front = l.get(p.rel(bs::opposite(f)));
+  if (is_stairs(front) && half(state) == half(front)) {
+    bs::Dir ff = facing(front);
+    if (axis(ff) != axis(f) && canTake(ff)) return ff == counter_clockwise(f) ? "inner_left" : "inner_right";
+  }
+  return "straight";
+}
+// -1: not a connecting block (fall through to the generic rules).
+int connection_update(Level& l, int state, const P& p, bs::Dir dir, int ns) {
+  ShapeKind k = shape_kind(R().block_of(state));
+  bool horizontal = dir != bs::UP && dir != bs::DOWN;
+  bs::Dir opp = bs::opposite(dir);
+  switch (k) {
+    case S_NONE: return -1;
+    case S_FENCE: {  // FenceBlock.connectsTo
+      if (!horizontal) return state;
+      static const bs::Tag& fences = R().tag("minecraft:fences");
+      static const bs::Tag& wooden = R().tag("minecraft:wooden_fences");
+      bool same = R().in(ns, fences) && R().in(ns, wooden) == R().in(state, wooden);
+      bool c = (!exception_for_connection(ns) && R().sturdy(ns, opp)) || same || gate_connects(ns, opp);
+      return R().with_bool(state, dir_name(dir), c);
+    }
+    case S_BARS: {  // IronBarsBlock.attachsTo
+      if (!horizontal) return state;
+      bool c = (!exception_for_connection(ns) && R().sturdy(ns, opp)) || shape_kind(R().block_of(ns)) == S_BARS || in(ns, "minecraft:walls");
+      return R().with_bool(state, dir_name(dir), c);
+    }
+    case S_WALL: {
+      if (dir == bs::DOWN) return state;
+      static const bs::Dir sides[4] = {bs::NORTH, bs::EAST, bs::SOUTH, bs::WEST};
+      bool conn[4];
+      for (int i = 0; i < 4; i++) conn[i] = wall_side(state, sides[i]) != nullptr;
+      if (dir == bs::UP) return wall_shape(state, ns, conn);  // topUpdate
+      for (int i = 0; i < 4; i++)
+        if (sides[i] == dir) conn[i] = wall_connects(ns, R().sturdy(ns, opp), opp);
+      return wall_shape(state, l.get(p.above()), conn);  // sideUpdate
+    }
+    case S_GATE: {
+      if (axis(clockwise(facing(state))) != axis(dir)) return state;
+      static const bs::Tag& walls = R().tag("minecraft:walls");
+      return R().with_bool(state, "in_wall", R().in(ns, walls) || R().in(l.get(p.rel(opp)), walls));
+    }
+    case S_STAIR: return horizontal ? R().with(state, "shape", stairs_shape(l, state, p)) : state;
+    case S_TORCH:  // BaseTorchBlock: canSupportCenter(below, UP)
+      return dir == bs::DOWN && !R().sturdy(l.get(p.below()), bs::UP, bs::CENTER) ? int(blocks::air) : state;
+    case S_WALL_TORCH:
+    case S_LADDER: {  // WallTorchBlock / LadderBlock.canSurvive: the block behind is sturdy on the facing side
+      bs::Dir f = facing(state);
+      if (opp != f) return state;
+      if (R().sturdy(l.get(p.rel(bs::opposite(f))), f)) return state;
+      return blocks::air;
+    }
+    case S_DOOR: {
+      bool lower = R().value(state, "half") == "lower";
+      if (horizontal || lower != (dir == bs::UP)) {
+        if (lower && dir == bs::DOWN && !R().sturdy(l.get(p.below()), bs::UP)) return blocks::air;
+        return state;
+      }
+      return shape_kind(R().block_of(ns)) == S_DOOR && R().value(ns, "half") != R().value(state, "half")
+                 ? R().with(ns, "half", R().value(state, "half"))
+                 : int(blocks::air);
+    }
+    case S_LANTERN: {  // connected direction: hanging = UP (support above), else DOWN
+      bool hanging = R().bool_value(state, "hanging");
+      bs::Dir c = hanging ? bs::UP : bs::DOWN;
+      if (dir != c) return state;
+      bool ok = R().sturdy(l.get(p.rel(c)), bs::opposite(c), bs::CENTER);
+      return ok ? state : int(blocks::air);
+    }
+  }
+  return -1;
+}
+}  // namespace
+
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& np, int ns) {
   int b = R().block_of(state);
   Kind k = kind_of(b);
@@ -376,10 +511,63 @@ int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& np, int 
     return state;
   }
   if (k != DEFAULT) return can_survive(l, state, p) ? state : air_or_water();
+  if (int c = connection_update(l, state, p, dir, ns); c >= 0) return c;
   if (dir == bs::UP && R().has(state, "snowy") &&
       (R().is(state, blocks::grass_block) || R().is(state, blocks::podzol) || R().is(state, blocks::mycelium)))
     return R().with_bool(state, "snowy", R().in(ns, R().tag("minecraft:snow")));  // SnowyBlock
   return state;
+}
+
+void update_shape_at_edge(Level& l, const P& mn, int sx, int sy, int sz, const std::function<bool(int, int, int)>& full) {
+  static const bs::Tag& leavesTag = R().tag("minecraft:leaves");
+  static const bs::Tag& noDecay = R().tag("minecraft:prevents_nearby_leaf_decay");
+  auto distAt = [&](int st) { return R().in(st, noDecay) ? 0 : R().has(st, "distance") ? R().int_value(st, "distance") : 7; };
+  auto leafTick = [&](const P& p, int st, int neighbour) {  // LeavesBlock.updateShape
+    if (!R().in(st, leavesTag) || !R().has(st, "distance")) return;
+    int d = distAt(neighbour) + 1;
+    if (d != 1 || R().int_value(st, "distance") != d) l.schedule_leaf_tick(p);
+  };
+  auto face = [&](bs::Dir d, int x, int y, int z) {
+    P p = mn.offset(x, y, z), n = p.rel(d);
+    int s = l.get(p), ns = l.get(n);
+    leafTick(p, s, ns);
+    int s2 = update_shape(l, s, p, d, n, ns);
+    if (s2 != s) l.set(p, s2);
+    leafTick(n, ns, s2);
+    int n2 = update_shape(l, ns, n, bs::opposite(d), p, s2);
+    if (n2 != ns) l.set(n, n2);
+  };
+  // DiscreteVoxelShape.forAllFaces: z faces (a=x, b=y, c=z), then y faces (a=z, b=x, c=y), then x faces (a=y, b=z, c=x)
+  for (int a = 0; a < sx; a++)
+    for (int b = 0; b < sy; b++) {
+      bool last = false;
+      for (int k = 0; k <= sz; k++) {
+        bool f = k != sz && full(a, b, k);
+        if (!last && f) face(bs::NORTH, a, b, k);
+        if (last && !f) face(bs::SOUTH, a, b, k - 1);
+        last = f;
+      }
+    }
+  for (int a = 0; a < sz; a++)
+    for (int b = 0; b < sx; b++) {
+      bool last = false;
+      for (int k = 0; k <= sy; k++) {
+        bool f = k != sy && full(b, k, a);
+        if (!last && f) face(bs::DOWN, b, k, a);
+        if (last && !f) face(bs::UP, b, k - 1, a);
+        last = f;
+      }
+    }
+  for (int a = 0; a < sy; a++)
+    for (int b = 0; b < sz; b++) {
+      bool last = false;
+      for (int k = 0; k <= sx; k++) {
+        bool f = k != sx && full(k, a, b);
+        if (!last && f) face(bs::WEST, k, a, b);
+        if (last && !f) face(bs::EAST, k - 1, a, b);
+        last = f;
+      }
+    }
 }
 
 int update_from_neighbour_shapes(Level& l, int state, const P& p) {

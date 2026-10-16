@@ -157,7 +157,15 @@ void Piece::placeBlock(Level& level, int state, int x, int y, int z, const Bound
   if (mirror_ != Mirror::NONE) state = b.mirror(state, mirror_);
   if (rotation_ != Rotation::NONE) state = b.rotate(state, rotation_);
   level.setBlock(p.x, p.y, p.z, state);
-  // ponytail: fluid ticks and SHAPE_CHECK_BLOCKS post-processing marks are not tracked (no fluid ticking yet).
+  // ponytail: the fluid tick scheduled here is not kept (no fluid ticking in worldgen yet).
+  static const std::vector<int> shapeCheck = [&] {  // StructurePiece.SHAPE_CHECK_BLOCKS
+    std::vector<int> v;
+    for (const char* n : {"nether_brick_fence", "torch", "wall_torch", "oak_fence", "spruce_fence", "dark_oak_fence", "pale_oak_fence",
+                          "acacia_fence", "birch_fence", "jungle_fence", "ladder", "iron_bars"})
+      v.push_back(b.blockIndex(n));
+    return v;
+  }();
+  if (std::find(shapeCheck.begin(), shapeCheck.end(), b.blockOf(state)) != shapeCheck.end()) level.markPostProcessing(p.x, p.y, p.z);
 }
 
 int Piece::getBlock(Level& level, int x, int y, int z, const BoundingBox& chunkBB) {
