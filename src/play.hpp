@@ -182,15 +182,13 @@ inline void register_core_handlers() {
     on(play_sb::chat_command, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
-        printf("%s issued server command: /%s\n", p.name.c_str(), cmd.c_str());
-        fflush(stdout);
+        log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });
     on(play_sb::chat_command_signed, [](Player& p, Reader& in, int id) {
         (void)id;
         std::string cmd = in.str(32767);
-        printf("%s issued server command: /%s\n", p.name.c_str(), cmd.c_str());
-        fflush(stdout);
+        log_info("%s issued server command: /%s", p.name.c_str(), cmd.c_str());
         run_command(&p, cmd);
     });
 }

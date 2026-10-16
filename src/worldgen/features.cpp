@@ -965,7 +965,7 @@ void Features::decorate(Region& r) const {
     for (int dx = -1; dx <= 1; dx++) {
       Chunk& c = *r.chunk(r.cx + dx, r.cz + dz)->chunk;
       for (auto& s : c.sections)
-        for (uint16_t b : s.biomes) present[b] = 1;
+        for (int i = 0; i < 64; i++) present[s.biomes.get(i)] = 1;
     }
   P origin{ox, MIN_Y, oz};
   int nsteps = std::max(11, int(steps.size()));
