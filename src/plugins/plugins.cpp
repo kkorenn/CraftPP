@@ -528,42 +528,17 @@ void chat(const PlayerPtr& pp, const std::string& msg) {
     broadcast_legacy(line && line->isString() ? line->asString() : fallback);
 }
 
-// Appends plugin roots (literal + greedy "args" asking the server for suggestions, Paper's shape for
-// plugin.yml commands) to the Brigadier tree built by commands.hpp. Root must be node 0, root index last.
+// Adds plugin roots (literal + greedy "args" asking the server for suggestions, Paper's shape for
+// plugin.yml commands) to the command tree (commands/dispatcher.hpp). Execution and tab completion stay here:
+// player_command() and the command_suggestion wrapper see plugin labels before the dispatcher does.
 void patch_command_tree() {
     std::vector<std::string> roots;
     {
         std::lock_guard lock(state_mtx);
         roots.assign(labels.begin(), labels.end());
     }
-    if (roots.empty() || commands_packet.empty()) return;
-    Reader frame(commands_packet);
-    int len = frame.varint();
-    size_t body = frame.i;
-    if (size_t(len) != commands_packet.size() - body || commands_packet.back() != 0) return;
-    if (frame.varint() != play_cb::commands) return;
-    int count = frame.varint();
-    uint8_t root_flags = frame.u8();
-    int nchild = frame.varint();
-    std::vector<int> children;
-    for (int i = 0; i < nchild; i++) children.push_back(frame.varint());
-    if ((root_flags & 3) != 0) return;
-    size_t rest = frame.i;
-    Writer w;
-    w.varint(play_cb::commands).varint(count + 2 * int(roots.size()));
-    w.u8(root_flags);
-    for (size_t i = 0; i < roots.size(); i++) children.push_back(count + 2 * int(i));
-    w.varint(int32_t(children.size()));
-    for (int c : children) w.varint(c);
-    w.bytes(commands_packet.data() + rest, commands_packet.size() - 1 - rest);  // other nodes, minus root index
-    for (size_t i = 0; i < roots.size(); i++) {
-        w.u8(0x01 | 0x04).varint(1).varint(count + 2 * int(i) + 1).str(roots[i]);  // literal, executable
-        w.u8(0x02 | 0x04 | 0x10).varint(0).str("args").varint(arg_types::string_).varint(2).str("minecraft:ask_server");
-    }
-    w.varint(0);
-    Writer f;
-    f.varint(int32_t(w.b.size())).bytes(w.b);
-    commands_packet = f.b;
+    for (auto& r : roots) add_command_root(r);
+    if (!roots.empty()) resend_all_commands();
 }
 
 // ---------- API calls from plugins (Java -> C++, "api" {m, a}) ----------
