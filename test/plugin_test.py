@@ -248,9 +248,10 @@ def main():
 
     # Memory: the same session without plugins (no JVM at all).
     d2 = tempfile.mkdtemp(prefix="craftpp-noplugins-")
-    proc = start_server(d2, PORT + 1, [])
+    s = socket.socket(); s.bind(("", 0)); port2 = s.getsockname()[1]; s.close()  # PORT + 1 can be a client's ephemeral port
+    proc = start_server(d2, port2, [])
     try:
-        c, _ = login("Alice", "127.0.0.1", PORT + 1, view=2)
+        c, _ = login("Alice", "127.0.0.1", port2, view=2)
         time.sleep(0.5)
         rss_plain = rss_kib(proc.pid)
         assert not os.path.exists(os.path.join(d2, "plugins/jvm.properties"))
