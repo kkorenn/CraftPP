@@ -168,5 +168,24 @@ and exit cleanly. Remaining Linux warnings are all `-Wunused-function` in plugin
   light only where it isn't uniform (vanilla sends empty/full masks).
 - Packet ids/frames: `Player::send` frames (and maybe compresses) per call; pre-framed blobs passed to
   `send_raw_bytes` are re-framed when compression is on, so build them once at startup (like commands_packet).
-- plugins.cpp: on Linux without a JDK six functions are unused (`-Wunused-function` warnings); wrap them in the
-  same `#if CRAFTPP_JNI`.
+- plugins.cpp: the unused-function warnings without a JDK are gone (GCC 12 now only reports
+  `-Wsubobject-linkage` for `BlockSpec`/`ItemSpec` in commands/args.hpp).
+
+## Second pass (branch perf-2)
+
+| change | before | after |
+|---|---|---|
+| density volume loops: one loop per op in Unary/Binary/ConstBinary (switch out of the loop) | noise 2.95, +surface 5.85 ms/chunk (M4); 3.8 / 9.5 (container GCC) | 2.45 / 5.04 (M4); 3.0 / 8.1 (container); fingerprint unchanged |
+| `World::get_ptr` fast path for loaded chunks (no promise/future per call) | `get_block` 76 ns | 16 ns |
+| autosave thread sleeps on a self-pipe (was a 200 ms poll); level.dat every 5 min (vanilla autosave period) and only when changed | paused server ~5 wakeups/s, level.dat rewritten every 5 s | ~0.3 wakeups/s, no idle writes |
+| socket reads through a per-connection 8 KiB buffer (was 1 recv per length byte + 1 per body) | 2+ recv per packet | <= 1 |
+| `Player::send` frames straight into the outbox; `broadcast` frames (and compresses) once for all recipients | 1 extra copy per packet, N compressions per broadcast | 0 / 1 |
+
+Container (`--cpus 1.5`), 50 bots walking at 20 Hz: CPU 7.6-8.8 % -> 6.9-7.8 %, RSS 25 MiB both (noisy host).
+Idle with 0 players: context switches/s 28 -> 20.
+
+Next for many players (not done here: entity tracking belongs to the mobs work): player entities are spawned for
+every client and each move packet is broadcast to everyone as teleport_entity + rotate_head (~140 bytes framed).
+Vanilla (ChunkMap.TrackedEntity.updatePlayer) only pairs players within min(512, view distance * 16) blocks whose
+chunk is in view, and ServerEntity.sendChanges sends small relative moves once per update interval. At 100
+players in one spot that is ~12.7 MB/s out today.

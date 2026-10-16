@@ -6,6 +6,13 @@
 #include <map>
 
 namespace worldgen {
+std::string biome_file(const std::string& root, const std::string& pack, const std::string& name) {
+  std::string p = pack + "/data/minecraft/worldgen/biome/" + name + ".json";
+  return !pack.empty() && std::filesystem::exists(p) ? p : root + "/minecraft/worldgen/biome/" + name + ".json";
+}
+}  // namespace worldgen
+
+namespace worldgen {
 namespace {
 constexpr float PI_F = (float)M_PI;
 constexpr int RANGE = 4;  // WorldCarver.getRange
@@ -58,7 +65,7 @@ void CarvingMask::visit(const std::function<void(int, int, int, int)>& f) const 
   }
 }
 
-Carvers::Carvers(const std::string& root) {
+Carvers::Carvers(const std::string& root, const std::string& pack) {
   std::map<std::string, int> index;
   std::string dir = root + "/minecraft/worldgen/carver";
   std::vector<std::string> names;
@@ -100,7 +107,7 @@ Carvers::Carvers(const std::string& root) {
     if (e.path().extension() == ".json") biomes.push_back(e.path().stem().string());
   std::sort(biomes.begin(), biomes.end());  // registry order = gen/ids.hpp biomes::
   for (auto& b : biomes) {
-    Json j = Json::parseFile(bdir + "/" + b + ".json");
+    Json j = Json::parseFile(biome_file(root, pack, b));
     auto& list = biomeCarvers.emplace_back();
     const Json& c = j["carvers"];
     auto add = [&](const std::string& id) {

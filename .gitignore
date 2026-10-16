@@ -33,3 +33,4 @@ java/.gradle/
 /whitelist.json
 /.console_history
 data/block_dump.json
+.cache/

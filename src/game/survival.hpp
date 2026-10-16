@@ -352,29 +352,21 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
     return false;
 }
 
-inline void use_item_on(Player& p, int hand, int x, int y, int z, int face) {
+namespace lvl {
+inline void use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
+inline bool use_bucket(Player& pl, ItemStack& slot);
+}
+inline void use_item_on(Player& p, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     if (p.gamemode == 3 || p.g.dead) return;
     if (!within_reach(p, x, y, z)) return;
     int clicked = world.get_block(x, y, z);
-    ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
     bool hands_empty = held(p).empty() && p.inv[40].empty();
     if (block_index(clicked) == block_index(blocks::crafting_table) && (!p.g.sneaking || hands_empty) && hand == 0) {
         open_crafting_table(p, x, y, z);
         return;
     }
-    int state = slot.empty() ? -1 : ITEM_TO_BLOCK[slot.item];
-    if (state < 0) return;
-    // ponytail: places the block's default state (no facing/axis/half); needs per-block placement rules.
-    if (!block_of(clicked).replaceable) {
-        static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
-        if (face < 0 || face > 5) face = 1;
-        x += off[face][0], y += off[face][1], z += off[face][2];
-    }
-    int target = world.get_block(x, y, z);
-    if (!block_of(target).replaceable) return p.send(block_update(x, y, z, target));
-    if (block_of(state).collision && box_hits_player(x, y, z)) return p.send(block_update(x, y, z, target));
-    change_block(x, y, z, state);
-    if (p.gamemode != 1 && --slot.count <= 0) slot = {};
+    if (face < 0 || face > 5) face = 1;
+    lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
@@ -458,14 +450,20 @@ inline void register_game_handlers() {
         int x, y, z;
         read_block_pos(in, x, y, z);
         int face = in.varint();
-        in.f32(); in.f32(); in.f32(); in.u8(); in.u8();
+        float cx = in.f32(), cy = in.f32(), cz = in.f32();
+        in.u8(); in.u8();
         int seq = in.varint();
-        use_item_on(p, hand, x, y, z, face);
+        use_item_on(p, hand, x, y, z, face, cx, cy, cz);
         ack_block_changes(p, seq);
     });
     on(play_sb::use_item, [](Player& p, Reader& in, int) {
         int hand = in.varint();
         int seq = in.varint();
+        if (in.i + 8 <= in.n) p.yaw = in.f32(), p.pitch = in.f32();  // the view the client used the item with
+        if (p.gamemode != 3 && !p.g.dead && lvl::use_bucket(p, p.inv[hand ? 40u : size_t(p.selected)])) {
+            ack_block_changes(p, seq);
+            return;
+        }
         start_using(p, hand);
         ack_block_changes(p, seq);
     });
