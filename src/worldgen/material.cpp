@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "world.hpp"
+#include "worldgen/block_state.hpp"
 #include "worldgen/json.hpp"
 #include "worldgen/mth.hpp"
 
@@ -50,38 +51,21 @@ struct MaterialSystem::Loader {
   std::map<std::string, const Node*> rules, conds;
   std::map<std::pair<std::string, bool>, int> noiseSlot;
 
-  std::string report;  // blocks.json text; only the blocks the rules name get parsed (a full DOM costs ~40 MB)
+  explicit Loader(MaterialSystem& s) : s(s) {}
 
-  Loader(MaterialSystem& s, const std::string& path) : s(s) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("material: cannot read " + path);
-    report.assign(std::istreambuf_iterator<char>(f), {});
-    for (size_t at = report.find("\n  \""); at != std::string::npos; at = report.find("\n  \"", at + 1)) {
-      size_t q = report.find('"', at + 4);  // top-level keys are the only lines indented by exactly 2
-      offsets.emplace(report.substr(at + 4, q - at - 4), q);
-    }
-  }
-  std::unordered_map<std::string, size_t> offsets;  // block name -> position in report
-
-  const BlockInfo& block(const std::string& name) {
+  const BlockInfo& block(const std::string& name) {  // from data/blocks.bin (bs::R), ids = global state ids
     std::string id = fullId(name);
     auto it = blocks.find(id);
     if (it != blocks.end()) return it->second;
-    auto off = offsets.find(id);
-    if (off == offsets.end()) throw std::runtime_error("material: unknown block " + name);
-    size_t at = off->second;
-    size_t begin = report.find('{', at), end = begin;
-    for (int depth = 0; end < report.size(); end++) {  // matching brace (no braces inside block report strings)
-      if (report[end] == '{') depth++;
-      else if (report[end] == '}' && --depth == 0) break;
-    }
-    Json b = Json::parse(std::string_view(report).substr(begin, end + 1 - begin));
+    const auto& R = bs::R();
+    int bi = R.block_index(id);
+    if (bi < 0) throw std::runtime_error("material: unknown block " + name);
+    const bs::Block& b = R.block(bi);
     BlockInfo& info = blocks[id];
-    for (auto& st : b["states"].arr) {
-      State x{st["id"].asInt(), {}};
-      if (auto* p = st.find("properties"))
-        for (auto& [k, v] : p->obj) x.props.push_back({k, v.asString()});
-      if (st.find("default")) info.def = (int)info.states.size();
+    info.def = b.def - b.first;
+    for (int st = b.first; st < b.first + b.count; st++) {
+      State x{st, {}};
+      for (auto& p : b.props) x.props.push_back({p.name, std::string(R.value(st, p.name))});
       info.states.push_back(std::move(x));
     }
     return info;
@@ -269,9 +253,9 @@ PosRandom MaterialSystem::positional(const std::string& id) const {
 }
 
 MaterialSystem::MaterialSystem(RandomState& rs, const std::string& settingsId, const std::string& root,
-                               const std::string& blocksReport, bool keepLoader)
+                               bool keepLoader)
     : randomState(&rs), dataRoot(root) {
-  loader = std::make_unique<Loader>(*this, blocksReport);
+  loader = std::make_unique<Loader>(*this);
   auto range = [&](const char* name, int& lo, int& hi) {
     lo = INT_MAX, hi = INT_MIN;
     for (auto& st : loader->block(name).states) lo = std::min(lo, st.id), hi = std::max(hi, st.id);

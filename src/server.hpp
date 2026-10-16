@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <charconv>
 #include <climits>
 #include <random>
@@ -131,12 +132,30 @@ inline int level_respawn_y(int x, int z) {
     return INT_MIN;
 }
 
-inline SpawnPos find_world_spawn(worldgen::TerrainGenerator& gen) {
-    auto [sx, sz] = gen.findSpawnPosition();
+// Brings the chunks a FULL (cx, cz) depends on up to TERRAIN on the worker pool. TERRAIN is per-chunk
+// deterministic and most of the cost; features, light and full then run inline as before.
+inline void prefetch_terrain(worldgen::Pipeline& pl, int cx, int cz) {
+    using worldgen::Status;
+    const auto& need = pl.accumulated(Status::FULL);  // status needed at chessboard distance r
+    int r = 0;
+    while (r + 1 < int(need.size()) && need[size_t(r + 1)] >= Status::TERRAIN) r++;
+    std::vector<std::future<void>> jobs;
+    for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++) {
+            auto job = std::make_shared<std::packaged_task<void()>>([&pl, x = cx + dx, z = cz + dz] { pl.ensure(x, z, Status::TERRAIN); });
+            jobs.push_back(job->get_future());
+            world.pool.submit([job] { (*job)(); });
+        }
+    for (auto& j : jobs) j.get();
+}
+
+inline SpawnPos find_world_spawn(worldgen::Overworld& ow) {
+    auto [sx, sz] = ow.terrain->findSpawnPosition();
     int cx = sx >> 4, cz = sz >> 4;
     SpawnPos spawn{cx * 16 + 8, 64, cz * 16 + 8};  // ChunkGenerator.getSpawnHeight = 64
     for (int i = 0, x = 0, z = 0, dx = 0, dz = -1; i < 121; i++) {
         if (x >= -5 && x <= 5 && z >= -5 && z <= 5) {
+            prefetch_terrain(ow.pipeline, cx + x, cz + z);
             for (int bx = (cx + x) * 16; bx < (cx + x) * 16 + 16; bx++)  // getSpawnPosInChunk
                 for (int bz = (cz + z) * 16; bz < (cz + z) * 16 + 16; bz++)
                     if (int y = level_respawn_y(bx, bz); y != INT_MIN) return {bx, y, bz};
@@ -216,14 +235,13 @@ inline void setup_world() {
         structure_world = std::make_shared<structure::StructureWorld>(*ow, true);
         world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
     }
-    auto gen = ow->terrain;
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
     light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
     } else {
-        world_spawn = find_world_spawn(*gen);
+        world_spawn = find_world_spawn(*ow);
         write_level_data({{"spawn-x", std::to_string(world_spawn.x)}, {"spawn-y", std::to_string(world_spawn.y)},
                           {"spawn-z", std::to_string(world_spawn.z)}});
     }

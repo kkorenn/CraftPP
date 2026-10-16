@@ -102,7 +102,7 @@ class TerrainGenerator {
   df::NodeP aqBarrier, aqFloodedness, aqSpread, aqLava, aqExclusion, aqSurfaceLevel;
   const PositionalRandomFactory* aquiferRandom;
   std::vector<std::vector<std::pair<std::string, std::pair<int64_t, int64_t>>>> spawnTarget;
-  BiomeSource biomeSource, neighbourBiomeSource;
+  BiomeSource biomeSource, neighbourBiomeSource{biomeSource};
   // Recent chunks' biome grids (chunkBiomes layout, ids < 256): the surface stage reads neighbours' biomes like
   // vanilla's WorldGenRegion does, so a neighbour generated earlier is reused instead of recomputed.
   std::shared_ptr<const std::vector<uint8_t>> cachedBiomes(int cx, int cz);
