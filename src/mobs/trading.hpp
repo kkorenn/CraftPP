@@ -1,9 +1,9 @@
 #pragma once
-// Villager trading (world/item/trading, npc/villager, ai/gossip ports): trade data from data/mobs.json,
+// Villager trading (world/item/trading, npc/villager, ai/gossip ports): trade data from data/roster.json,
 // MerchantOffer, offer generation from trade sets, demand/restock/special prices, gossip and the
 // merchant_offers packet. Entity-agnostic: a villager/wandering trader embeds a MerchantState.
-#include "entity.hpp"
-#include "mob_data.hpp"
+#include "../game/entity.hpp"
+#include "roster_data.hpp"
 
 #include <array>
 #include <optional>

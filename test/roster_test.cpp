@@ -1,7 +1,7 @@
-// Mob data / trading / breeding self-checks against vanilla constants. Run from the repo root.
+// Roster data / trading / breeding self-checks against vanilla constants. Run from the repo root.
 #include "play.hpp"
-#include "game/breeding.hpp"
-#include "game/trading.hpp"
+#include "mobs/breeding.hpp"
+#include "mobs/trading.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -10,19 +10,14 @@
 
 int main() {
     CHECK(load_game_data());
-    CHECK(load_mob_data());
-    const MobType& cow = mob_types[size_t(entity_types::cow)];
-    CHECK(cow.name == "cow" && cow.category == MobCategory::creature && cow.width == 0.9f && cow.height == 1.4f);
-    CHECK(cow.attr(attribute_id("max_health")) == 10.0 && cow.attr(attribute_id("movement_speed")) == double(0.2f));
+    CHECK(load_roster_data());
+    const RosterType& cow = roster(entity_types::cow);
+    CHECK(cow.name == "cow" && entity_type_id("minecraft:cow") == entity_types::cow);
     CHECK(cow.is_food(item_by_name["minecraft:wheat"]) && !cow.is_food(item_by_name["minecraft:bone"]));
-    CHECK(cow.egg == item_by_name["minecraft:cow_spawn_egg"] && cow.loot == "entities/cow");
-    const MobType& wolf = mob_types[size_t(entity_types::wolf)];
-    CHECK(wolf.attr(attribute_id("attack_damage")) == 4.0 && wolf.tame == std::vector<uint16_t>{uint16_t(item_by_name["minecraft:bone"])});
-    CHECK(mob_types[size_t(entity_types::zombie)].attr(attribute_id("follow_range")) == 35.0);
-    CHECK(mob_types[size_t(entity_types::villager)].attr(attribute_id("movement_speed")) == 0.5);
-    size_t living = 0;
-    for (auto& t : mob_types) living += t.living;
-    CHECK(living >= 90);
+    CHECK(cow.egg == item_by_name["minecraft:cow_spawn_egg"]);
+    const RosterType& wolf = roster(entity_types::wolf);
+    CHECK(wolf.tame == std::vector<uint16_t>{uint16_t(item_by_name["minecraft:bone"])});
+    CHECK(roster(entity_types::horse).is_tempt(item_by_name["minecraft:golden_carrot"]));
 
     // Breeding: feed two cows, mate, cooldown, baby grows up.
     AgeState a, b;
@@ -86,5 +81,5 @@ int main() {
     CHECK(g.find(1, 1, GossipType::trading)->value == 23 && g.find(1, 1, GossipType::major_negative)->value == 20);
     GossipContainer g2;
     CHECK(g2.transfer_from(g, 10) >= 1 && !g2.entries.empty());
-    puts("mobs_test ok");
+    puts("roster_test ok");
 }

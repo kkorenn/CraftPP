@@ -2,8 +2,8 @@
 // Breeding, ageing and taming state machines (AgeableMob, Animal, TamableAnimal, AbstractHorse temper).
 // Plain value types embedded in a mob; the mob calls these and turns the returned flags into packets
 // (entity_event 18 hearts / 7 tame / 6 smoke, DATA_BABY_ID metadata) and spawns (baby, XP orb).
-#include "entity.hpp"
-#include "mob_data.hpp"
+#include "../game/entity.hpp"
+#include "roster_data.hpp"
 
 // AgeableMob: age < 0 baby (counts up to 0), > 0 breeding cooldown (counts down).
 struct AgeState {
@@ -61,7 +61,7 @@ struct LoveState {
 enum class FeedResult { pass, in_love, aged_up };
 // Animal.mobInteract food branch. On anything but pass the caller consumes one item (usePlayerItem, not in
 // creative), plays the eat sound and, for in_love, broadcasts entity_event 18. *flip = baby flag changed.
-inline FeedResult animal_feed(const MobType& t, AgeState& a, LoveState& l, int item, int64_t uh, int64_t ul,
+inline FeedResult animal_feed(const RosterType& t, AgeState& a, LoveState& l, int item, int64_t uh, int64_t ul,
                               bool* flip = nullptr) {
     if (!t.is_food(item)) return FeedResult::pass;
     if (a.age == 0 && l.can_fall_in_love()) {
@@ -99,9 +99,9 @@ struct TameState {
 };
 // Taming roll per item given: wolf (bone) / cat (cat_food) / ocelot trust: nextInt(3)==0; parrot (seeds): nextInt(10)==0.
 // true -> tame (entity_event 7), false -> entity_event 6. Wolf/cat also sit on success.
-inline int tame_chance_bound(const MobType& t) { return t.name == "parrot" ? 10 : 3; }
-inline bool try_tame(const MobType& t, TameState& s, int item, int64_t uh, int64_t ul) {
-    if (s.tame || !std::binary_search(t.tame.begin(), t.tame.end(), uint16_t(item))) return false;
+inline int tame_chance_bound(const RosterType& t) { return t.name == "parrot" ? 10 : 3; }
+inline bool try_tame(const RosterType& t, TameState& s, int item, int64_t uh, int64_t ul) {
+    if (s.tame || !t.is_tame_item(item)) return false;
     if (rand_int(tame_chance_bound(t)) != 0) return false;
     s.tame_by(uh, ul);
     if (t.name == "wolf" || t.name == "cat") s.ordered_to_sit = s.in_sitting_pose = true;
