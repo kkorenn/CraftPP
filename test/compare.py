@@ -110,7 +110,7 @@ def run_craftpp(center):
     stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s + "_")), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
-    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
+    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + (2 if args.fluids else 1)}\n"  # --fluids: neighbours must tick too
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
