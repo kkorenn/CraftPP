@@ -41,7 +41,7 @@ inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
 inline World world;
-inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline std::atomic<int> shutdown_requested{0};  // lock-free: safe from signal handlers and any thread
 inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
 inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
     shutdown_requested = 1;
@@ -264,7 +264,7 @@ inline void broadcast_message(const std::string& text, const std::string& color 
     broadcast(w.boolean(false));
 }
 
-inline uint8_t angle(float deg) { return uint8_t(int(std::floor(deg * 256.0f / 360.0f))); }
+inline uint8_t angle(float deg) { return uint8_t(Mth::floor(deg * 256.0f / 360.0f)); }  // Mth.packDegrees
 
 // player_info_update with ADD_PLAYER | UPDATE_GAME_MODE | UPDATE_LISTED | UPDATE_LATENCY | UPDATE_HAT
 inline Writer info_add(const std::vector<PlayerPtr>& list) {
@@ -288,18 +288,9 @@ inline Writer spawn_entity(const Player& p) {
                          .varint(0));
 }
 
-inline void broadcast_position(const Player& p) {
-    broadcast(Writer()
-                  .varint(play_cb::teleport_entity)
-                  .varint(p.eid)
-                  .f64(p.x).f64(p.y).f64(p.z)
-                  .f64(0).f64(0).f64(0)
-                  .f32(p.yaw).f32(p.pitch)
-                  .i32(0)
-                  .boolean(p.on_ground),
-              &p);
-    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
-}
+// Other clients learn player moves from the entity tracker (src/mobs/manager.hpp: ChunkMap.TrackedEntity with
+// range min(512, view * 16), relative moves every 2 ticks); nothing to send here.
+inline void broadcast_position(const Player&) {}
 
 // ---------- player data ----------
 
@@ -334,7 +325,9 @@ inline void save_player(const Player& p) {
     std::filesystem::rename(path + ".tmp", path);
 }
 
+inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
 inline void save_all() {
+    if (on_save_all) on_save_all();
     for (auto& p : snapshot()) save_player(*p);
     world.save_dirty();
 }

@@ -707,6 +707,25 @@ std::mutex& mutex() {
     return m;
 }
 
+int get(int x, int y, int z, bool sky) {
+    std::lock_guard lock(mutex());
+    Engine& e = engine();
+    auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
+    Column* c = it == e.columns.end() ? nullptr : it->second.get();
+    if (!c || c->status != LIT) return -1;
+    int sy = y >> 4;
+    if (!sky) {
+        int si = sy - MIN_SEC;
+        return si >= 0 && si < NSEC && c->present[si] ? c->block[si].get(idx(x, y, z)) : 0;
+    }
+    for (int s = sy; s - MIN_SEC < NSEC; s++) {  // SkyLightSectionStorage.getLightValue: first stored section up
+        int si = s - MIN_SEC;
+        if (si < 0) continue;
+        if (c->present[si]) return c->sky[si].get(s == sy ? idx(x, y, z) : idx(x, 0, z));
+    }
+    return 15;
+}
+
 void attach(World& world, worldgen::Pipeline& p) {
     engine().world = &world;
     engine().pipeline = &p;
@@ -968,6 +987,11 @@ uint32_t write(Writer& w, Chunk& c) {
     if (check) verify(e, c.cx, c.cz);
     write_masks(w, e.col(c.cx, c.cz), ~0u, ~0u);
     return c.light_version;
+}
+
+int level(bool sky, int x, int y, int z) {
+    int v = get(x, y, z, sky);
+    return v >= 0 ? v : sky ? 15 : 0;
 }
 
 void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state) {

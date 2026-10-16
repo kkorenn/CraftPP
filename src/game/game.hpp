@@ -3,6 +3,7 @@
 // Threading model: game/tick.hpp. APIs for other modules: give_item/clear (inventory.hpp), spawn_item,
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
+#include "../level/glue.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -20,14 +21,12 @@ inline void register_player(const PlayerPtr& pp) {
     Player& p = *pp;
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
-    p.send(info_add(all));
-    for (auto& q : players) p.send(spawn_entity(*q));
+    p.send(info_add(all));  // entities (players too) are spawned by the tracker (src/mobs/manager.hpp)
     {
         std::lock_guard lock(players_mtx);
         players.push_back(pp);
     }
     broadcast(info_add({pp}), &p);
-    broadcast(spawn_entity(p), &p);
     plugins::announce_join(p);  // PlayerJoinEvent may rewrite/suppress it
 }
 
@@ -47,6 +46,7 @@ inline void unregister_player(const PlayerPtr& pp) {
 // Called once from main() after register_core_handlers().
 inline void start_game() {
     game_init();
+    lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
@@ -71,6 +71,7 @@ inline void request_stop() {
         std::string level = props["level-name"];
         log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
+        mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
         log_info("ThreadedAnvilChunkStorage: All dimensions are saved");

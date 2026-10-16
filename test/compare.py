@@ -37,6 +37,8 @@ ap.add_argument("--edits", help="';'-separated console commands run after the ch
                 "e.g. \"fill {x} {y-30} {z} {x+6} {y-24} {z+6} air;setblock {x+3} {y-27} {z+3} torch\" (tests incremental light); 'wait' settles in between")
 ap.add_argument("--jfr", help="run vanilla with --jfrProfile and copy run 1's recording here (minecraft.ChunkGeneration events = vanilla's generation order)")
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
+ap.add_argument("--fluids", action="store_true", help="also settle without --light: apply the block updates of fluids "
+                "that flow after post-processing (vanilla sends chunks right after it)")
 args = ap.parse_args()
 RUN = os.path.abspath(args.run_dir)
 view = min(32, int(args.radius * 1.42) + 2)  # vanilla sends a circle; cover the square + spawn fuzz
@@ -65,7 +67,7 @@ def collect(port, center, proc, edited=False):
         proc.stdin.write(f"tp {'Cmp2' if edited else 'Cmp'} {center[0]} {center[1]} {center[2]}\n".encode()); proc.stdin.flush()
     else: c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
-    if args.light: settle(c)  # neighbours may still be lighting: take their light_update packets too
+    if args.light or args.fluids: settle(c)  # neighbours may still be lighting: take their light_update packets too
     if args.edits and not edited:
         x, y, z = center
         for cmd in args.edits.split(";"):
@@ -125,7 +127,7 @@ def run_craftpp(center):
     os.makedirs(sdir, exist_ok=True)
     props = f"{sdir}/compare.properties"
     shutil.rmtree(f"{sdir}/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
-    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
+    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + (2 if args.fluids else 1)}\n"  # --fluids: neighbours must tick too
                            f"level-name={sdir}/compare-world\nlevel-type=normal\nwhite-list=false\ngenerate-structures={GEN_STRUCTURES}\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{sdir}/eula.txt", "w").write("eula=true\n")  # server dir = beside the properties file
