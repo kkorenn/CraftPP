@@ -71,7 +71,10 @@ class TerrainGenerator {
   std::unique_ptr<NoiseChunk> fillFromNoise(Chunk& c);
   std::unique_ptr<NoiseChunk> createNoiseChunk(const DensityVolume& volume);
   // getBaseHeight(x, z, WORLD_SURFACE_WG): y above the top non-air noise-stage block, or MIN_Y.
-  int baseHeight(int x, int z);
+  // oceanFloor: OCEAN_FLOOR_WG instead (blocks_motion: only the default block in a noise column).
+  int baseHeight(int x, int z, bool oceanFloor = false);
+  // getBaseColumn: noise-stage block states MIN_Y..MIN_Y+HEIGHT-1.
+  void baseColumn(int x, int z, std::vector<int>& out);
   // NoiseSpawnFinder.findSpawnPosition: world spawn search origin (block x, z) from noise_settings spawn_target.
   std::pair<int, int> findSpawnPosition();
 

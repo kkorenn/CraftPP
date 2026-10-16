@@ -373,16 +373,27 @@ std::pair<int, int> TerrainGenerator::findSpawnPosition() {
   return {rx, rz};
 }
 
-int TerrainGenerator::baseHeight(int x, int z) {
+int TerrainGenerator::baseHeight(int x, int z, bool oceanFloor) {
   auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
   DensityBuffer density(HEIGHT);
   dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
   for (int y = HEIGHT - 1; y >= 0; y--) {
     int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
     if (state < 0) state = blocks::stone;
-    if (state != blocks::air) return MIN_Y + y + 1;
+    if (oceanFloor ? state == blocks::stone : state != blocks::air) return MIN_Y + y + 1;
   }
   return MIN_Y;
+}
+
+void TerrainGenerator::baseColumn(int x, int z, std::vector<int>& out) {
+  auto nc = createNoiseChunk({1, HEIGHT, 1, x, MIN_Y, z});
+  DensityBuffer density(HEIGHT);
+  dfs.bind(finalDensity, nc->ctx).sampleVolume(density, nc->volume);
+  out.assign(HEIGHT, blocks::air);
+  for (int y = HEIGHT - 1; y >= 0; y--) {
+    int state = nc->aquifer->computeSubstance(x, MIN_Y + y, z, density.get(y));
+    out[y] = state < 0 ? blocks::stone : state;
+  }
 }
 
 }  // namespace worldgen
