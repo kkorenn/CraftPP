@@ -470,7 +470,7 @@ struct MultifaceGrowth : Feature {
       if (ns < 0) return false;
       l.set(p, ns);
       l.mark_post_processing(p);
-      if (r.nextFloat() < chance) multiface_spread_from_face_random(l, ns, p, d, r, true);
+      if (r.nextFloat() < chance) multiface_spread_from_face_random(l, {block, block == R().block_of(blocks::sculk_vein)}, ns, p, d, r, true);
       return true;
     }
     return false;

@@ -6,9 +6,9 @@ namespace worldgen {
 
 Overworld::~Overworld() = default;
 
-Overworld::Overworld(int64_t seed, const std::string& stages, const std::string& root)
-    : seed(seed), terrain(std::make_shared<TerrainGenerator>(seed, root, stages != "noise")) {
-  if (stages == "carvers" || stages == "features") carvers = std::make_unique<Carvers>(root);
+Overworld::Overworld(int64_t seed, const std::string& stages, const std::string& root, const std::string& pack)
+    : seed(seed), pack(pack), terrain(std::make_shared<TerrainGenerator>(seed, root, stages != "noise")) {
+  if (stages == "carvers" || stages == "features") carvers = std::make_unique<Carvers>(root, pack);
   if (stages == "features") features = std::make_unique<Features>(*this, root);
 
   pipeline.set_step(Status::BIOMES, [this](Region& r) { terrain->createBiomes(*r.center().chunk); });

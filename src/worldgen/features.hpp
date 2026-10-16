@@ -142,6 +142,7 @@ struct Placed {
   const Feature* feature = nullptr;
   std::vector<const Modifier*> mods;
   int id = -1;  // index into Features::placedList for registry placed features (biome filter identity)
+  std::string name;  // registry id (debug)
   bool place(Level& l, RandomSource& r, const P& origin, bool biomeCheck = false) const;  // FeaturePlacer.place
 };
 
@@ -179,7 +180,12 @@ void place_mossy_carpet(Level& l, const P& p, RandomSource& r);  // MossyCarpetB
 bool multiface_can_attach(Level& l, bs::Dir dir, const P& neighbour);  // MultifaceBlock.canAttachTo
 // MultifaceBlock.getStateForPlacement (-1 = null) and the default MultifaceSpreader.
 int multiface_placement(Level& l, int block, int oldState, const P& p, bs::Dir dir);
-bool multiface_spread_from_face_random(Level& l, int state, const P& p, bs::Dir face, RandomSource& r, bool postProcess);
+struct Spreader {  // MultifaceSpreader config: default, or SculkVeinSpreaderConfig (sculk = true)
+  int block;  // block index of the multiface block
+  bool sculk = false, sameSpaceOnly = false;
+};
+bool multiface_spread_from_face_random(Level& l, const Spreader& sp, int state, const P& p, bs::Dir face, RandomSource& r, bool postProcess);
+long multiface_spread_all(Level& l, const Spreader& sp, int state, const P& p, bool postProcess);
 // BlockState.updateShape(dir, neighbour) for the blocks worldgen touches (survival, snowy, multiface, vines);
 // other blocks are returned unchanged. update_from_neighbour_shapes = Block.updateFromNeighbourShapes.
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& neighbourPos, int neighbour);

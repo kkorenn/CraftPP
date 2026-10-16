@@ -14,9 +14,11 @@ class Features;
 
 struct Overworld {
   // stages (server.properties worldgen-stages): noise | surface | carvers | features (= everything).
-  Overworld(int64_t seed, const std::string& stages, const std::string& dataRoot = "vanilla/src/data");
+  // pack: optional datapack dir whose biome JSON overrides vanilla's (compare.py stage packs).
+  Overworld(int64_t seed, const std::string& stages, const std::string& dataRoot = "vanilla/src/data", const std::string& pack = "");
   ~Overworld();
   int64_t seed;
+  std::string pack;
   std::shared_ptr<TerrainGenerator> terrain;
   std::unique_ptr<Carvers> carvers;
   std::unique_ptr<Features> features;

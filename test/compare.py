@@ -77,12 +77,12 @@ def run_vanilla(n, center):
 
 def run_craftpp(center):
     pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
-    stage = next((s for s in ("noise", "surface", "carvers") if pack.startswith(s)), "features")
+    stage = next((s for s in ("noise", "surface", "carvers") if pack.startswith(s + "_")), "features")
     props = f"{ROOT}/build/compare.properties"
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
-                           f"worldgen-stages={stage}\n")
+                           f"worldgen-stages={stage}\n" + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
     p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:

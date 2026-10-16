@@ -1,5 +1,5 @@
 // Pipeline smoke test + profile: generates an R x R square of FULL chunks through the overworld pipeline on one
-// thread and prints ms/chunk per status and peak RSS. Usage: pipeline_test [seed] [radius] [stages]
+// thread and prints ms/chunk per status and peak RSS. Usage: pipeline_test [seed] [radius] [stages] [cx cz]
 #undef NDEBUG
 #include <sys/resource.h>
 
@@ -15,13 +15,14 @@ int main(int argc, char** argv) {
   int64_t seed = argc > 1 ? std::stoll(argv[1]) : 12345;
   int r = argc > 2 ? std::stoi(argv[2]) : 3;
   std::string stages = argc > 3 ? argv[3] : "features";
+  int ox = argc > 5 ? std::stoi(argv[4]) : 0, oz = argc > 5 ? std::stoi(argv[5]) : 0;
   auto t0 = std::chrono::steady_clock::now();
   worldgen::Overworld ow(seed, stages);
   double init = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   t0 = std::chrono::steady_clock::now();
   int n = 0;
-  for (int cx = -r; cx <= r; cx++)
-    for (int cz = -r; cz <= r; cz++) {
+  for (int cx = ox - r; cx <= ox + r; cx++)
+    for (int cz = oz - r; cz <= oz + r; cz++) {
       Chunk c;
       c.cx = cx, c.cz = cz;
       ow.pipeline.take(cx, cz, c);

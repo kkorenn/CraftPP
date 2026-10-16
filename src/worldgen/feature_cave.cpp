@@ -1,6 +1,8 @@
 // Cave features: vegetation_patch, waterlogged_vegetation_patch, root_system, speleothem (pointed dripstone),
 // speleothem_cluster (dripstone cluster), large_dripstone, geode, monster_room. Ports of levelgen/feature (26.3).
 #include <cmath>
+#include <map>
+#include <optional>
 
 #include "commands/nbt.hpp"
 #include "worldgen/features.hpp"
@@ -564,6 +566,197 @@ struct MonsterRoom : Feature {
     return true;
   }
 };
+// ---------------------------------------------------------------- sculk patch (SculkSpreader, world-gen config)
+struct SculkPatch : Feature {
+  int chargeCount, amountPerCharge, spreadAttempts, growthRounds, spreadRounds;
+  struct Cursor {
+    P pos;
+    int charge, updateDelay = 0, decayDelay = 1;
+    bool hasFacings = false;
+    uint8_t facings = 0;  // bit per Dir
+  };
+  enum Beh { DEFAULT_B, SCULK_B, VEIN_B };
+  static Beh beh(int s) { return is(s, blocks::sculk) ? SCULK_B : is(s, blocks::sculk_vein) ? VEIN_B : DEFAULT_B; }
+  static bool face(int s, bs::Dir d) { return R().bool_value(s, dir_name(d)); }
+  static Spreader vein() { return {R().block_of(blocks::sculk_vein), true, false}; }
+  static Spreader sameSpace() { return {R().block_of(blocks::sculk_vein), true, true}; }
+
+  static void discharged(Level& l, int s, const P& p) {  // SculkVeinBlock.onDischarged
+    if (!is(s, blocks::sculk_vein)) return;
+    for (bs::Dir d : ALL_DIRS)
+      if (face(s, d) && is(l.get(p.rel(d)), blocks::sculk)) s = R().with_bool(s, dir_name(d), false);
+    bool any = false;
+    for (bs::Dir d : ALL_DIRS) any = any || face(s, d);
+    if (!any) s = R().has_fluid(l.get(p)) ? int(blocks::water) : int(blocks::air);
+    l.set(p, s);
+  }
+  static bool spreadVein(Level& l, Beh b, const P& p, int s, const Cursor& c) {  // attemptSpreadVein
+    if (b == DEFAULT_B) {
+      if (!c.hasFacings) return multiface_spread_all(l, sameSpace(), l.get(p), p, true) > 0;
+      if (c.facings) {
+        if (!R().is_air(s) && R().fluid_type(s) != bs::WATER) return false;
+        int ns = blocks::sculk_vein;  // SculkVeinBlock.regrow
+        bool any = false;
+        for (bs::Dir d : ALL_DIRS)
+          if ((c.facings >> d & 1) && multiface_can_attach(l, d, p.rel(d))) ns = R().with_bool(ns, dir_name(d), true), any = true;
+        if (!any) return false;
+        if (R().has_fluid(s)) ns = R().with_bool(ns, "waterlogged", true);
+        l.set(p, ns);
+        return true;
+      }
+    }
+    return multiface_spread_all(l, vein(), s, p, true) > 0;
+  }
+  int useCharge(Level& l, Beh b, Cursor& c, const P& origin, RandomSource& r, bool spreadVeins) const {
+    static const bs::Tag& replace = R().tag("minecraft:sculk_replaceable_world_gen");
+    if (b == DEFAULT_B) return c.decayDelay > 0 ? c.charge : 0;
+    if (b == VEIN_B) {
+      if (spreadVeins) {  // attemptPlaceSculk
+        int s = l.get(c.pos);
+        for (bs::Dir support : all_shuffled(r)) {
+          if (!face(s, support)) continue;
+          P sp = c.pos.rel(support);
+          if (!R().in(l.get(sp), replace)) continue;
+          l.set(sp, blocks::sculk);
+          multiface_spread_all(l, vein(), blocks::sculk, sp, true);
+          for (bs::Dir d : ALL_DIRS)
+            if (d != bs::opposite(support) && is(l.get(sp.rel(d)), blocks::sculk_vein)) discharged(l, l.get(sp.rel(d)), sp.rel(d));
+          return c.charge - 1;
+        }
+      }
+      return r.nextInt(5) == 0 ? Mth::floor((float)c.charge * 0.5F) : c.charge;
+    }
+    int charge = c.charge;  // SculkBlock
+    if (charge == 0 || r.nextInt(5) != 0) return charge;
+    bool close = dist_sqr(c.pos, origin) < 1.0;
+    bool growth = false;
+    if (!close) {  // canPlaceGrowth
+      int above = l.get(c.pos.above());
+      if (R().is_air(above) || (is(above, blocks::water) && R().fluid_type(above) == bs::WATER)) {
+        static const bs::Tag& inhib = R().tag("minecraft:sculk_growth_inhibitors");
+        int n = 0;
+        for (int x = -4; x <= 4 && n <= 2; x++)
+          for (int y = 0; y <= 2 && n <= 2; y++)
+            for (int z = -4; z <= 4 && n <= 2; z++) n += R().in(l.get(c.pos.offset(x, y, z)), inhib);
+        growth = n <= 2;
+      }
+    }
+    if (growth) {
+      if (r.nextInt(50) < charge) {
+        P g = c.pos.above();
+        int st = r.nextInt(11) == 0 ? R().with_bool(blocks::sculk_shrieker, "can_summon", true) : int(blocks::sculk_sensor);
+        if (R().has(st, "waterlogged") && R().has_fluid(l.get(g))) st = R().with_bool(st, "waterlogged", true);
+        l.set(g, st);
+      }
+      return std::max(0, charge - 50);
+    }
+    if (r.nextInt(10) != 0) return charge;
+    if (close) return charge - 1;
+    float outer = Mth::square((float)std::sqrt(dist_sqr(c.pos, origin)) - 1.0F);
+    float factor = std::min(1.0F, outer / (float)Mth::square(23.0F));
+    return charge - std::max(1, (int)((float)charge * factor * 0.5F));
+  }
+  static bool unobstructed(Level& l, const P& from, bs::Dir d) { return !R().sturdy(l.get(from.rel(d)), bs::opposite(d)); }
+  static bool movementOk(Level& l, const P& from, const P& to) {
+    if (dist_manhattan(from, to) == 1) return true;
+    int dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    bs::Dir X = dx < 0 ? bs::WEST : bs::EAST, Y = dy < 0 ? bs::DOWN : bs::UP, Z = dz < 0 ? bs::NORTH : bs::SOUTH;
+    if (dx == 0) return unobstructed(l, from, Y) || unobstructed(l, from, Z);
+    if (dy == 0) return unobstructed(l, from, X) || unobstructed(l, from, Z);
+    return unobstructed(l, from, X) || unobstructed(l, from, Y);
+  }
+  static std::optional<P> movement(Level& l, const P& pos, RandomSource& r, const P& origin) {
+    static const std::vector<P> offsets = [] {
+      std::vector<P> v;
+      for (int z = -1; z <= 1; z++)
+        for (int y = -1; y <= 1; y++)
+          for (int x = -1; x <= 1; x++)
+            if ((x == 0 || y == 0 || z == 0) && !(x == 0 && y == 0 && z == 0)) v.push_back({x, y, z});
+      return v;
+    }();
+    static const bs::Tag& replaceable = R().tag("minecraft:sculk_replaceable");
+    auto offs = offsets;
+    shuffle(offs, r);
+    P best = pos;
+    for (auto& o : offs) {
+      P n = pos.offset(o.x, o.y, o.z);
+      if ((origin.x - n.x) * (origin.x - n.x) + (origin.z - n.z) * (origin.z - n.z) > 144) continue;
+      int t = l.get(n);
+      if (beh(t) == DEFAULT_B || !movementOk(l, pos, n)) continue;
+      best = n;
+      if (is(t, blocks::sculk_vein)) {  // hasSubstrateAccess
+        bool access = false;
+        for (bs::Dir d : ALL_DIRS) access = access || (face(t, d) && R().in(l.get(n.rel(d)), replaceable));
+        if (access) break;
+      }
+    }
+    if (best == pos) return std::nullopt;
+    return best;
+  }
+  void update(Level& l, Cursor& c, const P& origin, RandomSource& r, bool spreadVeins) const {
+    if (c.charge <= 0) return;
+    if (c.updateDelay > 0) { c.updateDelay--; return; }
+    int s = l.get(c.pos);
+    Beh b = beh(s);
+    if (spreadVeins && spreadVein(l, b, c.pos, s, c) && b != SCULK_B) s = l.get(c.pos), b = beh(s);
+    c.charge = useCharge(l, b, c, origin, r, spreadVeins);
+    if (c.charge <= 0) {
+      if (b == VEIN_B) discharged(l, s, c.pos);
+      return;
+    }
+    auto t = movement(l, c.pos, r, origin);
+    if (!t) {
+      if (b == VEIN_B) discharged(l, s, c.pos);
+      c.charge = 0;
+      return;
+    }
+    if (b == VEIN_B) discharged(l, s, c.pos);
+    c.pos = *t;
+    s = l.get(*t);
+    if (beh(s) != DEFAULT_B) {  // MultifaceBlock.availableFaces (empty for the sculk block)
+      c.hasFacings = true, c.facings = 0;
+      if (is(s, blocks::sculk_vein))
+        for (bs::Dir d : ALL_DIRS) c.facings |= uint8_t(face(s, d) << d);
+    }
+    c.decayDelay = b == DEFAULT_B ? std::max(c.decayDelay - 1, 0) : 1;
+    c.updateDelay = 1;
+  }
+  bool place(Level& l, RandomSource& r, const P& o) const override {
+    int st = l.get(o);
+    if (beh(st) == DEFAULT_B) {  // canSpreadFrom
+      if (!R().is_air(st) && !(is(st, blocks::water) && R().is_source(st))) return false;
+      bool any = false;
+      for (bs::Dir d : ALL_DIRS) any = any || (R().flags(l.get(o.rel(d))) & bs::FULL_COLLISION);
+      if (!any) return false;
+    }
+    std::vector<Cursor> cursors;
+    for (int round = 0; round < spreadRounds + growthRounds; round++) {
+      for (int i = 0; i < chargeCount; i++)
+        for (int charge = amountPerCharge; charge > 0;) {
+          int cc = std::min(charge, 1000);
+          if (cursors.size() < 32) cursors.push_back({o, cc});
+          charge -= cc;
+        }
+      bool spreadVeins = round < spreadRounds;
+      for (int i = 0; i < spreadAttempts && !cursors.empty(); i++) {
+        std::vector<Cursor> processed;
+        std::map<P, size_t> merge;  // pos -> index in processed of the mergeable cursor
+        for (auto& c : cursors) {
+          if (std::max({std::abs(c.pos.x - o.x), std::abs(c.pos.y - o.y), std::abs(c.pos.z - o.z)}) > 1024) continue;
+          update(l, c, o, r, spreadVeins);
+          if (c.charge <= 0) continue;
+          auto it = merge.find(c.pos);
+          processed.push_back(c);
+          if (it == merge.end()) merge[c.pos] = processed.size() - 1;
+          else if (c.charge < processed[it->second].charge) it->second = processed.size() - 1;
+        }
+        cursors = std::move(processed);
+      }
+      cursors.clear();
+    }
+    return true;
+  }
+};
 }  // namespace
 
 void register_cave_features(ParserMap& m) {
@@ -669,6 +862,13 @@ void register_cave_features(ParserMap& m) {
     return f;
   };
   m["monster_room"] = [](Loader& L, const Json&) { return L.make<MonsterRoom>(); };
+  m["sculk_patch"] = [](Loader& L, const Json& j) {
+    auto* f = L.make<SculkPatch>();
+    f->chargeCount = j["charge_count"].asInt(), f->amountPerCharge = j["amount_per_charge"].asInt();
+    f->spreadAttempts = j["spread_attempts"].asInt(), f->growthRounds = j["growth_rounds"].asInt();
+    f->spreadRounds = j["spread_rounds"].asInt();
+    return f;
+  };
 }
 
 }  // namespace worldgen::feat
