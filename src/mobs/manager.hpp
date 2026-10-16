@@ -291,6 +291,9 @@ inline void flush_free_queue() {
 }
 
 // ---------- persistence ----------
+// Storage interface: save_entity_chunk(cx, cz) and ensure_entity_chunk_loaded(cx, cz) are the only functions that
+// touch disk (Entity::save / load_entity_nbt produce/consume vanilla-shaped entity NBT). Swap their bodies for the
+// Anvil entities/ region API when the storage branch lands.
 inline Nbt read_nbt_payload(Reader& r, int t, int depth = 0) {
     if (depth > 512) throw std::runtime_error("nbt too deep");
     Nbt n;
