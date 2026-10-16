@@ -52,6 +52,8 @@ struct Tables {
     std::vector<std::vector<Box>> shapes;  // collision shapes (Shapes.toAabbs)
     std::vector<std::string> cls;          // per block: "DoorBlock<..." class chain below Block
     std::vector<uint8_t> burn, ignite;     // per block: FireBlock odds
+    std::vector<int16_t> next_age;         // per block: ChangeOverTimeBlock.getNext (copper weathering), -1 none
+    std::vector<int8_t> age;               // per block: ChangeOverTimeBlock age ordinal, -1 not ageing
     std::map<std::string, std::vector<bool>> tags;  // block tags by short name, per block index
     std::vector<bool> empty_tag;
 };
@@ -193,6 +195,8 @@ inline bool load(const std::string& path = "data/level.json") {
         T.burn.push_back(uint8_t(b[1].asInt()));
         T.ignite.push_back(uint8_t(b[2].asInt()));
         default_states.push_back(b[3].asInt());
+        T.next_age.push_back(int16_t(b[4].asInt()));
+        T.age.push_back(int8_t(b[5].asInt()));
     }
     for (auto& [k, v] : j["tags"].obj) {
         std::vector<bool> t(block_info.size());

@@ -111,8 +111,14 @@ public class BlockDump {
                 cls.append(c.getSimpleName());
             }
             BlockState d = b.defaultBlockState();
+            int next = -1, age = -1;
+            if (b instanceof net.minecraft.world.level.block.ChangeOverTimeBlock<?> ch) {
+                age = ch.getAge().ordinal();
+                var nx = ch.getNext(d);
+                if (nx.isPresent()) next = BuiltInRegistries.BLOCK.getId(nx.get().getBlock());
+            }
             bl.append("[\"").append(BuiltInRegistries.BLOCK.getKey(b).getPath()).append("\",\"").append(cls).append("\",")
-              .append(burn.invoke(fire, d)).append(',').append(ignite.invoke(fire, d)).append(']');
+              .append(burn.invoke(fire, d)).append(',').append(ignite.invoke(fire, d)).append(',').append(next).append(',').append(age).append(']');
         }
         out.append("\"blocks\":[").append(bl).append("]}");
         java.nio.file.Files.writeString(java.nio.file.Path.of(args[0]), out);

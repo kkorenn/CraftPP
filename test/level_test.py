@@ -33,7 +33,7 @@ def pump(seconds):
     while time.time() < end:
         pid, b = c.recv()
         if pid == PLAY_CB["level_chunk_with_light"]:
-            cx, cz, secs = parse_chunk(b, True); c.chunks[cx, cz] = secs
+            cx, cz, secs = parse_chunk(b, True)[:3]; c.chunks[cx, cz] = secs
         elif pid == PLAY_CB["block_update"]:
             set_block(c, *block_pos(b.i64()), b.varint())
         elif pid == PLAY_CB["section_blocks_update"]:
