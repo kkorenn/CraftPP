@@ -5,15 +5,16 @@
   surface: no features, no carvers; material rules (surface, bedrock, ore veins) kept
   carvers: no features; carvers and material rules kept
   full:    no overrides (pack is a no-op)
-Structures are off via generate-structures=false, which test/compare.py sets whenever a pack is used.
-Usage: python3 tools/make_noise_only_datapack.py [--stage noise|surface|carvers|full] [--out DIR]"""
+  structures: like surface (no features, no carvers) but structures stay on
+Structures are off via generate-structures=false, which test/compare.py sets for every pack but structures_*.
+Usage: python3 tools/make_noise_only_datapack.py [--stage noise|surface|carvers|structures|full] [--out DIR]"""
 import argparse, glob, json, os, shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = f"{ROOT}/vanilla/src/data/minecraft/worldgen"
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--stage", choices=["noise", "surface", "carvers", "full"], default="noise")
+ap.add_argument("--stage", choices=["noise", "surface", "carvers", "structures", "full"], default="noise")
 ap.add_argument("--out", help="pack directory (default vanilla/compare_run/datapacks/<stage>_only)")
 a = ap.parse_args()
 out = a.out or f"{ROOT}/vanilla/compare_run/datapacks/{a.stage}_only"

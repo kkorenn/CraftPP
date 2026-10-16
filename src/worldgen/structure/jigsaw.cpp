@@ -480,7 +480,7 @@ struct JigsawStructure : Structure {
         // AABB(centerX - h, max(centerY - v, minY + pb), ...) minus the center box, as inclusive block bounds
         BoundingBox container(centerX - h, std::max(centerY - v, MIN_Y + pb), centerZ - h, centerX + h,
                               std::min(centerY + v + 1, MAX_Y + 1 - pt) - 1, centerZ + h);
-        auto free = std::make_shared<FreeP>(std::make_shared<FreeSpace>(FreeSpace{container, {box}}));
+        auto free = std::make_shared<FreeP>(std::make_shared<FreeSpace>(FreeSpace{container, {center->boundingBox}}  /* vanilla's `box` aliases the moved piece box */));
         Placer placer{maxDepthV, *gen, list, owned, *rnd, *aliasMap, wl, {}};
         placer.tryPlacingChildren(center.get(), free, 0, hack);
         PieceState st;

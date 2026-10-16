@@ -7,6 +7,7 @@
 
 #include "worldgen/overworld.hpp"
 #include "worldgen/structure/hooks.hpp"
+#include "worldgen/structure/jigsaw.hpp"
 #include "worldgen/structure/nbt_io.hpp"
 #include "worldgen/structure/template.hpp"
 
@@ -25,6 +26,19 @@ int main(int argc, char** argv) {
   worldgen::Overworld ow(seed, "structures");
   structure::StructureWorld sw(ow, false);
   auto& m = sw.manager();
+  if (getenv("PIECES")) {  // PIECES=cx,cz: dump the starts of that chunk
+    int cx, cz;
+    sscanf(getenv("PIECES"), "%d,%d", &cx, &cz);
+    for (auto& st : m.starts(cx, cz)) {
+      printf("start %s\n", st->structure->id.c_str());
+      for (auto& p : st->pieces) {
+        auto& b = p->boundingBox;
+        std::string what = p->isPoolElement() ? static_cast<structure::PoolElementPiece*>(p.get())->element->location : "";
+        printf("  %d %d %d .. %d %d %d %s\n", b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ, what.c_str());
+      }
+    }
+    return 0;
+  }
   for (auto& id : ids) {
     std::vector<const structure::Structure*> wanted;
     bool tag = id[0] == '#';
