@@ -4,12 +4,14 @@ set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/game.json ] || python3 tools/gen_game_data.py
+[ -f data/mobs.json ] || python3 tools/gen_mob_data.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
 if [ "$1" = "test" ]; then cmake --build build -j; else cmake --build build -j --target craftpp; fi
 
 if [ "$1" = "test" ]; then
   # Free port per run so parallel test runs (other worktrees) never collide.
   PORT=${TEST_PORT:-$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")}
+  ./build/mobs_test
   rm -rf build/test-world
   printf 'server-port=%s\nlevel-name=build/test-world\nlevel-type=flat\n' "$PORT" > build/test.properties
   rm -f build/banned-players.json build/banned-ips.json build/whitelist.json

@@ -14,3 +14,4 @@ whitelist.json
 usercache.json
 eula.txt
 server.properties
+data/mobs.json

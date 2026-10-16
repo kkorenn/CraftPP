@@ -60,3 +60,7 @@ if(EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
 else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
+# Mob data / trading / breeding checks (test/mobs_test.cpp; runs from the repo root, needs data/*.json).
+add_executable(mobs_test test/mobs_test.cpp src/plugins/plugins.cpp)
+target_include_directories(mobs_test PRIVATE src)
+target_link_libraries(mobs_test PRIVATE craftpp_worldgen)
