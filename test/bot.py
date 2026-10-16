@@ -234,9 +234,10 @@ if __name__ == "__main__":
         if p == PLAY_CB["level_chunk_with_light"]: parse_chunk(buf); new += 1
         elif p == PLAY_CB["forget_level_chunk"]: forgot += 1
     assert (new, forgot) == (17, 17), (new, forgot)
-    pos = wait(b, PLAY_CB["teleport_entity"])
-    pos.varint()
-    assert struct.unpack(">d", pos.take(8))[0] == 16.5
+    def sync_x(x):  # entity_position_sync: id, PositionPath type (linear), x y z
+        x.varint(); x.varint()
+        return struct.unpack(">d", x.take(8))[0] == 16.5
+    wait(b, PLAY_CB["entity_position_sync"], sync_x)  # 16 blocks is too far for a relative move
     print("streaming + movement ok")
 
     a.send(PLAY_SB["chat"], string("hello") + struct.pack(">qq", 0, 0) + b"\x00" + varint(0) + bytes(3) + b"\x00")

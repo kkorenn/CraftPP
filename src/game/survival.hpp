@@ -167,10 +167,7 @@ inline void respawn(Player& p) {
     send_health(p);
     send_experience(p);
     entities_reset_view(p);  // client dropped its entities: resend them
-    broadcast(remove_entities_packet({p.eid}), &p);
-    broadcast(spawn_entity(p), &p);
-    for (auto& q : players)
-        if (q.get() != &p) p.send(spawn_entity(*q));
+    player_entity_respawned(p);  // others see the player re-added at its new position
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).

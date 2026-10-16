@@ -65,11 +65,14 @@ inline BlockHit clip_blocks(const Vec3& from, const Vec3& to) {
 }
 
 // ---------- light (until the lighting branch lands) ----------
-// ponytail: sky-light heuristic: 15 at or above the column's highest motion-blocking block, else 0; block light from
-// emitters is ignored. Swap the body for the real light engine; every caller goes through these two functions.
+// Real light (src/light) when the column is lit; before that a sky-light heuristic (15 at or above the column's
+// highest motion-blocking block, else 0, no block light). Every caller goes through these two functions.
 inline int surface_y_cached(int x, int z);
-inline int sky_light_at(int x, int y, int z) { return y >= surface_y_cached(x, z) ? 15 : 0; }
-inline int block_light_at(int, int, int) { return 0; }
+inline int sky_light_at(int x, int y, int z) {
+    int l = light::get(x, y, z, true);
+    return l >= 0 ? l : y >= surface_y_cached(x, z) ? 15 : 0;
+}
+inline int block_light_at(int x, int y, int z) { return std::max(0, light::get(x, y, z, false)); }
 inline int sky_darken() {  // Level.updateSkyBrightness: 15 - sky_light_level (timeline/day.json keyframes, linear, cyclic)
     static const double kt[] = {133, 11867, 13670, 22330}, kv[] = {1.0, 1.0, 0.26666668, 0.26666668};
     double t = double(((clocks[0].total % 24000) + 24000) % 24000), v = kv[3];

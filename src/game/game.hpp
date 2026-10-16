@@ -19,14 +19,12 @@ inline void register_player(const PlayerPtr& pp) {
     Player& p = *pp;
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
-    p.send(info_add(all));
-    for (auto& q : players) p.send(spawn_entity(*q));
+    p.send(info_add(all));  // entities (players too) are spawned by the tracker (src/mobs/manager.hpp)
     {
         std::lock_guard lock(players_mtx);
         players.push_back(pp);
     }
     broadcast(info_add({pp}), &p);
-    broadcast(spawn_entity(p), &p);
     plugins::announce_join(p);  // PlayerJoinEvent may rewrite/suppress it
 }
 
