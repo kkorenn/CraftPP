@@ -279,6 +279,7 @@ inline bool load_player(Player& p) {
     if (!(f >> p.x >> p.y >> p.z >> p.yaw >> p.pitch >> p.gamemode >> p.selected)) return false;
     for (int slot, item, count; f >> slot >> item >> count;)
         if (slot >= 0 && slot < int(p.inv.size()) && item >= 0 && item < ITEM_COUNT) p.inv[slot] = {item, count};
+    load_player_extra(p, f);  // game/survival.hpp: vitals, xp, tool damage
     return true;
 }
 
@@ -292,6 +293,7 @@ inline void save_player(const Player& p) {
           << p.selected << '\n';
         for (size_t i = 0; i < p.inv.size(); i++)
             if (p.inv[i].item >= 0) f << i << ' ' << p.inv[i].item << ' ' << p.inv[i].count << '\n';
+        save_player_extra(p, f);
     }
     std::filesystem::rename(path + ".tmp", path);
 }

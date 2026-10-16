@@ -8,7 +8,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release >/dev/null
 if [ "$1" = "test" ]; then cmake --build build -j; else cmake --build build -j --target craftpp; fi
 
 if [ "$1" = "test" ]; then
-  PORT=25599
+  PORT=${TEST_PORT:-25599}
   rm -rf build/test-world
   printf 'server-port=%s\nlevel-name=build/test-world\nlevel-type=flat\n' "$PORT" > build/test.properties
   ./build/craftpp build/test.properties > build/test-server.log 2>&1 &
