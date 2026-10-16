@@ -26,13 +26,6 @@ inline const RosterType& roster(int type) {
     static const RosterType none;
     return type >= 0 && size_t(type) < roster_types.size() ? roster_types[size_t(type)] : none;
 }
-inline int entity_type_id(const std::string& name) {
-    std::string n = name.rfind("minecraft:", 0) == 0 ? name.substr(10) : name;
-    for (size_t i = 0; i < roster_types.size(); i++)
-        if (roster_types[i].name == n) return int(i);
-    return -1;
-}
-
 inline void load_trading(const Json& j);  // trading.hpp
 
 inline bool load_roster_data(const std::string& path = "data/roster.json") {

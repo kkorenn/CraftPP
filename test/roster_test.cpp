@@ -8,6 +8,7 @@
 
 int main() {
     CHECK(load_game_data());
+    CHECK(load_mob_data());
     CHECK(load_roster_data());
     const RosterType& cow = roster(entity_types::cow);
     CHECK(cow.name == "cow" && entity_type_id("minecraft:cow") == entity_types::cow);
