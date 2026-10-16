@@ -146,10 +146,130 @@ ProtoPtr Pipeline::get_or_create(int cx, int cz) {
   return slot;
 }
 
+namespace {
+thread_local bool in_layer = false;  // this thread runs a ticket's layer: FEATURES runs directly
+}
+
+uint64_t Pipeline::add_ticket(int cx, int cz, int radius) {
+  auto [it, fresh] = pending_at.try_emplace(key(cx, cz), next_ticket);
+  if (fresh) pending.emplace(next_ticket++, Ticket{cx, cz, radius});
+  else if (radius > pending.at(it->second).radius && !pending.at(it->second).running) pending.at(it->second).radius = radius;
+  return it->second;
+}
+
+uint64_t Pipeline::covering(int cx, int cz) {
+  uint64_t best = ~uint64_t(0);
+  for (int dx = -1; dx <= 1; dx++)
+    for (int dz = -1; dz <= 1; dz++)
+      if (auto it = pending_at.find(key(cx + dx, cz + dz)); it != pending_at.end())
+        if (std::max(std::abs(dx), std::abs(dz)) <= pending.at(it->second).radius) best = std::min(best, it->second);
+  return best;
+}
+
+bool Pipeline::terrain_ready(const Ticket& t) {
+  int r = t.radius + 1;  // FEATURES needs TERRAIN in a radius of 1
+  for (int dx = -r; dx <= r; dx++)
+    for (int dz = -r; dz <= r; dz++) {
+      ProtoPtr p = find(t.cx + dx, t.cz + dz);
+      if (!p || p->get_status() < Status::TERRAIN) return false;
+    }
+  return true;
+}
+
+void Pipeline::ticket(int cx, int cz) {
+  std::lock_guard lock(om);
+  add_ticket(cx, cz, 1);
+}
+
+void Pipeline::cancel(int cx, int cz) {
+  std::lock_guard lock(om);
+  auto it = pending_at.find(key(cx, cz));
+  if (it == pending_at.end() || pending.at(it->second).running) return;
+  pending.erase(it->second);
+  pending_at.erase(it);
+}
+
+void Pipeline::run_until(uint64_t seq) {
+  std::unique_lock lock(om);
+  while (!pending.empty() && pending.begin()->first <= seq) {
+    auto& [head, t] = *pending.begin();
+    if (t.running) {
+      ocv.wait(lock);
+      continue;
+    }
+    if (terrain_ready(t)) {  // the layer: FEATURES over the square, x-major (ChunkGenerationTask.scheduleLayer)
+      t.running = true;
+      Ticket c = t;
+      uint64_t s = head;
+      lock.unlock();
+      in_layer = true;
+      try {
+        for (int x = c.cx - c.radius; x <= c.cx + c.radius; x++)
+          for (int z = c.cz - c.radius; z <= c.cz + c.radius; z++) ensure(x, z, Status::FEATURES);
+      } catch (...) {
+        in_layer = false;
+        lock.lock();
+        pending_at.erase(key(c.cx, c.cz)), pending.erase(s);
+        ocv.notify_all();
+        throw;
+      }
+      in_layer = false;
+      lock.lock();
+      pending_at.erase(key(c.cx, c.cz)), pending.erase(s);
+      ocv.notify_all();
+      continue;
+    }
+    // Not ready: generate terrain for the first pending ticket nobody is on yet (parallel with other threads).
+    auto it = pending.begin();
+    while (it != pending.end() && it->first <= seq && (it->second.prefetching || terrain_ready(it->second))) ++it;
+    if (it == pending.end() || it->first > seq) {
+      ocv.wait(lock);
+      continue;
+    }
+    it->second.prefetching = true;
+    Ticket c = it->second;
+    uint64_t s = it->first;
+    lock.unlock();
+    int r = c.radius + 1;
+    for (int x = c.cx - r; x <= c.cx + r; x++)
+      for (int z = c.cz - r; z <= c.cz + r; z++) ensure(x, z, Status::TERRAIN);
+    lock.lock();
+    if (auto j = pending.find(s); j != pending.end()) j->second.prefetching = false;
+    ocv.notify_all();
+  }
+}
+
 ProtoPtr Pipeline::ensure(int cx, int cz, Status target) {
   ProtoPtr p = get_or_create(cx, cz);
+  if (target >= Status::LIGHT && p->get_status() < Status::LIGHT && !in_layer) {
+    // LIGHT needs the 3x3 decorated: that is a FULL task's layer (ChunkGenerationTask), so run it as one.
+    bool decorated = true;
+    for (int dx = -1; dx <= 1 && decorated; dx++)
+      for (int dz = -1; dz <= 1 && decorated; dz++) {
+        ProtoPtr n = find(cx + dx, cz + dz);
+        decorated = n && n->get_status() >= Status::FEATURES;
+      }
+    if (!decorated) {
+      uint64_t t;
+      {
+        std::lock_guard lock(om);
+        t = add_ticket(cx, cz, 1);
+      }
+      run_until(t);
+    }
+  }
   for (Status s = Status(int(p->get_status()) + 1); s <= target; s = Status(int(s) + 1)) {
     if (p->get_status() >= s) continue;
+    if (s == Status::FEATURES && !in_layer) {  // decorated by a ticket's layer, in queue order
+      uint64_t t;
+      {
+        std::lock_guard lock(om);
+        t = covering(cx, cz);
+        if (t == ~uint64_t(0)) t = add_ticket(cx, cz, 0);
+      }
+      run_until(t);
+      continue;
+    }
     const auto& d = steps[size_t(s)].direct;
     for (int r = 1; r < int(d.size()); r++)
       for (int dz = -r; dz <= r; dz++)

@@ -865,7 +865,7 @@ bool lit_3x3(Engine& e, int cx, int cz) {
 
 // ChunkMap.prepareTickingChunk: a chunk is sent once its 3x3 is FULL, so every light source that can reach it
 // (< 16 blocks) has been propagated.
-void produced(World& world, Chunk& w, bool loaded) {
+void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
     Engine& e = engine();
     {
         std::lock_guard lock(mutex());
@@ -899,7 +899,7 @@ void produced(World& world, Chunk& w, bool loaded) {
         if (!c.adopted) adopt_loaded(e, c, w);
         return;
     }
-    if (!e.pipeline) return;
+    if (!e.pipeline || !neighbours) return;  // FULL already lit the chunk itself
     // ChunkMap.prepareTickingChunk: sent once its 3x3 is lit (loaded neighbours keep their saved light).
     for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++) e.pipeline->ensure(w.cx + dx, w.cz + dz, worldgen::Status::LIGHT);

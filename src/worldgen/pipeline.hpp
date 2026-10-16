@@ -38,6 +38,18 @@
 // worldgen::Overworld (overworld.hpp). FULL runs with lock radius 1: post-processing and the leaf ticks
 // worldgen scheduled may write into neighbours (never into chunks already taken by the World).
 //
+// DECORATION ORDER. Features of neighbouring chunks overlap (write radius 1), so the order chunks are decorated
+// in decides blocks. Vanilla runs every ChunkGenerationTask on one consecutive "worldgen" executor, lowest
+// ticket level (nearest the player, chessboard distance) first, and a FULL task at C decorates the 3x3 around C
+// in x-major order (ChunkGenerationTask.scheduleLayer); only the async noise/biome work runs in parallel. Here a
+// Ticket is such a task: ticket(cx, cz) queues one (call in vanilla ticket order from one thread, as
+// update_view does), and FEATURES only ever runs inside a ticket's layer, tickets strictly in queue order, so
+// the result never depends on worker timing. A chunk whose features are needed but no pending ticket covers
+// gets a radius-0 ticket at the end of the queue. Threads waiting for an earlier ticket generate terrain for
+// pending tickets meanwhile (the parallel part). Measured against vanilla's own run-to-run spread (JFR
+// minecraft.ChunkGeneration order, test/compare.py --jfr): the ring order agrees with vanilla's pairwise
+// decoration order more often than one vanilla run agrees with another.
+//
 // MEMORY. Block storage (a Chunk) is allocated when a chunk reaches BIOMES; below that a ProtoChunk is ~100
 // bytes + its structure_data. take() copies the FULL chunk out to the World. A taken FULL chunk frees its block
 // storage once all 8 neighbours are past LIGHT (nothing reads its blocks any more); the header and
@@ -49,8 +61,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -148,6 +162,9 @@ class Pipeline {
   ProtoPtr ensure(int cx, int cz, Status target);
   // ensure(FULL), then copies blocks, biomes and block entities into `out` (World::generator).
   void take(int cx, int cz, Chunk& out);
+  // Decoration order (see DECORATION ORDER): queue a FULL task's 3x3 layer at (cx, cz) / drop it if not started.
+  void ticket(int cx, int cz);
+  void cancel(int cx, int cz);
 
   // Dependency tables (ChunkStep): deps(s)[r] = status needed at chessboard distance r before step s runs.
   const std::vector<Status>& deps(Status s) const { return steps[size_t(s)].direct; }
@@ -167,6 +184,20 @@ class Pipeline {
   mutable std::mutex m;
   std::unordered_map<int64_t, ProtoPtr> chunks;
   int takes = 0;
+
+  struct Ticket {
+    int cx, cz, radius;
+    bool prefetching = false, running = false;
+  };
+  std::mutex om;  // order: tickets below (never held while a step runs)
+  std::condition_variable ocv;
+  std::map<uint64_t, Ticket> pending;            // by queue position
+  std::unordered_map<int64_t, uint64_t> pending_at;  // center -> queue position
+  uint64_t next_ticket = 0;
+  uint64_t add_ticket(int cx, int cz, int radius);  // om held; the pending one there if any
+  uint64_t covering(int cx, int cz);                 // om held; first pending ticket that decorates (cx, cz), or ~0
+  bool terrain_ready(const Ticket& t);
+  void run_until(uint64_t seq);  // runs the layers of every pending ticket up to seq, in order
 
   ProtoPtr get_or_create(int cx, int cz);
   ProtoPtr find(int cx, int cz) const;
