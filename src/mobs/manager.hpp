@@ -51,7 +51,10 @@ inline void register_entity_factory(int type, EntityFactory f) {
 inline std::unique_ptr<Entity> create_entity(int type) {  // EntityType.create; null when the type isn't implemented
     if (type < 0 || size_t(type) >= ent_detail::factories.size() || !ent_detail::factories[size_t(type)]) return nullptr;
     auto e = ent_detail::factories[size_t(type)]();
-    if (e) e->type = type;
+    if (e) {
+        e->type = type;
+        e->init();
+    }
     return e;
 }
 inline std::unique_ptr<Entity> load_entity_nbt(const Nbt& tag) {  // EntityType.loadEntityRecursive (no passengers)
@@ -353,10 +356,11 @@ inline void ensure_entity_chunk_loaded(int cx, int cz) {
 }
 // Saves and frees the entities of chunks no player is near (EntityStorage + unloading).
 inline void unload_far_entity_chunks(bool all = false) {
-    int r = view_dist_cached() + 1;
+    int r = view_dist_cached();
     std::vector<int64_t> keys;
     for (int64_t k : ent_detail::loaded) {
         int cx = int32_t(uint32_t(k)), cz = int32_t(uint32_t(uint64_t(k) >> 32));
+        // with their terrain: World unloads exactly the chunks no player views
         if (all || !near_any_player_chunk(cx, cz, r)) keys.push_back(k);
     }
     for (int64_t k : keys) {

@@ -91,6 +91,7 @@ public class MobDump {
             if (s.isAir()) f |= 1024;
             if (s.isSolid()) f |= 2048;
             if (s.isSuffocating(lvl, BlockPos.ZERO)) f |= 4096;
+            if (s.isSolidRender()) f |= 8192;
             f |= s.getLightEmission() << 16;
             for (Direction d : Direction.values()) if (s.isFaceSturdy(lvl, BlockPos.ZERO, d)) f |= 1 << (20 + d.ordinal());
             stateFlags.append(f);
