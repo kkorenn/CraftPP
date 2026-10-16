@@ -90,7 +90,7 @@ if [ -n "$TEST" ]; then
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
-  python3 -u test/stress.py --server ./$B/craftpp --quick || fail "stress (log: $B/stress/server.log)"  # own server
+  python3 -u test/stress.py --server ./$B/craftpp --quick ${SAN:+--no-rss-check} || fail "stress (log: $B/stress/server.log)"  # own server
   PLUGIN_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")
   [ -n "$SAN" ] || python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"

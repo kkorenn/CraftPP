@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def frame(body): return varint(len(body)) + body
 def pkt(pid, body=b""): return frame(varint(pid) + body)
+RSS_CHECK = True  # off for sanitizer builds (shadow memory per thread)
 COMPRESSED = True  # server sends set_compression after hello (network-compression-threshold >= 0)
 def cpkt(pid, body=b""):
     """A packet after login hello: compressed framing with data length 0 (stored) when compression is on."""
@@ -201,7 +202,7 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
         pass  # being disconnected is fine too
     grown = (rss_kib(pid) - before) // 1024 if pid else 0
     s.close()
-    assert flood_mib < 256 or grown < 128, f"RSS grew {grown} MiB during a packet flood"
+    assert not RSS_CHECK or flood_mib < 256 or grown < 128, f"RSS grew {grown} MiB during a packet flood"
     alive(host, port, "fuzz: flood" + (f" (RSS +{grown} MiB)" if pid else ""))
 
     # 200 idle connections that each announce a 2 MiB packet and never send it.
@@ -214,7 +215,7 @@ def fuzz(host, port, rounds, seed, pid=None, flood_mib=256, threads=8):
     time.sleep(0.5)
     grown = (rss_kib(pid) - before) // 1024 if pid else 0
     for h in held: h.close()
-    assert grown < 64, f"RSS grew {grown} MiB for 200 half-sent packets"
+    assert not RSS_CHECK or grown < 64, f"RSS grew {grown} MiB for 200 half-sent packets"
     alive(host, port, "fuzz: half-sent packets" + (f" (RSS +{grown} MiB)" if pid else ""))
 
 # ---------- bots ----------
@@ -233,8 +234,9 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
     lock_send(c)
     stop = threading.Event()
     def drain():
-        try:
-            while not stop.is_set(): c.recv()
+        try:  # raw reads: parsing 50 chunk streams in Python can't keep up (the server kicks at 32 MiB behind)
+            while not stop.is_set():
+                if not c.s.recv(1 << 16): raise AssertionError("server closed connection")
         except Exception as e:
             if not stop.is_set(): errs.append(f"{name} read: {e!r}")
     rt = threading.Thread(target=drain, daemon=True)
@@ -422,7 +424,10 @@ def main():
     ap.add_argument("--minutes", type=float, default=30)
     ap.add_argument("--seed", type=int, default=int(os.environ.get("STRESS_SEED", "1")))
     ap.add_argument("--op", default="Op", help="op player name for command bots ('' = none)")
+    ap.add_argument("--no-rss-check", action="store_true", help="report RSS only (sanitizer builds)")
     a = ap.parse_args()
+    global RSS_CHECK
+    RSS_CHECK = not a.no_rss_check
     proc = None
     if a.server:
         proc, a.port, log = spawn(a.server, a.world, a.view)
@@ -450,7 +455,7 @@ def main():
                     base = samples[len(samples) // 3]
                     growth = (samples[-1] - base) / base
                     print(f"soak RSS growth after warm-up: {growth * 100:.1f}%")
-                    assert growth < 0.25, f"RSS keeps growing: {samples}"
+                    assert not RSS_CHECK or growth < 0.25, f"RSS keeps growing: {samples}"
             else:
                 raise SystemExit(f"unknown phase {ph}")
             if proc: assert proc.poll() is None, "server died"
