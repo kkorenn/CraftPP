@@ -351,7 +351,7 @@ void log_line(const std::string& level, const std::string& logger, const std::st
 
 #if CRAFTPP_JNI
 JavaVM* vm = nullptr;
-jclass main_cls, bytes_cls;
+jclass main_cls;
 jmethodID m_request, m_move, m_tick, m_exit, m_dump_cds;
 
 struct ThreadEnv {
