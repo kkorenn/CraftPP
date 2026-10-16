@@ -5,9 +5,9 @@ Runs vanilla (vanilla/compare_run/, fresh world), records the chunks within --ra
 chunk, stops it, then runs the other server (CraftPP by default; `--against vanilla` = self-check)
 with the same seed, walks the bot to the same spawn and diffs block states + biomes (--light: also sky/block
 light per section, after applying light_update packets for --settle seconds).
-                         [--dimension the_nether|the_end [--center X,Z]]
+                         [--dimension the_nether|the_end [--center X Z]]
 --dimension: the bot (op'd through ops.json on both servers) runs `execute in <dim> run tp @s X 64 Z` and the
-chunks around --center (default 0,0) in that dimension are compared instead.
+chunks around --center (default 0 0) in that dimension are compared instead.
 Exit status 1 when anything differs."""
 import argparse, collections, hashlib, json, os, shutil, socket, struct, subprocess, sys, time, uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +40,6 @@ ap.add_argument("--edits", help="';'-separated console commands run after the ch
                 "e.g. \"fill {x} {y-30} {z} {x+6} {y-24} {z+6} air;setblock {x+3} {y-27} {z+3} torch\" (tests incremental light); 'wait' settles in between")
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
 ap.add_argument("--dimension", choices=["overworld", "the_nether", "the_end"], default="overworld")
-ap.add_argument("--center", default="0,0", help="block X,Z to compare around (--dimension only)")
 args = ap.parse_args()
 if args.dimension != "overworld": MIN_Y = 0
 BOT = "Cmp"
@@ -70,7 +69,7 @@ def collect(port, center, proc, edited=False):
     c.s.settimeout(args.timeout)
     while not (center or c.spawn): play_step(c)
     if args.dimension != "overworld":
-        x, z = map(int, args.center.split(","))
+        x, z = args.center or (0, 0)
         center = (x, 64, z)
         c.send(PLAY_SB["chat_command"], string("gamemode spectator"))  # no "floating too long" kick over the void
         c.send(PLAY_SB["chat_command"], string(f"execute in minecraft:{args.dimension} run tp @s {x + .5} 64 {z + .5}"))
@@ -140,7 +139,7 @@ def run_craftpp(center):
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
-    open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
+    open(f"{ROOT}/build/compare/eula.txt", "w").write("eula=true\n")  # server dir = build/compare/ (beside the properties file)
     p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(100):
