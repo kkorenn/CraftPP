@@ -317,8 +317,8 @@ inline bool move_to(Player& p, ItemStack& s, int a, int b, bool backwards) {
             ItemStack& t = *r.s;
             if (t.empty() || !t.same(s)) continue;
             int mx = slot_max(r, t), total = t.count + s.count;
-            if (total <= mx) t.count = total, s = {}, changed = true;
-            else if (t.count < mx) s.count -= mx - t.count, t.count = mx, changed = true;
+            if (total <= mx) t.count = total, s = {}, changed = true, slot_changed(p, r);
+            else if (t.count < mx) s.count -= mx - t.count, t.count = mx, changed = true, slot_changed(p, r);
         }
     if (!s.empty())
         for (int i = backwards ? b - 1 : a; backwards ? i >= a : i < b; i += backwards ? -1 : 1) {
@@ -328,6 +328,7 @@ inline bool move_to(Player& p, ItemStack& s, int a, int b, bool backwards) {
                 *r.s = s.copy(n);
                 if ((s.count -= n) <= 0) s = {};
                 changed = true;
+                slot_changed(p, r);
                 break;
             }
         }

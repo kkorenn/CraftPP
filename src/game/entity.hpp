@@ -27,12 +27,18 @@ inline Writer& write_lpvec3(Writer& w, double x, double y, double z) {  // LpVec
     return w;
 }
 
-// ItemStack.OPTIONAL_STREAM_CODEC (component patch carries only minecraft:damage).
+// ItemStack.OPTIONAL_STREAM_CODEC: count, item, component patch (damage + ItemStack::comp).
 inline Writer& write_slot(Writer& w, const ItemStack& s) {
     if (s.empty()) return w.varint(0);
     w.varint(s.count).varint(s.item);
-    if (s.damage > 0) return w.varint(1).varint(0).varint(component_ids["damage"]).varint(s.damage);
-    return w.varint(0).varint(0);
+    static const int damage_id = component_ids["damage"];
+    w.varint((s.damage > 0) + (s.comp ? int(s.comp->set.size()) : 0)).varint(s.comp ? int(s.comp->removed.size()) : 0);
+    if (s.damage > 0) w.varint(damage_id).varint(s.damage);
+    if (s.comp) {
+        for (auto& [k, v] : s.comp->set) w.varint(k).bytes(v);
+        for (int k : s.comp->removed) w.varint(k);
+    }
+    return w;
 }
 
 inline Writer add_entity_packet(int eid, int64_t uh, int64_t ul, int type, double x, double y, double z, double vx,

@@ -51,7 +51,8 @@ struct LootCond {
 };
 
 struct LootFunc {
-    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT } t = NOP;
+    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT, COPY_BE } t = NOP;
+    std::vector<std::string> include;  // COPY_BE: component names
     LootNumber n;
     bool add = false;
     float p1 = 0, p2 = 0;
@@ -184,6 +185,9 @@ inline LootFunc func(const Json& j) {
         auto& l = j["limit"];
         if (auto* lo = l.find("min")) f.lo = int(number(*lo).a);
         if (auto* hi = l.find("max")) f.hi = int(number(*hi).a);
+    } else if (t == "copy_components" && j["source"].asString() == "block_entity" && j.find("include")) {
+        f.t = LootFunc::COPY_BE;
+        for (auto& c : j["include"].arr) f.include.push_back(strip(c.asString()));
     } else if (t != "copy_components" && t != "copy_state") {
         warn("function " + t);
     }
@@ -287,6 +291,8 @@ inline bool all(const std::vector<LootCond>& cs, const LootContext& ctx) {
     return true;
 }
 
+// copy_components from the (just removed) block entity at a position (src/containers).
+inline void (*loot_copy_block_entity)(int x, int y, int z, const std::vector<std::string>& include, ItemStack& s) = nullptr;
 inline void apply(const std::vector<LootFunc>& fs, ItemStack& s, const LootContext& ctx) {
     const int level = 0;  // fortune: no enchantments yet
     for (auto& f : fs) {
@@ -310,6 +316,9 @@ inline void apply(const std::vector<LootFunc>& fs, ItemStack& s, const LootConte
                 }
                 break;
             case LootFunc::LIMIT: s.count = std::clamp(s.count, f.lo, f.hi); break;
+            case LootFunc::COPY_BE:
+                if (loot_copy_block_entity) loot_copy_block_entity(ctx.x, ctx.y, ctx.z, f.include, s);
+                break;
         }
     }
 }

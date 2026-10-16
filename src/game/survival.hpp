@@ -111,6 +111,7 @@ inline void respawn(Player& p) {
     p.g = [&] {
         PlayerGame g;
         g.next_container = p.g.next_container;
+        g.ender = std::move(p.g.ender), g.enchant_seed = p.g.enchant_seed;
         g.loaded = true;
         return g;
     }();
@@ -351,9 +352,17 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
     return false;
 }
 
+// Block interaction hooks (src/containers): use_block_hook returns true when the block consumed the click
+// (BlockState.useItemOn / useWithoutItem); placement_hook picks the placed state (getStateForPlacement);
+// placed_hook runs after placement, before the item is used up (BlockItem.updateCustomBlockEntityTag).
+inline bool (*use_block_hook)(Player& p, int hand, int x, int y, int z, int face) = nullptr;
+inline int (*placement_hook)(Player& p, int state, int x, int y, int z, int face) = nullptr;
+inline void (*placed_hook)(Player& p, int x, int y, int z, const ItemStack& item) = nullptr;
+
 inline void use_item_on(Player& p, int hand, int x, int y, int z, int face) {
     if (p.gamemode == 3 || p.g.dead) return;
     if (!within_reach(p, x, y, z)) return;
+    if (use_block_hook && use_block_hook(p, hand, x, y, z, face)) return;
     int clicked = world.get_block(x, y, z);
     ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
     bool hands_empty = held(p).empty() && p.inv[40].empty();
@@ -372,11 +381,19 @@ inline void use_item_on(Player& p, int hand, int x, int y, int z, int face) {
     int target = world.get_block(x, y, z);
     if (!block_of(target).replaceable) return p.send(block_update(x, y, z, target));
     if (block_of(state).collision && box_hits_player(x, y, z)) return p.send(block_update(x, y, z, target));
+    if (placement_hook && (state = placement_hook(p, state, x, y, z, face)) < 0) return p.send(block_update(x, y, z, target));
     change_block(x, y, z, state);
+    if (placed_hook) placed_hook(p, x, y, z, slot);
     if (p.gamemode != 1 && --slot.count <= 0) slot = {};
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
+namespace comp {  // src/containers/components.hpp
+inline std::string patch_hex(const ItemStack& s);
+inline void patch_from_hex(ItemStack& s, const std::string& h);
+}  // namespace comp
+inline void save_player_containers(const Player& p, std::ostream& f);                   // ender chest (src/containers)
+inline bool load_player_containers(Player& p, const std::string& key, std::istream& f);
 // "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
 inline void save_player_extra(const Player& p, std::ostream& f) {
     auto& g = p.g;
@@ -385,6 +402,9 @@ inline void save_player_extra(const Player& p, std::ostream& f) {
     f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
     for (size_t i = 0; i < p.inv.size(); i++)
         if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
+    for (size_t i = 0; i < p.inv.size(); i++)
+        if (!p.inv[i].empty() && p.inv[i].comp) f << "patch " << i << ' ' << comp::patch_hex(p.inv[i]) << '\n';
+    save_player_containers(p, f);
 }
 inline void load_player_extra(Player& p, std::istream& f) {
     f.clear();
@@ -394,6 +414,11 @@ inline void load_player_extra(Player& p, std::istream& f) {
         else if (key == "dmg") {
             int slot, d;
             if (f >> slot >> d && slot >= 0 && slot < int(p.inv.size())) p.inv[size_t(slot)].damage = d;
+        } else if (key == "patch") {
+            int slot;
+            std::string hex;
+            if (f >> slot >> hex && slot >= 0 && slot < int(p.inv.size())) comp::patch_from_hex(p.inv[size_t(slot)], hex);
+        } else if (load_player_containers(p, key, f)) {
         } else {
             std::string rest;
             std::getline(f, rest);

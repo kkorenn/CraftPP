@@ -331,7 +331,9 @@ inline void save_player(const Player& p) {
     std::filesystem::rename(path + ".tmp", path);
 }
 
+inline void (*before_world_save)() = nullptr;  // tick thread: flush live state into chunks (src/containers)
 inline void save_all() {
+    if (before_world_save) before_world_save();
     for (auto& p : snapshot()) save_player(*p);
     world.save_dirty();
 }

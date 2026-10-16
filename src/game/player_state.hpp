@@ -133,6 +133,8 @@ struct PlayerGame {
     ItemStack remote_carried;
     bool remote_valid = false;
     int keepalive_timer = 0;
+    std::array<ItemStack, 27> ender;  // PlayerEnderChestContainer (kept across respawn)
+    int enchant_seed = 0;             // Player.enchantmentSeed (kept across respawn)
 };
 
 struct Player;

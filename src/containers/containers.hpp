@@ -1,0 +1,108 @@
+#pragma once
+// Block entities and container menus: entry point. containers_init() (game_init) loads data/containers.json,
+// registers block entity types and installs the hooks in world.hpp / survival.hpp / loot.hpp / server.hpp.
+#include "furnace.hpp"
+
+namespace cont {
+
+// Block interaction (BlockState.useItemOn / useWithoutItem). True = consumed.
+inline bool use_block(Player& p, int hand, int x, int y, int z, int) {
+    int state = world.get_block(x, y, z);
+    bool have_items = !p.inv[size_t(p.selected)].empty() || !p.inv[40].empty();
+    if (p.g.sneaking && have_items) return false;  // secondary use: place against it instead
+    if (hand != 0) return false;                   // useWithoutItem is main hand only
+    return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z);
+}
+
+// getStateForPlacement for the blocks of this module; other states pass through.
+inline int place_state(Player& p, int state, int x, int y, int z, int face) {
+    const auto& reg = bs::R();
+    const bs::Block& blk = reg.block(reg.block_of(state));
+    Dir clicked = Dir(face >= 0 && face < 6 ? face : 1);
+    if (reg.has(state, "waterlogged")) {
+        int here = world.get_block(x, y, z);
+        state = with(state, "waterlogged", reg.fluid_type(here) == bs::WATER ? "true" : "false");
+    }
+    if (blk.is_a("ChestBlock")) return place_chest(p, state, x, y, z, face);
+    int type = blk.block_entity;
+    namespace t = block_entity_types;
+    if (type == t::barrel || type == t::dispenser || type == t::dropper)
+        return with(state, "facing", dir_name(bs::opposite(nearest_looking(p))));
+    if (type == t::shulker_box) return with(state, "facing", dir_name(clicked));
+    if (type == t::hopper) {
+        Dir d = bs::opposite(clicked);
+        return with(state, "facing", dir_name(d == bs::UP ? bs::DOWN : d));
+    }
+    if (type == t::furnace || type == t::smoker || type == t::blast_furnace || type == t::ender_chest || type == t::lectern ||
+        blk.name == "loom" || blk.name == "stonecutter")
+        return with(state, "facing", dir_name(bs::opposite(horizontal_facing(p))));
+    if (blk.is_a("AnvilBlock")) return with(state, "facing", dir_name(clockwise(horizontal_facing(p))));
+    return state;
+}
+
+inline void placed(Player&, int x, int y, int z, const ItemStack& item) {
+    int state = world.get_block(x, y, z);
+    chest_link_partner(x, y, z, state);
+    if (be::block_entity_type(state) < 0) return;
+    if (!comp::get(item, comp::custom_name()) && !comp::get(item, comp::container())) return;
+    if (auto b = be::get(x, y, z)) apply_item(*b, item);
+}
+
+inline void block_changed(int x, int y, int z, int old_state, int new_state) {
+    if (state_block_index(old_state) != state_block_index(new_state)) chest_unlink_partner(x, y, z, old_state);
+    be::block_changed(x, y, z, old_state, new_state);
+}
+
+inline void loot_copy(int x, int y, int z, const std::vector<std::string>& include, ItemStack& s) {
+    if (auto b = be::removed_at(x, y, z)) copy_to_item(*b, include, s);
+}
+
+inline void player_tick(Player& p) {
+    if (p.g.menu && !p.g.menu->still_valid(p)) close_container(p, true);
+}
+
+}  // namespace cont
+
+// Player file lines (survival.hpp): "ender <slot> <item> <count> [patch hex]".
+inline void save_player_containers(const Player& p, std::ostream& f) {
+    for (size_t i = 0; i < p.g.ender.size(); i++) {
+        const ItemStack& s = p.g.ender[i];
+        if (s.empty()) continue;
+        f << "ender " << i << ' ' << s.item << ' ' << s.count;
+        if (s.damage || s.comp) f << ' ' << comp::patch_hex(s);
+        f << '\n';
+    }
+}
+inline bool load_player_containers(Player& p, const std::string& key, std::istream& f) {
+    if (key != "ender") return false;
+    std::string line;
+    std::getline(f, line);
+    std::istringstream in(line);
+    int slot, item, count;
+    std::string hex;
+    if (!(in >> slot >> item >> count) || slot < 0 || slot >= 27 || item < 0 || item >= ITEM_COUNT) return true;
+    ItemStack s{item, count};
+    if (in >> hex) comp::patch_from_hex(s, hex);
+    p.g.ender[size_t(slot)] = s;
+    return true;
+}
+
+inline void containers_init() {
+    if (!cont::load_data()) _exit(1);
+    cont::register_chests();
+    cont::register_furnaces();
+    block_changed_hook = cont::block_changed;
+    chunk_loaded_hook = be::chunk_loaded;
+    block_entity_update_tag = be::update_tag;
+    use_block_hook = cont::use_block;
+    placement_hook = cont::place_state;
+    placed_hook = cont::placed;
+    loot_copy_block_entity = cont::loot_copy;
+    before_world_save = be::flush_all;
+    on_tick(be::tick);
+    on_player_tick(cont::player_tick);
+    on(play_sb::container_button_click, [](Player& p, Reader& in, int) {
+        int id = in.varint(), button = in.varint();
+        if (id == p.g.container && p.g.menu && !p.g.dead && p.gamemode != 3) p.g.menu->button(p, button);
+    });
+}

@@ -133,13 +133,21 @@ struct Section {
 };
 
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
-// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+// saved NBT (saveCustomOnly: nameless compound incl. the 0x0a tag byte). The chunk packet sends
+// block_entity_update_tag(type, nbt) instead (most types send {}). Chunk::set drops the one at a position whose
+// block changes (same block, other state: kept). Live game state: src/containers/block_entity.hpp.
 struct BlockEntity {
     uint8_t x, z;
     int16_t y;
     int type;
     std::vector<uint8_t> nbt{0x0a, 0x00};
 };
+
+inline int state_block_index(int state) {  // block index (position in BLOCK_FIRST_STATE)
+    return int(std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state) - std::begin(BLOCK_FIRST_STATE)) - 1;
+}
+// BlockEntity.getUpdateTag: set by src/containers (nullptr = send the saved NBT).
+inline void (*block_entity_update_tag)(const BlockEntity& e, Writer& w) = nullptr;
 
 struct Chunk {
     int cx, cz;
@@ -156,9 +164,10 @@ struct Chunk {
         return sections[(y - MIN_Y) >> 4].blocks.get((((y - MIN_Y) & 15) * 16 + z) * 16 + x);
     }
     void set(int x, int y, int z, uint16_t s) {
+        uint16_t old = block_entities.empty() ? s : get(x, y, z);
         sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
-        if (!block_entities.empty())
+        if (!block_entities.empty() && state_block_index(old) != state_block_index(s))
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
@@ -236,7 +245,8 @@ inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const W
     w.varint(int32_t(c.block_entities.size()));
     for (auto& e : c.block_entities) {
         w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
-        w.bytes(e.nbt.data(), e.nbt.size());
+        if (block_entity_update_tag) block_entity_update_tag(e, w);
+        else w.bytes(e.nbt.data(), e.nbt.size());
     }
     w.bytes(light.b);
     return std::move(w.b);
@@ -323,6 +333,11 @@ struct ChunkPool {
 };
 
 inline void generate_flat(Chunk& c);
+struct World;
+// Called on a worker thread once a chunk is loaded or generated, before it is published (src/containers).
+inline void (*chunk_loaded_hook)(const ChunkPtr& c) = nullptr;
+// World::set_block changed a block (tick thread): old and new state (src/containers: block entities).
+inline void (*block_changed_hook)(int x, int y, int z, int old_state, int new_state) = nullptr;
 
 // On-disk chunk: c.<x>.<z>.bin = "CPP2", raw size (u32 LE), then zlib of the 24 sections in network form
 // (blocks then biomes paletted containers). "CPP1" (uncompressed flat arrays) is still read.
@@ -491,6 +506,7 @@ struct World {
             c->dirty = true;
         }
         light::block_changed(x, y, z, old, state);
+        if (block_changed_hook && old != state) block_changed_hook(x, y, z, old, state);
         return true;
     }
 
@@ -600,6 +616,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
         light::produced(*this, *c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
+        if (chunk_loaded_hook) chunk_loaded_hook(c);
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
