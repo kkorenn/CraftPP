@@ -1,7 +1,7 @@
 #pragma once
 // Block entities and container menus: entry point. containers_init() (game_init) loads data/containers.json,
 // registers block entity types and installs the hooks in world.hpp / survival.hpp / loot.hpp / server.hpp.
-#include "furnace.hpp"
+#include "hopper.hpp"
 
 namespace cont {
 
@@ -11,7 +11,7 @@ inline bool use_block(Player& p, int hand, int x, int y, int z, int) {
     bool have_items = !p.inv[size_t(p.selected)].empty() || !p.inv[40].empty();
     if (p.g.sneaking && have_items) return false;  // secondary use: place against it instead
     if (hand != 0) return false;                   // useWithoutItem is main hand only
-    return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z);
+    return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z) || use_hopper(p, state, x, y, z);
 }
 
 // getStateForPlacement for the blocks of this module; other states pass through.
@@ -91,6 +91,7 @@ inline void containers_init() {
     if (!cont::load_data()) _exit(1);
     cont::register_chests();
     cont::register_furnaces();
+    cont::register_hoppers();
     block_changed_hook = cont::block_changed;
     chunk_loaded_hook = be::chunk_loaded;
     block_entity_update_tag = be::update_tag;

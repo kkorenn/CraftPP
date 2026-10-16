@@ -62,7 +62,7 @@ c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 21.5, -60, 22.5, 1))
 
 if "--after-restart" in sys.argv:
     cid, items = open_menu(c, CHEST, 1, "generic_9x3")
-    assert items[0] == (40, item("cobblestone")), items[:3]
+    assert items[0] == (45, item("cobblestone")), items[:3]
     close(c, cid)
     cid, items = open_menu(c, FURNACE, 2, "blast_furnace")
     assert items[2][1] == item("iron_ingot") and items[2][0] >= 1, items[:3]
@@ -106,3 +106,21 @@ assert lit_total == 800, f"coal burns 1600/2 ticks in a blast furnace, got {lit_
 assert time.time() - t0 > 4, "smelting takes 100 ticks"
 print("blast furnace ok (%.1fs)" % (time.time() - t0))
 close(c, cid)
+
+# Hopper: sneak-place against the chest's east face -> hopper at x+1 facing west; 5 cobblestone flow into the chest.
+give(c, 0, "hopper", 1)
+c.send(PLAY_SB["player_input"], b"\x20")
+c.send(PLAY_SB["use_item_on"], varint(0) + pos(*CHEST) + varint(5) + struct.pack(">fff", 1, .5, .5) + b"\0\0" + varint(6))
+wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == (CHEST[0] + 1, CHEST[1], CHEST[2]))
+c.send(PLAY_SB["player_input"], b"\x00")
+give(c, 0, "cobblestone", 5)
+time.sleep(0.2)
+cid, items = open_menu(c, (CHEST[0] + 1, CHEST[1], CHEST[2]), 7, "hopper")
+assert len(items) == 41
+click(c, cid, 32, 0, 1)  # hotbar 0 -> hopper
+time.sleep(4)            # 5 items x 8 ticks
+close(c, cid)
+cid, items = open_menu(c, CHEST, 8, "generic_9x3")
+assert items[0] == (45, item("cobblestone")), items[:2]
+close(c, cid)
+print("hopper ok")

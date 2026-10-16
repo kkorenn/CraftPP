@@ -37,7 +37,13 @@ struct Live {
     virtual void removed_side_effects() {}  // preRemoveSideEffects (default: drop container contents)
     virtual bool full_update_tag() const { return false; }  // getUpdateTag = saveCustomOnly
     virtual int max_stack() const { return 99; }              // Container.getMaxStackSize
-    virtual bool can_place(int, const ItemStack&) const { return true; }  // canPlaceItem (hoppers)
+    virtual bool can_place(int, const ItemStack&) const { return true; }  // Container.canPlaceItem
+    virtual bool can_take(int, const ItemStack&) const { return true; }   // Container.canTakeItem
+    virtual bool worldly() const { return false; }                        // WorldlyContainer: faces below
+    virtual std::vector<int> face_slots(int /*bs::Dir*/) const { return {}; }
+    virtual bool can_place_face(int slot, const ItemStack& s, int) const { return can_place(slot, s); }
+    virtual bool can_take_face(int, const ItemStack&, int) const { return true; }
+    virtual void item_set(int) {}  // setItem side effects (furnace input restarts cooking)
     virtual void opened(Player&) {}
     virtual void closed(Player&) {}
     void set_changed() { dirty = true; }

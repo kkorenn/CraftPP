@@ -54,6 +54,18 @@ struct FurnaceBE : be::Live {
     ComponentsPtr prev_comp;
 
     FurnaceBE() { items.resize(3); }
+    bool worldly() const override { return true; }
+    std::vector<int> face_slots(int d) const override { return d == bs::DOWN ? std::vector<int>{2, 1} : d == bs::UP ? std::vector<int>{0} : std::vector<int>{1}; }
+    bool can_place(int slot, const ItemStack& s) const override {
+        static const int bucket = item_id("bucket");
+        if (slot == 2) return false;
+        if (slot != 1) return true;
+        return is_fuel(s) || (s.item == bucket && items[1].item != bucket);
+    }
+    bool can_take_face(int slot, const ItemStack& s, int d) const override {
+        return d == bs::DOWN && slot == 1 ? tagged("furnace_fuel_bottom_takeable", s.item) : true;
+    }
+    void item_set(int slot) override { if (slot == 0) input_maybe_changed(); }
     bool fast() const { return type != block_entity_types::furnace; }
     bool ticks() const override { return true; }
     void removed_side_effects() override { be::drop_contents(*this); }
