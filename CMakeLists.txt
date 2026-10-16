@@ -6,8 +6,19 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+# Release = -O2 (on a Pi -O3 only grows the binary; docs/performance.md). Worldgen must stay bit-exact with
+# vanilla: never -ffast-math, and -ffp-contract=off (GCC defaults to fused multiply-add contraction).
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 add_compile_options(-ffp-contract=off)
-add_executable(craftpp src/main.cpp)
+set(CRAFTPP_CPU "" CACHE STRING "Tune for one CPU, e.g. cortex-a72 (Pi 4) or cortex-a76 (Pi 5); empty = portable")
+if(CRAFTPP_CPU)
+  add_compile_options(-mcpu=${CRAFTPP_CPU})
+endif()
+option(CRAFTPP_LTO "Link-time optimization" OFF)
+if(CRAFTPP_LTO)
+  set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+endif()
+add_executable(craftpp src/main.cpp src/light/light.cpp)
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
 find_package(ZLIB QUIET)
@@ -21,9 +32,15 @@ target_include_directories(worldgen_tests PRIVATE src)
 target_compile_options(worldgen_tests PRIVATE -Wall -Wextra)
 # Worldgen foundation: RNG, noise, JSON (bit-exact with vanilla; never use -ffast-math here).
 add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_source.cpp
-  src/worldgen/density.cpp src/worldgen/terrain.cpp)
+  src/worldgen/density.cpp src/worldgen/terrain.cpp src/worldgen/block_state.cpp src/worldgen/pipeline.cpp
+  src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp
+  src/worldgen/block_behavior.cpp src/worldgen/feature_basic.cpp src/worldgen/feature_tree.cpp src/worldgen/feature_cave.cpp
+  src/worldgen/feature_misc.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
+find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
+find_package(Threads REQUIRED)
+target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB Threads::Threads)
 target_link_libraries(craftpp PRIVATE craftpp_worldgen)
 # Test targets are skipped until their source exists (keeps in-progress work from breaking the build).
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/worldgen_rng_test.cpp)
@@ -66,3 +83,15 @@ if(EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
 else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
+# Structures (src/worldgen/structure): placement, starts, jigsaw, legacy pieces, beardifier, /locate.
+find_package(ZLIB REQUIRED)
+target_sources(craftpp_worldgen PRIVATE src/worldgen/structure/blocks.cpp src/worldgen/structure/nbt_io.cpp
+  src/worldgen/structure/template.cpp src/worldgen/structure/structure.cpp src/worldgen/structure/jigsaw.cpp
+  src/worldgen/structure/structures.cpp src/worldgen/structure/scattered.cpp src/worldgen/structure/templated.cpp
+  src/worldgen/structure/beardifier.cpp src/worldgen/structure/hooks.cpp src/worldgen/structure/pending.cpp src/worldgen/structure/mineshaft.cpp src/worldgen/structure/stronghold.cpp src/worldgen/structure/monument.cpp src/worldgen/structure/mansion.cpp)
+target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB)
+add_executable(structure_test test/structure_test.cpp)
+target_link_libraries(structure_test PRIVATE craftpp_worldgen)
+target_compile_options(structure_test PRIVATE -Wall -Wextra)
+add_executable(pipeline_test test/pipeline_test.cpp)
+target_link_libraries(pipeline_test PRIVATE craftpp_worldgen)

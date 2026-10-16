@@ -46,6 +46,8 @@ using SamplerP = std::shared_ptr<const Sampler>;
 class SamplerContext {
  public:
   explicit SamplerContext(bool enableCaches) : caches(enableCaches) {}
+  // User field Beardifier.CONTEXT_KEY (NoiseChunk): the "beardifier" function samples this, 0 when null.
+  const Sampler* beardifier = nullptr;
   void sampleVolumeCached(int id, const Sampler& input, DensityBuffer& out, const DensityVolume& v);
   float sampleValueCached(int id, const Sampler& input, int x, int y, int z);
 
