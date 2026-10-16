@@ -20,9 +20,19 @@ struct Section {
     std::array<uint16_t, 64> biomes{};    // 4x4x4 cells, same order
 };
 
+// Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
+// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+struct BlockEntity {
+    uint8_t x, z;
+    int16_t y;
+    int type;
+    std::vector<uint8_t> nbt{0x0a, 0x00};
+};
+
 struct Chunk {
     int cx, cz;
     std::array<Section, SECTIONS> sections;
+    std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections against concurrent edit + encode
     bool dirty = false;  // modified since last save
 
@@ -31,9 +41,12 @@ struct Chunk {
     }
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - MIN_Y) >> 4].blocks[(((y - MIN_Y) & 15) * 16 + z) * 16 + x] = s;
+        if (!block_entities.empty())
+            std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..HEIGHT/4-1 (quart rows from MIN_Y).
     void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes[((qy & 3) * 4 + qz) * 4 + qx] = b; }
+    uint16_t get_biome(int qx, int qy, int qz) const { return sections[qy >> 2].biomes[((qy & 3) * 4 + qz) * 4 + qx]; }
 };
 
 enum : uint8_t { STATE_AIR = 1, STATE_FLUID = 2 };
@@ -117,7 +130,11 @@ inline void write_chunk(Writer& w, Chunk& c) {
         write_paletted(data, s.biomes, 1, 3, biome_bits);
     }
     w.byte_array(data.b);
-    w.varint(0);  // block entities
+    w.varint(int32_t(c.block_entities.size()));
+    for (auto& e : c.block_entities) {
+        w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
+        w.bytes(e.nbt.data(), e.nbt.size());
+    }
 
     // Light: full sky light everywhere, no block light. 26 sections (one below + one above).
     // ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
@@ -173,7 +190,19 @@ inline bool load_chunk(Chunk& c) {
         f.read(reinterpret_cast<char*>(s.blocks.data()), sizeof s.blocks);
         f.read(reinterpret_cast<char*>(s.biomes.data()), sizeof s.biomes);
     }
-    return bool(f);
+    if (!f) return false;
+    uint32_t n = 0;  // block entities (optional trailer): count, then x z y type len nbt
+    if (f.read(reinterpret_cast<char*>(&n), 4))
+        for (uint32_t i = 0; i < n && f; i++) {
+            BlockEntity e;
+            uint32_t len = 0;
+            f.read(reinterpret_cast<char*>(&e.x), 1).read(reinterpret_cast<char*>(&e.z), 1);
+            f.read(reinterpret_cast<char*>(&e.y), 2).read(reinterpret_cast<char*>(&e.type), 4).read(reinterpret_cast<char*>(&len), 4);
+            e.nbt.resize(len);
+            f.read(reinterpret_cast<char*>(e.nbt.data()), len);
+            if (f) c.block_entities.push_back(std::move(e));
+        }
+    return true;
 }
 
 inline void save_chunk(Chunk& c) {
@@ -186,6 +215,14 @@ inline void save_chunk(Chunk& c) {
         for (auto& s : c.sections) {
             f.write(reinterpret_cast<const char*>(s.blocks.data()), sizeof s.blocks);
             f.write(reinterpret_cast<const char*>(s.biomes.data()), sizeof s.biomes);
+        }
+        uint32_t n = uint32_t(c.block_entities.size());
+        f.write(reinterpret_cast<const char*>(&n), 4);
+        for (auto& e : c.block_entities) {
+            uint32_t len = uint32_t(e.nbt.size());
+            f.write(reinterpret_cast<const char*>(&e.x), 1).write(reinterpret_cast<const char*>(&e.z), 1);
+            f.write(reinterpret_cast<const char*>(&e.y), 2).write(reinterpret_cast<const char*>(&e.type), 4);
+            f.write(reinterpret_cast<const char*>(&len), 4).write(reinterpret_cast<const char*>(e.nbt.data()), len);
         }
         c.dirty = false;
     }
