@@ -1,6 +1,7 @@
 #pragma once
 #include "gen/ids.hpp"
 #include "protocol.hpp"
+#include "light/light.hpp"
 
 #include <algorithm>
 #include <array>
@@ -80,7 +81,10 @@ inline void write_paletted(Writer& w, const std::array<uint16_t, N>& vals, int m
 }
 
 // Body of clientbound level_chunk_with_light (without packet id).
+// Light comes from light::write (call light::ensure_lit first); it is taken before c.m (lock order: light, chunk).
 inline void write_chunk(Writer& w, Chunk& c) {
+    Writer light_data;
+    light::write(light_data, c.cx, c.cz);
     std::lock_guard lock(c.m);
     w.i32(c.cx).i32(c.cz);
 
@@ -119,16 +123,7 @@ inline void write_chunk(Writer& w, Chunk& c) {
     w.byte_array(data.b);
     w.varint(0);  // block entities
 
-    // Light: full sky light everywhere, no block light. 26 sections (one below + one above).
-    // ponytail: no light engine; caves are lit. Add real sky/block light propagation with terrain gen.
-    w.varint(4).u8(0xFF).u8(0xFF).u8(0xFF).u8(0x03);  // sky mask (BitSet as LE bytes)
-    w.varint(0);                                       // block mask
-    w.varint(0);                                       // empty sky mask
-    w.varint(0);                                       // empty block mask
-    static const std::vector<uint8_t> full(2048, 0xFF);
-    w.varint(SECTIONS + 2);
-    for (int i = 0; i < SECTIONS + 2; i++) w.byte_array(full);
-    w.varint(0);
+    w.bytes(light_data.b);
 }
 
 inline void generate_flat(Chunk& c);
@@ -228,9 +223,15 @@ struct World {
     bool set_block(int x, int y, int z, uint16_t state) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
         Chunk& c = get(x >> 4, z >> 4);
-        std::lock_guard lock(c.m);
-        c.set(x & 15, y, z & 15, state);
-        c.dirty = true;
+        std::lock_guard light_lock(light::mutex());  // the light engine reads chunks under this lock
+        uint16_t old;
+        {
+            std::lock_guard lock(c.m);
+            old = c.get(x & 15, y, z & 15);
+            c.set(x & 15, y, z & 15, state);
+            c.dirty = true;
+        }
+        light::block_changed(x, y, z, old, state);
         return true;
     }
 

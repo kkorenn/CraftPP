@@ -7,7 +7,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 add_compile_options(-ffp-contract=off)
-add_executable(craftpp src/main.cpp)
+add_executable(craftpp src/main.cpp src/light/light.cpp)
 target_compile_options(craftpp PRIVATE -Wall -Wextra)
 add_executable(worldgen_tests
   test/biome_test.cpp src/worldgen/biome_source.cpp)

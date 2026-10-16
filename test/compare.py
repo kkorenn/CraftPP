@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Compare CraftPP world generation against the vanilla reference server, chunk by chunk.
-  python3 test/compare.py --seed 12345 --radius 2 [--mode full|solid] [--vanilla-datapack DIR] [--against craftpp|vanilla]
+  python3 test/compare.py --seed 12345 --radius 2 [--mode full|solid] [--vanilla-datapack DIR] [--against craftpp|vanilla] [--light]
 Runs vanilla (vanilla/compare_run/, fresh world), records the chunks within --radius of the world spawn
 chunk, stops it, then runs the other server (CraftPP by default; `--against vanilla` = self-check)
-with the same seed, walks the bot to the same spawn and diffs block states + biomes.
+with the same seed, walks the bot to the same spawn and diffs block states + biomes (--light: also sky/block
+light per section, after applying light_update packets for --settle seconds).
 Exit status 1 when anything differs."""
 import argparse, collections, json, os, shutil, socket, struct, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -11,7 +12,6 @@ from bot import login, play_step, PLAY_SB
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
-RUN = f"{ROOT}/vanilla/compare_run"
 MIN_Y = -64
 
 ap = argparse.ArgumentParser()
@@ -23,7 +23,11 @@ ap.add_argument("--against", choices=["craftpp", "vanilla"], default="craftpp")
 ap.add_argument("--port", type=int, default=25611)
 ap.add_argument("--examples", type=int, default=10)
 ap.add_argument("--timeout", type=float, default=300)
+ap.add_argument("--light", action="store_true", help="also compare sky + block light")
+ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
+ap.add_argument("--run-dir", default=f"{ROOT}/vanilla/compare_run", help="vanilla server dir (its world is wiped)")
 args = ap.parse_args()
+RUN = args.run_dir
 view = min(32, int(args.radius * 1.42) + 2)  # vanilla sends a circle; cover the square + spawn fuzz
 
 def wait_log(path, needle, proc, timeout):
@@ -44,8 +48,14 @@ def collect(port, center):
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
     c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
+    if args.light:  # neighbours may still be lighting: take their light_update packets too
+        end = time.time() + args.settle  # both servers send time / keep-alive packets, so this returns
+        while time.time() < end: play_step(c)
     c.s.close()
+    if args.light: LIGHT.append({k: c.light[k] for k in need})
     return {k: c.chunks[k] for k in need}, c.biomes, center
+
+LIGHT = []  # per run: {(cx, cz): {"sky"|"block": {section index: 2048 bytes}}}
 
 def run_vanilla(n, center):
     os.makedirs(RUN, exist_ok=True)
@@ -136,4 +146,32 @@ print(f"{nb} biome mismatches of {len(A) * 24 * 64} cells")
 if nb:
     print("top pairs:", *(f"  vanilla {a} -> {args.against} {b}: {n}" for (a, b), n in bio_pairs.most_common(5)), sep="\n")
     print("first mismatches:", *bio_examples, sep="\n")
-sys.exit(1 if bad or nb else 0)
+light_bad = 0
+if args.light:
+    LA, LB = LIGHT
+    for kind in ("sky", "block"):
+        diff, presence, per_y, ex, pairs, partial = 0, 0, collections.Counter(), [], collections.Counter(), 0
+        for (cx, cz) in sorted(A):
+            la, lb = LA[cx, cz][kind], LB[cx, cz][kind]
+            for si in range(26):
+                if (si in la) != (si in lb):
+                    presence += 1
+                    if len(ex) < args.examples: ex.append(f"  chunk {cx},{cz} section y {(si - 5) * 16}: present in {'vanilla' if si in la else args.against} only")
+                a, b = la.get(si, bytes(2048)), lb.get(si, bytes(2048))
+                partial += sum(0 < (v >> 4 * h & 15) < 15 for v in a for h in (0, 1))
+                if a == b: continue
+                for i in range(4096):
+                    va, vb = a[i >> 1] >> 4 * (i & 1) & 15, b[i >> 1] >> 4 * (i & 1) & 15
+                    if va == vb: continue
+                    diff += 1; per_y[(si - 5) * 16] += 1; pairs[va, vb] += 1
+                    if len(ex) < args.examples:
+                        x, y, z = cx * 16 + (i & 15), (si - 5) * 16 + (i >> 8), cz * 16 + (i >> 4 & 15)
+                        blk = NAMES[A[cx, cz][si - 1][0][i]] if 1 <= si <= 24 else "-"
+                        ex.append(f"  {(x, y, z)} {blk}: vanilla {va}  {args.against} {vb}")
+        light_bad += diff + presence
+        print(f"{kind} light: {diff} mismatching values ({100 * diff / (len(A) * 26 * 4096):.3f}%), {presence} section presence mismatches; vanilla has {partial} values strictly between 0 and 15")
+        if diff:
+            print("  per section y:", ", ".join(f"{y}={n}" for y, n in sorted(per_y.items())))
+            print("  top (vanilla, ours):", ", ".join(f"{p}={n}" for p, n in pairs.most_common(6)))
+        if ex: print("\n".join(ex))
+sys.exit(1 if bad or nb or light_bad else 0)
