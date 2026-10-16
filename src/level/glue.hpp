@@ -14,10 +14,25 @@ inline bool player_destroy(Player& p, int x, int y, int z, int state) {
     return remove(pos);
 }
 
+// A player's initial chunks are sent during join (network thread) before the player is in `players`, so
+// block updates of that window (fluids flowing after post-processing) never reached it: resend the chunks of
+// its view that changed recently. (Vanilla sends a chunk only after postProcessGeneration.)
+inline void resend_changed_chunks(Player& p) {
+    int v = view_distance();
+    for (int x = p.cx - v; x <= p.cx + v; x++)
+        for (int z = p.cz - v; z <= p.cz + v; z++) {
+            auto it = chunk_changed_at.find(chunk_key(x, z));
+            if (it == chunk_changed_at.end() || it->second < server_tick - 200) continue;
+            if (ChunkPtr c = world.find(x, z)) push_chunk(p, *c);
+        }
+    std::erase_if(chunk_changed_at, [](auto& e) { return e.second < server_tick - 200; });
+}
+
 inline void start() {
     init();
     on_tick(level_tick);
     on_tick_end(broadcast_changes);
+    on_player_join(resend_changed_chunks);
     level_set_block = [](int x, int y, int z, int state, int flags) { return set(Pos{x, y, z}, state, flags); };
     on_save_all = pack_all;
     level_command_place = [](int x, int y, int z, int state) {
