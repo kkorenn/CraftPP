@@ -36,12 +36,14 @@ static void disconnect_login(int fd, const std::string& msg, const std::string& 
     log_info("%s lost connection: %s", who.c_str(), msg.c_str());
 }
 
-// Wait for a specific packet id, ignoring others (client_information, brand, etc.).
-static Reader wait_for(int fd, std::vector<uint8_t>& pkt, int id) {
+// Wait for a specific packet id, ignoring others (brand, etc.). Configuration's client_information is kept in `info`.
+static Reader wait_for(int fd, std::vector<uint8_t>& pkt, int id, std::vector<uint8_t>* info = nullptr) {
     for (;;) {
         if (!read_packet(fd, pkt)) throw std::runtime_error("disconnected");
         Reader r(pkt);
-        if (r.varint() == id) return r;
+        int got = r.varint();
+        if (got == id) return r;
+        if (info && got == config_sb::client_information) *info = pkt;
     }
 }
 
@@ -76,6 +78,7 @@ static void handle(int fd) {
         // Login (offline mode: trust the client's name + uuid, no encryption).
         Reader hello = wait_for(fd, pkt, login_sb::hello);
         std::string name = hello.str(16);
+        if (!valid_player_name(name)) throw std::runtime_error("Invalid characters in username");
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
         if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
         if (find_player(name)) return disconnect_login(fd, "You are already logged in", name);
@@ -93,11 +96,12 @@ static void handle(int fd) {
         send_packet(fd, Writer()
                             .varint(config_cb::select_known_packs)
                             .varint(1).str("minecraft").str("core").str(GAME_VERSION));
-        wait_for(fd, pkt, config_sb::select_known_packs);
+        std::vector<uint8_t> client_info;
+        wait_for(fd, pkt, config_sb::select_known_packs, &client_info);
         auto cfg = reframe(config_packets, conn_compressed);
         send_raw(fd, cfg.data(), cfg.size());
         send_packet(fd, Writer().varint(config_cb::finish_configuration));
-        wait_for(fd, pkt, config_sb::finish_configuration);
+        wait_for(fd, pkt, config_sb::finish_configuration, &client_info);
 
         player = std::make_shared<Player>();
         player->fd = fd;
@@ -105,7 +109,15 @@ static void handle(int fd) {
         player->uuid_hi = uuid_hi;
         player->uuid_lo = uuid_lo;
         player->eid = next_entity_id++;
-        player->gamemode = std::max(0, gamemode_id(props["gamemode"]));
+        {
+            std::lock_guard lock(cmd_mtx);  // /defaultgamemode rewrites props["gamemode"] on the tick thread
+            player->gamemode = std::max(0, gamemode_id(props["gamemode"]));
+        }
+        if (!client_info.empty()) {  // same body as the play packet (ServerboundClientInformationPacket)
+            Reader ci(client_info);
+            ci.varint();
+            read_client_information(*player, ci);
+        }
         if (!load_player(*player)) place_new_player(*player);
         record_usercache(name, uuid_dashed(uuid_hi, uuid_lo));
         log_info("%s[%s] logged in with entity id %d at ([%s]%s, %s, %s)", name.c_str(), peer_address(fd).c_str(),
@@ -115,20 +127,7 @@ static void handle(int fd) {
     } catch (const std::exception& e) {
         if (!player && strcmp(e.what(), "disconnected")) log_warn("Connection error: %s", e.what());
     }
-    if (player) {
-        save_player(*player);
-        bool registered = false;
-        {
-            std::lock_guard lock(players_mtx);
-            auto it = std::find(players.begin(), players.end(), player);
-            if (it != players.end()) { players.erase(it); registered = true; }
-        }
-        if (registered) {
-            broadcast(Writer().varint(play_cb::remove_entities).varint(1).varint(player->eid));
-            broadcast(Writer().varint(play_cb::player_info_remove).varint(1).i64(player->uuid_hi).i64(player->uuid_lo));
-            broadcast_message(player->name + " left the game", "yellow");
-        }
-    }
+    // play() returns only after the tick thread has run the leave hooks and saved the player (tick.hpp).
 }
 
 static void request_shutdown(int) { request_shutdown_async(); }
@@ -256,9 +255,21 @@ int main(int argc, char** argv) {
 
     for (;;) {
         int fd = accept(srv, nullptr, nullptr);
-        if (fd < 0) continue;
+        if (fd < 0) {  // e.g. EMFILE: the pending connection stays queued, so back off instead of spinning
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof yes);
+        // Vanilla's 30 s ReadTimeoutHandler; the send timeout bounds blocking sends during login/configuration.
+        timeval timeout{30, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
         // ponytail: thread per connection; move to an event loop once player counts matter.
-        std::thread([fd] { handle(fd); close(fd); }).detach();
+        try {
+            std::thread([fd] { handle(fd); close(fd); }).detach();
+        } catch (const std::system_error& e) {  // out of threads: drop this connection, keep serving
+            log_warn("Connection refused: %s", e.what());
+            close(fd);
+        }
     }
 }

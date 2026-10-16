@@ -44,7 +44,7 @@ inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
 inline std::vector<uint8_t> commands_packet;
 inline World world;
-inline volatile std::sig_atomic_t shutdown_requested = 0;
+inline std::atomic<int> shutdown_requested{0};  // lock-free: safe from signal handlers and any thread
 inline int shutdown_pipe[2] = {-1, -1};  // wakes the autosave thread (main.cpp) without polling
 inline void request_shutdown_async() {  // any thread or signal handler (write() is async-signal-safe)
     shutdown_requested = 1;
@@ -83,6 +83,7 @@ struct Player {
     std::array<Slot, 41> inv;  // vanilla Inventory indices: 0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand
     int selected = 0;          // hotbar slot 0-8
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
+    NetState net;              // keep-alive, teleport confirmation, client options (game/netplay.hpp)
     Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread
     ViewTicket view;           // keeps the view square loaded (world.hpp)
@@ -265,14 +266,15 @@ inline void broadcast_message(const std::string& text, const std::string& color 
     broadcast(w.boolean(false));
 }
 
-inline uint8_t angle(float deg) { return uint8_t(int(std::floor(deg * 256.0f / 360.0f))); }
+inline uint8_t angle(float deg) { return uint8_t(Mth::floor(deg * 256.0f / 360.0f)); }  // Mth.packDegrees
 
-// player_info_update with ADD_PLAYER | UPDATE_GAME_MODE | UPDATE_LISTED | UPDATE_LATENCY
+// player_info_update with ADD_PLAYER | UPDATE_GAME_MODE | UPDATE_LISTED | UPDATE_LATENCY | UPDATE_HAT
 inline Writer info_add(const std::vector<PlayerPtr>& list) {
     Writer w;
-    w.varint(play_cb::player_info_update).u8(0x01 | 0x04 | 0x08 | 0x10).varint(int32_t(list.size()));
+    w.varint(play_cb::player_info_update).u8(0x01 | 0x04 | 0x08 | 0x10 | 0x80).varint(int32_t(list.size()));
     for (auto& p : list)
-        w.i64(p->uuid_hi).i64(p->uuid_lo).str(p->name).varint(0).varint(p->gamemode).boolean(true).varint(0);
+        w.i64(p->uuid_hi).i64(p->uuid_lo).str(p->name).varint(0).varint(p->gamemode).boolean(true)
+            .varint(p->net.latency).boolean(p->net.skin_parts & 0x40);
     return w;
 }
 
@@ -288,18 +290,9 @@ inline Writer spawn_entity(const Player& p) {
                          .varint(0));
 }
 
-inline void broadcast_position(const Player& p) {
-    broadcast(Writer()
-                  .varint(play_cb::teleport_entity)
-                  .varint(p.eid)
-                  .f64(p.x).f64(p.y).f64(p.z)
-                  .f64(0).f64(0).f64(0)
-                  .f32(p.yaw).f32(p.pitch)
-                  .i32(0)
-                  .boolean(p.on_ground),
-              &p);
-    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
-}
+// Other clients learn player moves from the entity tracker (src/mobs/manager.hpp: ChunkMap.TrackedEntity with
+// range min(512, view * 16), relative moves every 2 ticks); nothing to send here.
+inline void broadcast_position(const Player&) {}
 
 // ---------- player data ----------
 
@@ -411,7 +404,9 @@ inline void save_player(const Player& p) {
     nbtio::write_file(player_dat(p), t);
 }
 
+inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
 inline void save_all() {
+    if (on_save_all) on_save_all();
     for (auto& p : snapshot()) save_player(*p);
     world.save_dirty(true);
 }
@@ -537,9 +532,18 @@ inline void set_gamemode(Player& p, int gm) {
                   .i64(p.uuid_hi).i64(p.uuid_lo).varint(gm));
 }
 
+// ServerGamePacketListenerImpl.teleport: a new teleport id; movement is ignored until the client accepts it.
+inline int next_teleport_id(Player& p) {
+    if (++p.net.teleport_id == INT_MAX) p.net.teleport_id = 0;
+    p.net.awaiting = true;
+    p.net.awaiting_since = p.net.ticks;
+    p.net.await_x = p.x, p.net.await_y = p.y, p.net.await_z = p.z;
+    return p.net.teleport_id;
+}
+
 inline void teleport(Player& p, double x, double y, double z) {
     p.x = x; p.y = y; p.z = z;
-    p.send(Writer().varint(play_cb::player_position).varint(0)
+    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                .f64(x).f64(y).f64(z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
     int ncx = int(std::floor(x)) >> 4, ncz = int(std::floor(z)) >> 4;
     if (ncx != p.cx || ncz != p.cz) update_view(p, ncx, ncz, false);

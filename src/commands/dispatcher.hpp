@@ -162,6 +162,19 @@ struct Cmd {
         return v;
     }
     PlayerPtr player(const char* name) const { return players(name)[0]; }
+    // Entity arguments that also match non-player entities (mobs, items...).
+    std::vector<Target> targets(const char* name, bool allow_empty = false) const {
+        auto& sel = get<Selector>(name);
+        auto v = select_targets(sel, src);
+        if (v.empty() && !allow_empty)
+            throw err(sel.players_only_type || sel.by_name ? "argument.entity.notfound.player" : "argument.entity.notfound.entity");
+        return v;
+    }
+    std::vector<Target> targets_or_self_any(const char* name) const {  // getEntityOrException when omitted
+        if (has(name)) return targets(name);
+        if (src.mob) return {Target{nullptr, src.mob}};
+        return {Target{self_player(true), nullptr}};
+    }
     // getPlayerOrException / getEntityOrException (entity=true) when the argument is omitted.
     std::vector<PlayerPtr> targets_or_self(const char* name, bool entity = false) const {
         if (has(name)) return players(name);
@@ -174,7 +187,9 @@ struct Cmd {
     Vec3 vec(const char* name) const { return get<Coords>(name).pos(src); }
     void block_pos(const char* name, int& x, int& y, int& z) const {
         get<Coords>(name).block(src, x, y, z);
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT) throw err("argument.pos.outofworld");
+        // Level.isInWorldBounds
+        if (y < MIN_Y || y >= MIN_Y + HEIGHT || x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
+            throw err("argument.pos.outofworld");
     }
     // ScoreHolderArgument.getNames
     std::vector<std::string> holders(const char* name) const {

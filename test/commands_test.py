@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import login, wait, varint, string, Buf, PLAY_CB, PLAY_SB, ids, play_step
 
 ARG = ids("arg_types")
-STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "commands_test_state.txt")
+STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), os.environ.get("BUILD_DIR", "build"), "commands_test_state.txt")
 
 def varlong(b):
     n = s = 0
@@ -50,11 +50,6 @@ def join(name):
         pid, b = c.recv()
         if pid == PLAY_CB["commands"]: seen["tree"] = parse_tree(b)
         elif pid == PLAY_CB["set_time"] and "time" not in seen: seen["time"] = read_time(b)
-        elif pid == PLAY_CB["player_position"]:
-            tid, pos = b.varint(), b.take(24)
-            b.take(24)
-            c.pos = struct.unpack(">ddd", pos)
-            c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
         return pid
     bot.play_step = step
     try:
@@ -131,8 +126,8 @@ if __name__ == "__main__":
     cmd(a, "setblock 1 -59 1 stone")
     wait(a, PLAY_CB["block_update"])
     cmd(a, "fill 0 -59 0 3 -59 3 oak_planks hollow")
-    wait(a, PLAY_CB["section_blocks_update"])
     assert b"commands.fill.success" in chat_with(a, b"commands.fill")
+    wait(a, PLAY_CB["section_blocks_update"])  # level sync: block updates go out at the end of the tick
     cmd(a, "fill 0 0 0 100 100 100 stone")
     assert b"commands.fill.toobig" in chat_with(a, b"commands.fill")
     print("setblock/fill ok")

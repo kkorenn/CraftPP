@@ -96,6 +96,22 @@ inline Writer& text_component(Writer& w, const std::string& text, const std::str
     return w.u8(0x00);
 }
 
+// StringUtil.isAllowedChatCharacter over a whole message: no control chars, DEL or section sign.
+inline bool chat_allowed(const std::string& s) {
+    for (size_t i = 0; i < s.size(); i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 32 || c == 127 || (c == 0xC2 && i + 1 < s.size() && (unsigned char)s[i + 1] == 0xA7)) return false;
+    }
+    return true;
+}
+// StringUtil.isValidPlayerName: at most 16 chars, all printable ASCII without spaces.
+inline bool valid_player_name(const std::string& s) {
+    if (s.size() > 16) return false;
+    for (unsigned char c : s)
+        if (c <= 32 || c >= 127) return false;
+    return true;
+}
+
 // JSON string escaping for text components / status JSON.
 inline std::string json_escape(const std::string& s) {
     std::string o;

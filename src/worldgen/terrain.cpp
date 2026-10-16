@@ -101,7 +101,7 @@ const Aquifer::FluidStatus& Aquifer::status(int i) {
 }
 
 int Aquifer::computeSubstance(int bx, int by, int bz, double density) {
-  // ponytail: shouldScheduleFluidUpdate (fluid post-processing marks) not tracked; add with fluid ticking.
+  shouldScheduleFluidUpdate = false;
   if (density > 0.0) return -1;
   FluidStatus global = globalFluid(by);
   if (by > skipSamplingAboveY) return global.at(by);
@@ -126,12 +126,17 @@ int Aquifer::computeSubstance(int bx, int by, int bz, double density) {
         else if (d3 >= d) c4 = c3, c3 = index, d4 = d3, d3 = d;
         else if (d4 >= d) c4 = index, d4 = d;
       }
-  (void)c4, (void)d4;
   FluidStatus s1 = status(c1);
   double sim12 = similarity(d1, d2);
   int fluid = s1.at(by);
-  if (sim12 <= 0.0) return fluid;
-  if (fluid == blocks::water && globalFluid(by - 1).at(by - 1) == blocks::lava) return fluid;
+  if (sim12 <= 0.0) {
+    if (sim12 >= FLOWING_UPDATE_SIMILARITY) shouldScheduleFluidUpdate = !(s1 == status(c2));
+    return fluid;
+  }
+  if (fluid == blocks::water && globalFluid(by - 1).at(by - 1) == blocks::lava) {
+    shouldScheduleFluidUpdate = true;
+    return fluid;
+  }
   double barrierValue = NAN;
   FluidStatus s2 = status(c2);
   if (density + sim12 * calculatePressure(bx, by, bz, barrierValue, s1, s2) > 0.0) return -1;
@@ -140,6 +145,14 @@ int Aquifer::computeSubstance(int bx, int by, int bz, double density) {
   if (sim13 > 0.0 && density + sim12 * sim13 * calculatePressure(bx, by, bz, barrierValue, s1, s3) > 0.0) return -1;
   double sim23 = similarity(d2, d3);
   if (sim23 > 0.0 && density + sim12 * sim23 * calculatePressure(bx, by, bz, barrierValue, s2, s3) > 0.0) return -1;
+  bool flow12 = !(s1 == s2);
+  bool flow23 = sim23 >= FLOWING_UPDATE_SIMILARITY && !(s2 == s3);
+  bool flow13 = sim13 >= FLOWING_UPDATE_SIMILARITY && !(s1 == s3);
+  if (!flow12 && !flow23 && !flow13)
+    shouldScheduleFluidUpdate = sim13 >= FLOWING_UPDATE_SIMILARITY && similarity(d1, d4) >= FLOWING_UPDATE_SIMILARITY &&
+                                !(s1 == status(c4));
+  else
+    shouldScheduleFluidUpdate = true;
   return fluid;
 }
 
@@ -263,7 +276,11 @@ std::unique_ptr<TerrainGenerator::NoiseChunk> TerrainGenerator::fillFromNoise(Ch
         int by = MIN_Y + y;
         int state = nc->aquifer->computeSubstance(v.minBlockX + x, by, v.minBlockZ + z, density.get(y + (x + z * 16) * HEIGHT));
         if (state < 0) state = blocks::stone;
-        if (state != blocks::air) c.set(x, by, z, (uint16_t)state);
+        if (state != blocks::air) {
+          c.set(x, by, z, (uint16_t)state);
+          if (nc->aquifer->shouldScheduleFluidUpdate && (state_flags()[state] & STATE_FLUID))
+            c.level.post.push_back(uint32_t(x | z << 4 | (by - MIN_Y) << 8));  // ProtoChunk.markPosForPostProcessing
+        }
       }
   return nc;
 }
@@ -396,9 +413,13 @@ void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, 
       int s = nc->aquifer->computeSubstance(bx + x, y, bz + z, 0.0);
       if (s < 0) continue;
       c.set(x, y, z, (uint16_t)s);
+      if (nc->aquifer->shouldScheduleFluidUpdate && R.has_fluid(s)) c.level.post.push_back(uint32_t(x | z << 4 | (y - MIN_Y) << 8));
       if (hasGrass && c.get(x, y - 1, z) == blocks::dirt) {
         int tm = materials->topMaterial(c, ctx, bx + x, y - 1, bz + z, R.has_fluid(s));
-        if (tm >= 0) c.set(x, y - 1, z, (uint16_t)tm);
+        if (tm >= 0) {
+          c.set(x, y - 1, z, (uint16_t)tm);
+          if (R.has_fluid(tm)) c.level.post.push_back(uint32_t(x | z << 4 | (y - 1 - MIN_Y) << 8));
+        }
       }
     }
   });

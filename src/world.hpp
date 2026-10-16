@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <filesystem>
 #include <fstream>
@@ -134,6 +135,15 @@ struct Section {
     Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
+// Level tick state that travels with the chunk (src/level/): worldgen post-processing marks (vanilla
+// ProtoChunk.postProcessing, packed x | z << 4 | (y - MIN_Y) << 8) and the tick lists in the level's own
+// encoding. Owned by the tick thread once the chunk is loaded; save_chunk reads it under Chunk::m.
+struct ChunkLevelData {
+    bool post_processed = true;  // generated chunks start false; LevelChunk.postProcessGeneration ran
+    std::vector<uint32_t> post;
+    std::vector<uint8_t> ticks;
+};
+
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
 // network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
 struct BlockEntity {
@@ -145,10 +155,12 @@ struct BlockEntity {
 
 struct Chunk {
     int cx, cz;
+    ChunkLevelData level;
+    uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::array<Section, SECTIONS> sections;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
-    bool dirty = false;  // modified since last save
+    std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
     bool on_disk = false;
     std::chrono::steady_clock::time_point saved_at{};  // last save (World::save_dirty's 10 s cooldown)
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
@@ -161,6 +173,7 @@ struct Chunk {
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - MIN_Y) >> 4].blocks.set((((y - MIN_Y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
+        edits++;
         if (!block_entities.empty())
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
@@ -362,6 +375,18 @@ struct World {
     bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
+    std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
+
+    // The chunk if loaded, else null (never loads or generates).
+    ChunkPtr find(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+    bool is_viewed(int cx, int cz) {
+        std::lock_guard lock(m);
+        return viewed({cx, cz});
+    }
 
     void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }
 
@@ -390,6 +415,13 @@ struct World {
     // Reference stays valid while a player views the chunk (or the caller holds a ChunkPtr): unloading only
     // happens in save_dirty(). Prefer get_ptr() off the tick thread.
     Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
+
+    // Already loaded chunk, or null (never loads or generates). Holding the pointer keeps it from unloading.
+    ChunkPtr get_if_loaded(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
 
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
@@ -524,6 +556,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         c->cx = cx, c->cz = cz;
         bool loaded = load_chunk(*c);
         if (!loaded) {
+            c->level.post_processed = false;
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
@@ -534,6 +567,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             chunks[{cx, cz}] = c;
             inflight.erase({cx, cz});
         }
+        if (on_load) on_load(c);
         job.set_value(c);
     } catch (...) {
         {
