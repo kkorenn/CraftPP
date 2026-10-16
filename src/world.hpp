@@ -421,12 +421,6 @@ struct World {
     // Reference stays valid while a player views the chunk (or the caller holds a ChunkPtr): unloading only
     // happens in save_dirty(). Prefer get_ptr() off the tick thread.
     Chunk& get(int cx, int cz) { return *get_ptr(cx, cz); }
-    // The chunk if it is in memory, else null; never loads or generates (vanilla getChunkNow).
-    ChunkPtr get_if_loaded(int cx, int cz) {
-        std::lock_guard lock(m);
-        auto it = chunks.find({cx, cz});
-        return it == chunks.end() ? nullptr : it->second;
-    }
 
     uint16_t get_block(int x, int y, int z) {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
