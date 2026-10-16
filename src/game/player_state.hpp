@@ -3,6 +3,7 @@
 #include "../protocol.hpp"
 
 #include <array>
+#include <iosfwd>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -91,3 +92,7 @@ struct PlayerGame {
     bool remote_valid = false;
     int keepalive_timer = 0;
 };
+
+struct Player;
+inline void load_player_extra(Player& p, std::istream& f);       // survival.hpp
+inline void save_player_extra(const Player& p, std::ostream& f);  // survival.hpp
