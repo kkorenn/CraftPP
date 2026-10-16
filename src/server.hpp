@@ -376,7 +376,7 @@ inline void broadcast_light() {
         Writer w;
         for (auto& p : ps) {
             int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
-            if (dx > v || dz > v || (dx < v && dz < v)) continue;
+            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
             if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
             p->send(w);
         }
