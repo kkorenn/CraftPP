@@ -19,12 +19,14 @@ inline void register_player(const PlayerPtr& pp) {
     Player& p = *pp;
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
-    p.send(info_add(all));  // entities are spawned by track_players (entity.hpp) once in range
+    p.send(info_add(all));
+    for (auto& q : players) p.send(spawn_entity(*q));
     {
         std::lock_guard lock(players_mtx);
         players.push_back(pp);
     }
     broadcast(info_add({pp}), &p);
+    broadcast(spawn_entity(p), &p);
     plugins::announce_join(p);  // PlayerJoinEvent may rewrite/suppress it
 }
 
@@ -35,7 +37,7 @@ inline void unregister_player(const PlayerPtr& pp) {
         std::lock_guard lock(players_mtx);
         std::erase(players, pp);
     }
-    untrack_player(*pp);
+    broadcast(Writer().varint(play_cb::remove_entities).varint(1).varint(pp->eid));
     broadcast(Writer().varint(play_cb::player_info_remove).varint(1).i64(pp->uuid_hi).i64(pp->uuid_lo));
     log_info("%s lost connection: %s", pp->name.c_str(), pp->quit_reason.empty() ? "Disconnected" : pp->quit_reason.c_str());
     plugins::announce_quit(*pp);  // PlayerQuitEvent may rewrite/suppress it

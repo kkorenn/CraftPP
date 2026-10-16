@@ -274,21 +274,17 @@ inline Writer spawn_entity(const Player& p) {
                          .varint(0));
 }
 
-// Position + head rotation as seen by other clients; sent at the end of the tick to the players tracking p
-// (game/entity.hpp track_players), at most once per tick however many move packets p sent.
-inline void broadcast_position(Player& p) { p.g.moved = true; }
-inline void write_position(std::vector<uint8_t>& out, const Player& p) {
-    Writer t = std::move(Writer()
-                             .varint(play_cb::teleport_entity)
-                             .varint(p.eid)
-                             .f64(p.x).f64(p.y).f64(p.z)
-                             .f64(0).f64(0).f64(0)
-                             .f32(p.yaw).f32(p.pitch)
-                             .i32(0)
-                             .boolean(p.on_ground));
-    Writer h = std::move(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)));
-    frame_packet(out, t.b.data(), t.b.size(), compression_threshold >= 0);
-    frame_packet(out, h.b.data(), h.b.size(), compression_threshold >= 0);
+inline void broadcast_position(const Player& p) {
+    broadcast(Writer()
+                  .varint(play_cb::teleport_entity)
+                  .varint(p.eid)
+                  .f64(p.x).f64(p.y).f64(p.z)
+                  .f64(0).f64(0).f64(0)
+                  .f32(p.yaw).f32(p.pitch)
+                  .i32(0)
+                  .boolean(p.on_ground),
+              &p);
+    broadcast(Writer().varint(play_cb::rotate_head).varint(p.eid).u8(angle(p.yaw)), &p);
 }
 
 // ---------- player data ----------

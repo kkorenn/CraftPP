@@ -113,10 +113,6 @@ struct PlayerGame {
     ItemStack remote_carried;
     bool remote_valid = false;
     int keepalive_timer = 0;
-    // entity tracking (entity.hpp track_players): eids of players this client has spawned (sorted), and whether
-    // this player moved since the last position update went out
-    std::vector<int> seen_players;
-    bool moved = false;
 };
 
 struct Player;

@@ -82,65 +82,8 @@ inline bool sees_chunk(const Player& p, int cx, int cz) {
 // Sends to every player whose view contains (x, z).
 inline void broadcast_near(double x, double z, const Writer& w, const Player* except = nullptr) {
     int cx = int(std::floor(x)) >> 4, cz = int(std::floor(z)) >> 4;
-    thread_local std::vector<uint8_t> f;
-    f.clear();
     for (auto& p : players)
-        if (p.get() != except && sees_chunk(*p, cx, cz)) {
-            if (f.empty()) frame_packet(f, w.b.data(), w.b.size(), compression_threshold >= 0);
-            p->out.push_framed(f);
-        }
-}
-
-// ---------- player tracking (ChunkMap.TrackedEntity.updatePlayer) ----------
-// A client has another player spawned while that player is within min(512, view distance * 16) blocks (xz,
-// PLAYER clientTrackingRange 32 chunks) and in a chunk of its view. Moves go out once per tick, to those clients.
-inline bool tracking_dirty = false;  // a player left/respawned since the last track_players
-// p's entity left (or respawned): the clients that had it spawned forget it.
-inline void untrack_player(Player& p) {
-    tracking_dirty = true;
-    for (auto& q : players) {
-        auto& s = q->g.seen_players;
-        if (auto it = std::lower_bound(s.begin(), s.end(), p.eid); it != s.end() && *it == p.eid) {
-            s.erase(it);
-            if (q.get() != &p) q->send(remove_entities_packet({p.eid}));
-        }
-    }
-}
-inline void track_players() {
-    const double range = std::min(512, view_dist_cached() * 16);
-    static std::vector<std::vector<uint8_t>> moves;  // per players[] index, framed once
-    static std::vector<int> now;
-    static size_t last_count = 0;
-    bool any_moved = false;
-    for (auto& p : players) any_moved |= p->g.moved;
-    if (!any_moved && !tracking_dirty && players.size() == last_count) return;  // nothing can have changed
-    tracking_dirty = false, last_count = players.size();
-    if (moves.size() < players.size()) moves.resize(players.size());
-    for (size_t j = 0; j < players.size(); j++) {
-        moves[j].clear();
-        if (players[j]->g.moved) write_position(moves[j], *players[j]);
-    }
-    for (auto& vp : players) {
-        Player& v = *vp;
-        auto& old = v.g.seen_players;
-        now.clear();
-        for (size_t j = 0; j < players.size(); j++) {
-            const Player& t = *players[j];
-            if (&t == &v) continue;
-            double dx = t.x - v.x, dz = t.z - v.z;
-            if (dx * dx + dz * dz > range * range ||
-                !sees_chunk(v, int(std::floor(t.x)) >> 4, int(std::floor(t.z)) >> 4))
-                continue;
-            now.push_back(t.eid);
-            if (!std::binary_search(old.begin(), old.end(), t.eid)) v.send(spawn_entity(t));
-            else if (!moves[j].empty()) v.out.push_framed(moves[j]);
-        }
-        std::sort(now.begin(), now.end());
-        for (int eid : old)
-            if (!std::binary_search(now.begin(), now.end(), eid)) v.send(remove_entities_packet({eid}));
-        old.swap(now);
-    }
-    for (auto& p : players) p->g.moved = false;
+        if (p.get() != except && sees_chunk(*p, cx, cz)) p->send(w);
 }
 
 // ---------- collision ----------
@@ -354,7 +297,6 @@ inline void tick_entities() {
     for (size_t i = 0; i < item_entities.size(); i++) tick_item(item_entities[i]);  // index: merging never adds
     for (auto& p : players) item_pickups(*p);
     track_items();
-    track_players();
 }
 
 // A player left: forget it as a watcher (the client is gone, nothing to send).
