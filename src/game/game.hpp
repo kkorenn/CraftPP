@@ -58,6 +58,7 @@ inline void request_stop() {
     run_on_tick([] {
         printf("Stopping server, saving...\n");
         save_all();
+        save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         print_tick_stats();
         fflush(stdout);
         _exit(0);
