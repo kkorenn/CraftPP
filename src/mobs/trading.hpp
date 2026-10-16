@@ -262,6 +262,7 @@ struct MerchantState {
     int profession = -1, villager_type = 0, level = 1, xp = 0;
     int restocks_today = 0, trading_player = -1;  // trading player's entity id
     bool traded = false;                          // lastTradedPlayer set (consumed by ai_step)
+    bool levels = true;                           // false: wandering trader (no career)
     int64_t last_traded_uh = 0, last_traded_ul = 0;
     int64_t last_restock_time = 0, last_restock_check_day = 0, last_gossip_time = 0, last_gossip_decay = 0;
 
@@ -329,7 +330,7 @@ struct MerchantState {
     int reward_trade_xp(const MerchantOffer& o, bool& levelled) {
         int pop = 3 + rand_int(4);
         xp += o.xp;
-        levelled = villager_can_level_up(level) && xp >= villager_max_xp(level);
+        levelled = levels && villager_can_level_up(level) && xp >= villager_max_xp(level);
         if (levelled) {
             level++;
             update_trades();
