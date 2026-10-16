@@ -23,6 +23,7 @@
 // ============================================================================================================
 #include "../server.hpp"
 
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 
@@ -161,8 +162,27 @@ inline void tick_once() {
     server_tick++;
 }
 
+// Detached thread with an explicit stack size (std::thread gets 512 KiB on macOS, 8 MiB on Linux).
+inline void start_thread(size_t stack, std::function<void()> fn) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    auto* arg = new std::function<void()>(std::move(fn));
+    pthread_t t;
+    int err = pthread_create(&t, &attr, [](void* a) -> void* {
+        std::unique_ptr<std::function<void()>> f(static_cast<std::function<void()>*>(a));
+        (*f)();
+        return nullptr;
+    }, arg);
+    pthread_attr_destroy(&attr);
+    if (err) { delete arg; throw std::system_error(err, std::generic_category(), "pthread_create"); }
+}
+
 inline void start_tick_thread() {
-    std::thread([] {
+    // Commands and packet handlers run here; 8 MiB like a Linux main thread, so recursive parsers
+    // (SNBT up to Tag.MAX_DEPTH) have room on every platform.
+    start_thread(8u << 20, [] {
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::milliseconds(50);
         auto next = clock::now();
@@ -193,7 +213,7 @@ inline void start_tick_thread() {
             if (now > next + std::chrono::seconds(2)) next = now;  // way behind: skip ticks instead of bursting
             std::this_thread::sleep_until(next);
         }
-    }).detach();
+    });
 }
 
 // Network-thread side of a play connection: everything after join().
