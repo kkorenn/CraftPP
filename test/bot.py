@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Headless join check: login -> configuration -> play, parses every chunk.
+Usage: python3 test/bot.py [host] [port]"""
+import re, socket, struct, sys, uuid
+
+HDR = open(__file__.rsplit("/", 2)[0] + "/src/gen/ids.hpp").read()
+PROTO = int(re.search(r"PROTOCOL_VERSION = (\d+)", HDR).group(1))
+VERSION = re.search(r'GAME_VERSION = "([^"]+)"', HDR).group(1)
+
+def ids(ns):
+    body = re.search(r"namespace %s \{(.*?)\}" % ns, HDR, re.S).group(1)
+    return {k: int(v) for k, v in re.findall(r"int (\w+) = (\d+);", body)}
+
+LOGIN_CB, CFG_CB, CFG_SB, PLAY_CB, PLAY_SB = map(ids, ["login_cb", "config_cb", "config_sb", "play_cb", "play_sb"])
+
+def varint(n):
+    n &= 0xFFFFFFFF
+    out = b""
+    while True:
+        b = n & 0x7F; n >>= 7
+        out += bytes([b | (0x80 if n else 0)])
+        if not n: return out
+
+def string(s): return varint(len(s.encode())) + s.encode()
+
+class Buf:
+    def __init__(self, d): self.d, self.i = d, 0
+    def take(self, n):
+        assert self.i + n <= len(self.d), "read past end"
+        r = self.d[self.i:self.i + n]; self.i += n; return r
+    def u8(self): return self.take(1)[0]
+    def varint(self):
+        n = s = 0
+        while True:
+            b = self.u8(); n |= (b & 0x7F) << s; s += 7
+            if not b & 0x80: return n
+    def str(self): return self.take(self.varint()).decode()
+    def i32(self): return struct.unpack(">i", self.take(4))[0]
+    def i64(self): return struct.unpack(">q", self.take(8))[0]
+    def i16(self): return struct.unpack(">h", self.take(2))[0]
+    def u16(self): return struct.unpack(">H", self.take(2))[0]
+
+class Conn:
+    def __init__(self, host, port):
+        self.s = socket.create_connection((host, port))
+        self.f = self.s.makefile("rb")
+        self.play, self.biomes = False, []
+    def send(self, pid, body=b""):
+        p = varint(pid) + body
+        self.s.sendall(varint(len(p)) + p)
+    def recv(self):
+        n = s = 0
+        while True:
+            b = self.f.read(1)
+            assert b, "server closed connection"
+            n |= (b[0] & 0x7F) << s; s += 7
+            if not b[0] & 0x80: break
+        b = Buf(self.f.read(n))
+        pid = b.varint()
+        # Housekeeping vanilla insists on: keep-alives and chunk batch acks (it throttles without them).
+        cb, sb = (PLAY_CB, PLAY_SB) if self.play else (CFG_CB, CFG_SB)
+        if pid == cb["keep_alive"]: self.send(sb["keep_alive"], b.d[b.i:b.i + 8])
+        elif self.play and pid == PLAY_CB["chunk_batch_finished"]: self.send(PLAY_SB["chunk_batch_received"], struct.pack(">f", 50.0))
+        return pid, b
+
+def skip_nbt(b, t=None):
+    """Skip a network NBT tag (nameless root when t is None)."""
+    if t is None:
+        t = b.u8()
+        if t == 0: return
+    if t in (1, 2, 3, 4, 5, 6): b.take([1, 2, 4, 8, 4, 8][t - 1])
+    elif t == 7: b.take(b.i32())
+    elif t == 8: b.take(b.u16())
+    elif t == 9:
+        et, n = b.u8(), b.i32()
+        for _ in range(n): skip_nbt(b, et)
+    elif t == 10:
+        while (et := b.u8()): b.take(b.u16()); skip_nbt(b, et)
+    elif t in (11, 12): b.take((4 if t == 11 else 8) * b.i32())
+    else: raise AssertionError(f"bad nbt tag {t}")
+
+def paletted(b, entries, max_bits, decode=False):
+    """Read a paletted container; with decode, return the list of global ids."""
+    bits = b.u8()
+    if bits == 0:
+        v = b.varint(); return [v] * entries if decode else None
+    pal = [b.varint() for _ in range(b.varint())] if bits <= max_bits else None
+    per = 64 // bits
+    raw = b.take(8 * ((entries + per - 1) // per))
+    if not decode: return None
+    mask, out = (1 << bits) - 1, []
+    for i in range(0, len(raw), 8):
+        v = int.from_bytes(raw[i:i + 8], "big")
+        out += [(v >> (j * bits)) & mask for j in range(per)]
+    del out[entries:]
+    return [pal[x] for x in out] if pal else out
+
+def parse_chunk(b, decode=False):
+    """Returns (cx, cz, sections); with decode, sections = [(4096 block ids (y,z,x), 64 biome ids)]."""
+    cx, cz = b.i32(), b.i32()
+    for _ in range(b.varint()):
+        b.varint(); b.take(8 * b.varint())
+    data = Buf(b.take(b.varint()))
+    sections = []
+    while data.i < len(data.d):
+        data.i16(); data.i16()
+        sections.append((paletted(data, 4096, 8, decode), paletted(data, 64, 3, decode)))
+    assert len(sections) == 24, len(sections)
+    for _ in range(b.varint()):  # block entities
+        b.u8(); b.i16(); b.varint(); skip_nbt(b)
+    for _ in range(4): b.take(b.varint())  # light masks (BitSet as byte array in 26.x)
+    for _ in range(2):
+        for _ in range(b.varint()): assert len(b.take(b.varint())) == 2048
+    assert b.i == len(b.d), "trailing bytes in chunk"
+    return cx, cz, sections
+
+def login(name, host, port, view=8, decode=False, uid=None):
+    """Join and stop at the first teleport. c.chunks holds chunks seen so far, c.spawn the world spawn."""
+    c = Conn(host, port)
+    c.chunks, c.spawn, c.registries = {}, None, 0
+    c.send(0, varint(PROTO) + string(host) + struct.pack(">H", port) + varint(2))
+    c.send(0, string(name) + (uid or uuid.uuid4()).bytes)
+    pid, b = c.recv()
+    assert pid == LOGIN_CB["login_finished"], pid
+    c.send(3)  # login acknowledged
+    c.send(CFG_SB["client_information"], string("en_us") + bytes([view]) + varint(0) + b"\x01\x7f" + varint(1) + b"\x00\x01" + varint(0))
+    while True:
+        pid, b = c.recv()
+        if pid == CFG_CB["select_known_packs"]:
+            c.send(CFG_SB["select_known_packs"], varint(1) + string("minecraft") + string("core") + string(VERSION))
+        elif pid == CFG_CB["registry_data"]:
+            c.registries += 1
+            reg, names = b.str(), []
+            for _ in range(b.varint()):
+                names.append(b.str())
+                if b.u8(): skip_nbt(b)
+            if reg == "minecraft:worldgen/biome": c.biomes = names
+        elif pid == CFG_CB["code_of_conduct"]:
+            c.send(CFG_SB["accept_code_of_conduct"])
+        elif pid == CFG_CB["finish_configuration"]:
+            c.send(CFG_SB["finish_configuration"]); break
+    c.play = True
+    c.decode = decode
+    while play_step(c) != PLAY_CB["player_position"]: pass
+    c.send(PLAY_SB["player_loaded"])
+    return c, len(c.chunks)
+
+def sext(v, n): return (v & (1 << n) - 1 ^ 1 << n - 1) - (1 << n - 1)
+def block_pos(v): return v >> 38, sext(v, 12), sext(v >> 12, 26)  # packed BlockPos x:26 z:26 y:12
+
+def set_block(c, x, y, z, state, min_y=-64):
+    if (x >> 4, z >> 4) in c.chunks:
+        c.chunks[x >> 4, z >> 4][(y - min_y) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)] = state
+
+def play_step(c):
+    """Receive one play packet, recording chunks (c.chunks) and world spawn (c.spawn), acking teleports."""
+    pid, b = c.recv()
+    if pid == PLAY_CB["level_chunk_with_light"]:
+        cx, cz, secs = parse_chunk(b, c.decode); c.chunks[cx, cz] = secs
+    elif pid == PLAY_CB["set_default_spawn_position"]:
+        b.str(); c.spawn = block_pos(b.i64())
+    elif pid == PLAY_CB["block_update"] and c.decode:
+        set_block(c, *block_pos(b.i64()), b.varint())
+    elif pid == PLAY_CB["section_blocks_update"] and c.decode:
+        v = b.i64(); sx, sy, sz = v >> 42, sext(v, 20), sext(v >> 20, 22)
+        for _ in range(b.varint()):
+            e = b.varint()
+            set_block(c, sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15), e >> 12)
+    elif pid == PLAY_CB["player_position"]:
+        tid, pos = b.varint(), b.take(24)  # 26.x ack echoes the position + rotation
+        b.take(24)
+        c.pos = struct.unpack(">ddd", pos)
+        c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
+    return pid
+
+def text_of(b):
+    """Pull the 'text' string out of an NBT text component."""
+    d = b.d[b.i:]
+    i = d.index(b"\x08\x00\x04text") + 7
+    n = struct.unpack(">H", d[i:i + 2])[0]
+    return d[i + 2:i + 2 + n].decode()
+
+def wait(c, pid, pred=lambda b: True, limit=2000):
+    for _ in range(limit):
+        p, b = c.recv()
+        if p == pid and pred(b): return b
+    raise AssertionError(f"packet {pid} not received")
+
+if __name__ == "__main__":
+    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 25565
+
+    a, chunks = login("Alice", host, port)
+    assert a.registries == 32, a.registries
+    assert chunks == 289, chunks
+    print(f"join ok: {chunks} chunks")
+
+    b, _ = login("Bob", host, port)
+    wait(b, PLAY_CB["add_entity"])  # Bob sees Alice
+    wait(a, PLAY_CB["add_entity"])  # Alice sees Bob
+    print("visibility ok")
+
+    # Alice walks one chunk east: expect 17 new chunks + 17 forgets, Bob sees her move.
+    a.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", 16.5, -60, 0.5, 1))
+    new = forgot = 0
+    while new < 17 or forgot < 17:
+        p, buf = a.recv()
+        if p == PLAY_CB["level_chunk_with_light"]: parse_chunk(buf); new += 1
+        elif p == PLAY_CB["forget_level_chunk"]: forgot += 1
+    assert (new, forgot) == (17, 17), (new, forgot)
+    pos = wait(b, PLAY_CB["teleport_entity"])
+    pos.varint()
+    assert struct.unpack(">d", pos.take(8))[0] == 16.5
+    print("streaming + movement ok")
+
+    a.send(PLAY_SB["chat"], string("hello") + struct.pack(">qq", 0, 0) + b"\x00" + varint(0) + bytes(3) + b"\x00")
+    msg = text_of(wait(b, PLAY_CB["system_chat"], lambda x: b"hello" in x.d))
+    assert msg == "<Alice> hello", msg
+    a.send(PLAY_SB["chat_command"], string("list"))
+    msg = text_of(wait(a, PLAY_CB["system_chat"], lambda x: b"players online" in x.d))
+    assert "Alice" in msg and "Bob" in msg, msg
+    a.send(PLAY_SB["chat_command"], string("gamemode survival"))
+    ev = wait(a, PLAY_CB["game_event"], lambda x: x.d[x.i] == 3)
+    print("chat + commands ok:", msg)
+
+    b.s.shutdown(socket.SHUT_RDWR)
+    wait(a, PLAY_CB["remove_entities"])
+    print("leave ok")
