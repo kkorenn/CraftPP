@@ -6,7 +6,7 @@
 #include "world.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/random.hpp"
-#include "worldgen/terrain.hpp"
+#include "worldgen/overworld.hpp"
 
 #include <array>
 #include <atomic>
@@ -31,7 +31,7 @@ inline std::map<std::string, std::string> props = {
     {"level-name", "world"},
     {"level-seed", ""},
     {"level-type", "minecraft:normal"},  // [minecraft:]normal | [minecraft:]flat
-    {"worldgen-stages", "surface"},  // noise | surface (debug: stop after a vanilla worldgen stage)
+    {"worldgen-stages", "features"},  // noise | surface | carvers | features (debug: stop after a vanilla stage)
 };
 inline std::atomic<int> next_entity_id{1};
 inline std::vector<uint8_t> config_packets;  // data/config.bin: pre-framed registry + tag packets
@@ -187,8 +187,9 @@ inline void setup_world() {
     flat_world = type == "flat";
     if (flat_world) return;
     int64_t seed = parse_seed(seed_str);
-    auto gen = std::make_shared<worldgen::TerrainGenerator>(seed, "vanilla/src/data", props["worldgen-stages"] != "noise");
-    world.generator = [gen](Chunk& c) { gen->generate(c); };
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"]);
+    auto gen = ow->terrain;
+    world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
