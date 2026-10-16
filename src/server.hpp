@@ -324,7 +324,8 @@ inline void send_chunk(Player& p, int cx, int cz) {
     p.send(w);
 }
 
-// Tick hook: light changed by block edits -> light_update to every player that has the chunk.
+// Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
+// (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
 inline void broadcast_light() {
     auto changes = light::take_changes();
     if (changes.empty()) return;
@@ -332,10 +333,12 @@ inline void broadcast_light() {
     auto ps = snapshot();
     for (auto& ch : changes) {
         Writer w;
-        w.varint(play_cb::light_update);
-        light::write_update(w, ch);
-        for (auto& p : ps)
-            if (std::abs(ch.cx - p->cx) <= v && std::abs(ch.cz - p->cz) <= v) p->send(w);
+        for (auto& p : ps) {
+            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+            if (dx > v || dz > v || (dx < v && dz < v)) continue;
+            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
+            p->send(w);
+        }
     }
 }
 
