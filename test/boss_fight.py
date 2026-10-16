@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bot import *
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUN = os.path.join(ROOT, "build", "boss-test")
+BUILD = os.environ.get("BUILD_DIR", "build")
+RUN = os.path.join(ROOT, BUILD, "boss-test")
 ENT = ids("entity_types")
 BLK = ids("blocks")
 SEED = 12345
@@ -20,12 +21,12 @@ LAST_GATEWAY = 11  # gateways_for_seed(12345).back()
 port = socket.socket(); port.bind(("", 0)); PORT = port.getsockname()[1]; port.close()
 shutil.rmtree(RUN, ignore_errors=True)
 os.makedirs(RUN)
-open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name=build/boss-test/world\nlevel-type=flat\n"
+open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name={BUILD}/boss-test/world\nlevel-type=flat\n"
                                             f"level-seed={SEED}\ndebug-end-fight=true\npause-when-empty-seconds=600\n")
 open(f"{RUN}/eula.txt", "w").write("eula=true\n")
 open(f"{RUN}/ops.json", "w").write('[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}]\n')
 log = open(f"{RUN}/server.log", "w")
-srv = subprocess.Popen([f"{ROOT}/build/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+srv = subprocess.Popen([f"{ROOT}/{BUILD}/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
 def block_at(c, x, y, z):
     return c.chunks[x >> 4, z >> 4][(y + 64) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)]
@@ -65,10 +66,7 @@ try:
             elif pid == PLAY_CB["level_chunk_with_light"]:
                 cx, cz, secs = parse_chunk(b, True)[:3]; c.chunks[cx, cz] = secs
             elif pid == PLAY_CB["player_position"]:
-                tid, pos = b.varint(), b.take(24); b.take(24)
-                c.pos = struct.unpack(">ddd", pos)
-                c.teleports = getattr(c, "teleports", 0) + 1
-                c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
+                c.teleports = getattr(c, "teleports", 0) + 1  # bot.Conn.recv already accepted it
             elif pid == PLAY_CB["game_event"]:
                 c.events = getattr(c, "events", []) + [b.u8()]
             elif pid == PLAY_CB["disconnect"]:
@@ -133,20 +131,19 @@ try:
     while time.time() < end and not exploded:
         pid, b = c.recv()
         if pid == PLAY_CB["explode"]: exploded.append(struct.unpack(">dddf", b.take(28)))
-        elif pid == PLAY_CB["player_position"]:
-            tid, pos = b.varint(), b.take(24); b.take(24)
-            c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
     assert exploded and exploded[0][3] == 7.0, exploded
     c.send(PLAY_SB["chat_command"], string("kill @e[type=wither]"))
     pump(lambda: w not in types and any(t == ENT["item"] for t, _ in types.values()), 10)
     print(f"wither ok: summoned from the T, 7.0 blast after the charge-up, /kill drops the nether star")
 
     if "--respawn" in sys.argv:  # 4 crystals on the exit portal rim -> respawn sequence -> new dragon
+        c.send(PLAY_SB["chat_command"], string("clear @s"))
         c.send(PLAY_SB["chat_command"], string("give @s end_crystal 4"))
-        c.send(PLAY_SB["chat_command"], string("tp @s 0.5 64 6.5"))
-        pump(lambda: abs(c.pos[2] - 6.5) < 0.01, 10)
         old_dragon = dragon
-        for i, (x, z) in enumerate([(3, 0), (-3, 0), (0, 3), (0, -3)]):
+        # stand on the rim bedrock next to each spot: block interaction range
+        for i, (x, z, sx, sz) in enumerate([(3, 0, 3.5, 1.5), (-3, 0, -2.5, 1.5), (0, 3, 1.5, 3.5), (0, -3, 1.5, -2.5)]):
+            c.send(PLAY_SB["chat_command"], string(f"tp @s {sx} 61 {sz}"))
+            pump(lambda: abs(c.pos[0] - sx) < 0.01 and abs(c.pos[2] - sz) < 0.01, 10)
             c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
             c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | 60)
                    + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(i + 1))

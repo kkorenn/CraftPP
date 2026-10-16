@@ -185,6 +185,7 @@ static void register_handlers() {
         int id = in.varint();
         if (!p.g.loaded || p.gamemode == 3 || p.g.dead) return;
         Entity* t = entity_by_id(id);
+        if (getenv("CRAFTPP_MOBDEBUG")) fprintf(stderr, "[mobs] attack %s -> %d found %d range %d\n", p.name.c_str(), id, t != nullptr, t ? within_entity_range(p, *t, 3.0) : 0);
         if (!t || t->removed || t->as_player() == &p || !within_entity_range(p, *t, 3.0)) return;
         if (t->type == entity_types::item || t->type == entity_types::experience_orb || t->type == entity_types::arrow) return;
         player_attack(p, *t);
@@ -198,6 +199,17 @@ static void register_handlers() {
         if (!t || t->removed || p.g.dead || p.gamemode == 3 || !within_entity_range(p, *t, 3.0)) return;
         if (t->interact(p, hand) == IR_SUCCESS)
             broadcast_near(p.x, p.z, std::move(Writer().varint(play_cb::animate).varint(p.eid).u8(uint8_t(hand ? 3 : 0))), &p);
+    });
+    on(play_sb::pick_item_from_entity, [](Player& p, Reader& in, int) {  // handlePickItemFromEntity
+        int id = in.varint();
+        in.u8();  // includeData: only for avatars (mannequins)
+        Entity* t = entity_by_id(id);
+        if (!t || t->removed || !within_entity_range(p, *t, 3.0)) return;
+        int item = -1;
+        if (t->as_mob()) item = item_id((t->info().id + "_spawn_egg").c_str());  // Mob.getPickResult: spawn egg
+        else if (t->type == entity_types::item) item = static_cast<ItemEntity*>(t)->stack.item;
+        else if (t->type == entity_types::arrow) item = item_id("arrow");
+        if (item >= 0) pick_block(p, item);  // tryPickItem
     });
     on(play_sb::punch, [](Player& p, Reader&, int) {  // handlePunch: swing + resetAttackStrengthTicker
         combat[&p].attack_ticker = 0;

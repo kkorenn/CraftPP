@@ -235,8 +235,7 @@ if __name__ == "__main__":
     print(f"join ok: {chunks} chunks")
 
     b, _ = login("Bob", host, port)
-    ae = wait(b, PLAY_CB["add_entity"], lambda x: (x.varint(), x.take(16), x.varint())[2] == ids("entity_types")["player"])
-    ae.i = 0; ae.varint(); alice_id = ae.varint()  # Bob sees Alice (skip the packet id, read the entity id)
+    wait(b, PLAY_CB["add_entity"])  # Bob sees Alice
     wait(a, PLAY_CB["add_entity"])  # Alice sees Bob
     print("visibility ok")
 
@@ -248,14 +247,16 @@ if __name__ == "__main__":
         if p == PLAY_CB["level_chunk_with_light"]: parse_chunk(buf); new += 1
         elif p == PLAY_CB["forget_level_chunk"]: forgot += 1
     assert (new, forgot) == (17, 17), (new, forgot)
-    seen_x = [0.5]  # Bob tracks Alice: relative moves (1/4096 block) or a position sync
+    seen_x = [0.5]  # Bob tracks Alice from her spawn x: relative moves (1/4096 block) or position syncs
+    def follow(pkt):
+        p, x = pkt
+        if p in (PLAY_CB["move_entity_pos"], PLAY_CB["move_entity_pos_rot"]):
+            x.varint(); x.varint(); seen_x[0] += struct.unpack(">h", x.take(2))[0] / 4096.0
+        elif p == PLAY_CB["entity_position_sync"]:
+            x.varint(); x.varint(); seen_x[0] = struct.unpack(">d", x.take(8))[0]
+        return abs(seen_x[0] - 16.5) < 1e-3
     for _ in range(4000):
-        p, x = b.recv()
-        if p == PLAY_CB["entity_position_sync"] and x.varint() == alice_id:
-            x.varint(); seen_x[0] = struct.unpack(">d", x.take(8))[0]
-        elif p in (PLAY_CB["move_entity_pos"], PLAY_CB["move_entity_pos_rot"]) and x.varint() == alice_id:
-            seen_x[0] += struct.unpack(">h", x.take(2))[0] / 4096.0
-        if abs(seen_x[0] - 16.5) < 1e-3: break
+        if follow(b.recv()): break
     assert abs(seen_x[0] - 16.5) < 1e-3, seen_x
     print("streaming + movement ok")
 

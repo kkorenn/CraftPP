@@ -43,6 +43,33 @@ inline void heal(Player& p, float a) {
 inline void kill(Player& p, const std::string& type);
 inline void kill(Player& p, const DamageSource& s);
 
+// LivingEntity.getDamageAfterArmorAbsorb: Player.hurtArmor (durability) then CombatRules.getDamageAfterAbsorb.
+inline float armor_absorb(Player& p, float damage) {
+    float armor = 0, toughness = 0;
+    if (damage > 0) {
+        int wear = int(std::max(1.0f, damage / 4.0f));
+        for (int slot : {36, 37, 38, 39}) {  // FEET, LEGS, CHEST, HEAD
+            ItemStack& s = p.inv[size_t(slot)];
+            if (s.empty()) continue;
+            const ItemInfo& it = item_info[size_t(s.item)];
+            if (it.equip != slot || !it.damage_on_hurt || it.max_damage <= 0) continue;
+            if ((s.damage += wear) >= it.max_damage) {
+                s = {};
+                broadcast_near(p.x, p.z, entity_event_packet(p.eid, 52 - (slot - 36)));  // FEET 52 .. HEAD 49
+            }
+        }
+    }
+    for (int slot : {36, 37, 38, 39}) {
+        const ItemStack& s = p.inv[size_t(slot)];
+        if (s.empty() || item_info[size_t(s.item)].equip != slot) continue;
+        armor += item_info[size_t(s.item)].armor, toughness += item_info[size_t(s.item)].toughness;
+    }
+    armor = std::clamp(armor, 0.0f, 30.0f), toughness = std::clamp(toughness, 0.0f, 20.0f);
+    float t = 2.0f + toughness / 4.0f;
+    float real = std::clamp(armor - damage / t, armor * 0.2f, 20.0f);
+    return damage * (1.0f - real / 25.0f);
+}
+
 // Player.hurtServer + LivingEntity.hurtServer/actuallyHurt for players: difficulty scaling, invulnerability frames,
 // armour/toughness (player_damage_after_armor, src/mobs), absorption-free health loss. Returns whether damage applied.
 inline bool hurt(Player& p, const DamageSource& s, float amount) {
@@ -71,7 +98,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
     applied = player_damage_after_armor(p, s, applied);
     // ponytail: enchantment protection, resistance and absorption are not applied yet.
     auto dt = damage_types.find(s.name());
-    if (applied != 0 && dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
+    if (dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
     p.g.health = std::max(0.0f, p.g.health - applied);
     Writer w;
     w.varint(play_cb::damage_event).varint(p.eid).varint(s.type).varint(s.causing ? s.causing->id + 1 : 0)
