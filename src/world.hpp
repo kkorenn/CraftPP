@@ -324,7 +324,9 @@ inline std::map<std::string, std::string> read_level_data() {
 }
 inline void write_level_data(const std::map<std::string, std::string>& changes) {
     auto kv = read_level_data();
+    auto old = kv;
     for (auto& [k, v] : changes) kv[k] = v;
+    if (kv == old && std::filesystem::exists(level_data_path())) return;  // unchanged: spare the SD card
     std::filesystem::create_directories(world_dir);
     std::string path = level_data_path();
     {

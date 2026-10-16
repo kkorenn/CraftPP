@@ -131,11 +131,12 @@ static void handle(int fd) {
     }
 }
 
-static void request_shutdown(int) { shutdown_requested = 1; }
+static void request_shutdown(int) { request_shutdown_async(); }
 
 int main(int argc, char** argv) {
     auto boot = std::chrono::steady_clock::now();
     signal(SIGPIPE, SIG_IGN);
+    if (pipe(shutdown_pipe) != 0) shutdown_pipe[0] = shutdown_pipe[1] = -1;
     for (int sig : {SIGINT, SIGTERM, SIGHUP}) signal(sig, request_shutdown);  // all save first, like the JVM's hook
     std::string props_path = argc > 1 ? argv[1] : "server.properties";
     server_dir = std::filesystem::path(props_path).parent_path().string();
@@ -226,12 +227,19 @@ int main(int argc, char** argv) {
             if (!line.empty() && line[0] == '/') line.erase(0, 1);  // Paper accepts both
             if (line.empty()) return;
             run_on_tick([line] { if (!plugins::console_command(line)) run_command(nullptr, line); });
-        }, [stop_on_eof] { if (stop_on_eof) shutdown_requested = 1; });
+        }, [stop_on_eof] { if (stop_on_eof) request_shutdown_async(); });
     }).detach();
 
     std::thread([] {  // autosave every 5 s; on stop/Ctrl+C save everything and exit
-        for (int tick = 0;; tick++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        auto next = std::chrono::steady_clock::now();
+        for (int tick = 24;; tick += 25) {  // `tick` counts the old 200 ms steps: tick % 25 == 24 every 5 s
+            next += std::chrono::seconds(5);
+            for (;;) {  // sleep until the next autosave or a shutdown request, whichever comes first
+                auto left = std::chrono::duration_cast<std::chrono::milliseconds>(next - std::chrono::steady_clock::now());
+                if (shutdown_requested == 1 || left.count() <= 0) break;
+                pollfd pfd{shutdown_pipe[0], POLLIN, 0};
+                if (poll(&pfd, 1, int(left.count()) + 1) > 0) { char b[16]; (void)!read(shutdown_pipe[0], b, sizeof b); }
+            }
             if (shutdown_requested == 1) {
                 shutdown_requested = 2;
                 log_info("Stopping server");
@@ -240,7 +248,7 @@ int main(int argc, char** argv) {
             }
             if (tick % 25 == 24 && !autosave_off && shutdown_requested == 0) {
                 world.save_dirty();
-                run_on_tick(save_level);
+                if (tick % 1500 == 1499) run_on_tick(save_level);  // level.dat: vanilla autosave period, 6000 ticks
             }
         }
     }).detach();
