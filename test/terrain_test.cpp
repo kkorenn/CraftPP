@@ -35,18 +35,29 @@ int main() {
           solid += b == blocks::stone, water += b == blocks::water;
         }
     assert(solid > 0);
-    printf("chunk %d,%d: %d stone, %d water, biome[0]=%d\n", c->cx, c->cz, solid, water, c->sections[16].biomes[0]);
+    printf("chunk %d,%d: %d stone, %d water, biome[0]=%d\n", c->cx, c->cz, solid, water, c->get_biome(0, 64, 0));
   }
   double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / N;
   printf("noise stage: %.1f ms/chunk; spawn height at 0,0: %d\n", ms, gen.baseHeight(0, 0));
   worldgen::TerrainGenerator full(12345);
+  std::vector<std::unique_ptr<Chunk>> chunks;
   t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < N; i++) {
     auto c = std::make_unique<Chunk>();
     c->cx = i, c->cz = -i;
     full.generate(*c);
     assert(c->get(0, MIN_Y, 0) == blocks::bedrock);
+    chunks.push_back(std::move(c));
   }
   ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / N;
-  printf("noise + surface: %.1f ms/chunk\nterrain ok\n", ms);
+  // Output fingerprint: must be identical across compilers/platforms (fp contraction would change it).
+  uint64_t h = 1469598103934665603ull;
+  for (auto& c : chunks)
+    for (int y = MIN_Y; y < MIN_Y + HEIGHT; y++)
+      for (int z = 0; z < 16; z++)
+        for (int x = 0; x < 16; x++) {
+          h = (h ^ c->get(x, y, z)) * 1099511628211ull;
+          if (!(x & 3) && !(y & 3) && !(z & 3)) h = (h ^ c->get_biome(x >> 2, (y - MIN_Y) >> 2, z >> 2)) * 1099511628211ull;
+        }
+  printf("noise + surface: %.1f ms/chunk\nfingerprint %016llx\nterrain ok\n", ms, (unsigned long long)h);
 }
