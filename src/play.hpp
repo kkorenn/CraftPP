@@ -129,9 +129,11 @@ inline void register_core_handlers() {
         (void)id;
         int inv = menu_to_inv(int16_t(in.u16()));
         int count = in.varint();
-        int item = count > 0 ? in.varint() : -1;  // component patch ignored
-        if (inv >= 0 && p.gamemode == 1)
-            p.inv[size_t(inv)] = item >= 0 && item < ITEM_COUNT ? Player::Slot{item, count} : Player::Slot{};
+        int item = count > 0 ? in.varint() : -1, damage = 0;
+        if (item >= 0 && in.varint() > 0 && in.varint() == component_ids["damage"]) damage = in.varint();
+        // ponytail: other components in the patch are dropped (no codecs for them yet).
+        if (item >= ITEM_COUNT || (item >= 0 && count > max_stack(item))) return;  // handleSetCreativeModeSlot validData
+        if (inv >= 0 && p.gamemode == 1) p.inv[size_t(inv)] = item >= 0 ? Player::Slot{item, count, damage} : Player::Slot{};
     });
     on(play_sb::player_action, [](Player& p, Reader& in, int id) {
         (void)id;

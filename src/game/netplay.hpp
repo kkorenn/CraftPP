@@ -38,7 +38,7 @@ inline void send_player_data(Player& to, const Player& of) {
     to.send(Writer().varint(play_cb::set_entity_data).varint(of.eid)
                 .u8(0).varint(0).u8(uint8_t(n.sent_flags))       // DATA_SHARED_FLAGS_ID (byte)
                 .u8(6).varint(20).varint(n.sent_pose)            // DATA_POSE
-                .u8(15).varint(41).varint(n.main_hand)           // Avatar.DATA_PLAYER_MAIN_HAND (humanoid arm)
+                .u8(15).varint(42).varint(n.main_hand)           // Avatar.DATA_PLAYER_MAIN_HAND (HUMANOID_ARM = 42)
                 .u8(16).varint(0).u8(uint8_t(n.sent_skin))       // Avatar.DATA_PLAYER_MODE_CUSTOMISATION
                 .u8(0xFF));
 }
