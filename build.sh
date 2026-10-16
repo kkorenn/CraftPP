@@ -29,5 +29,6 @@ if [ "$1" = "test" ]; then
   sleep 0.5
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
   python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/plugin_test.py 25597  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"
 fi
