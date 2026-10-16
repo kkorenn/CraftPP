@@ -74,7 +74,7 @@ def item_set(spec):
 
 # ---------- block properties from Blocks.java ----------
 java = open(os.path.join(SRC, "world", "level", "block", "Blocks.java")).read()
-DEFAULT = {"h": 0.0, "t": False, "col": True, "r": False, "air": False}
+DEFAULT = {"h": 0.0, "er": 0.0, "t": False, "col": True, "r": False, "air": False}
 helpers = {}
 for m in re.finditer(r"private static BlockBehaviour\.Properties (\w+)\(.*?\{(.*?)\n   \}", java, re.S):
     helpers[m.group(1)] = m.group(2)
@@ -92,7 +92,7 @@ def eval_props(text):
     pats = [(r"Properties\.of\(\)", "of"), (r"Properties\.of(?:Full|Legacy)Copy\(([^)]*)\)", "copy"),
             (r"register(?:Legacy)?Stair\(\s*[\w.]+,\s*([^)]*)\)", "copy"),
             (r"registerWall\(\s*[\w.]+,\s*([^)]*)\)", "copy"),
-            (r"registerSlab\(\s*[\w.]+,\s*([A-Z_][\w.()]*)(?:,\s*" + F + r")?", "slab"),
+            (r"registerSlab\(\s*[\w.]+,\s*([A-Z_][\w.()]*)(?:,\s*" + F + r")?(?:,\s*" + F + r")?", "slab"),
             (r"\b(\w+Properties)\(", "helper"), (r"\bwallVariant\(", "of")]
     best = None
     for p, kind in pats:
@@ -110,21 +110,27 @@ def eval_props(text):
         pr = copy_of(m.group(1))
         if m.group(2):
             pr["h"] = float(m.group(2))
+        if m.group(3):
+            pr["er"] = float(m.group(3))
     else:
         pr = eval_props(helpers[m.group(1)]) or dict(DEFAULT)
     rest = text[m.end():]
-    for s in re.finditer(r"\.(strength|destroyTime)\(" + F + r"|\.(instabreak|requiresCorrectToolForDrops|noCollision|replaceable|air)\(\)", rest):
-        if s.group(1):
+    for s in re.finditer(r"\.(strength|destroyTime|explosionResistance)\(" + F + r"(?:,\s*" + F + r")?\)|\.(instabreak|requiresCorrectToolForDrops|noCollision|replaceable|air)\(\)", rest):
+        if s.group(1) == "explosionResistance":
+            pr["er"] = max(0.0, float(s.group(2)))
+        elif s.group(1):
             pr["h"] = float(s.group(2))
-        elif s.group(3) == "instabreak":
-            pr["h"] = 0.0
-        elif s.group(3) == "requiresCorrectToolForDrops":
+            if s.group(1) == "strength":  # strength(t) = strength(t, t)
+                pr["er"] = max(0.0, float(s.group(3) or s.group(2)))
+        elif s.group(4) == "instabreak":
+            pr["h"] = pr["er"] = 0.0
+        elif s.group(4) == "requiresCorrectToolForDrops":
             pr["t"] = True
-        elif s.group(3) == "noCollision":
+        elif s.group(4) == "noCollision":
             pr["col"] = False
-        elif s.group(3) == "replaceable":
+        elif s.group(4) == "replaceable":
             pr["r"] = True
-        elif s.group(3) == "air":
+        elif s.group(4) == "air":
             pr["air"] = True
     return pr
 
@@ -166,7 +172,7 @@ for first, name, b in blocks:
     if pr is None:
         missing.append(name)
         pr = DEFAULT
-    out_blocks.append({"n": short(name), "f": first, "c": len(b["states"]), "h": pr["h"], "t": pr["t"],
+    out_blocks.append({"n": short(name), "f": first, "c": len(b["states"]), "h": pr["h"], "er": pr["er"], "t": pr["t"],
                        "col": pr["col"] and not pr["air"], "r": pr["r"],
                        "p": [[k, v] for k, v in b.get("properties", {}).items()]})
 
@@ -199,6 +205,12 @@ for name in item_names:
         it["ur"] = item_ids[ur["id"]]
     if name in craft_rem:
         it["cr"] = item_ids[craft_rem[name]]
+    for m in c.get("minecraft:attribute_modifiers", []):  # mainhand attack damage / speed (add_value)
+        if m.get("slot") == "mainhand" and m.get("operation") == "add_value":
+            if m["type"] == "minecraft:attack_damage":
+                it["ad"] = m["amount"]
+            elif m["type"] == "minecraft:attack_speed":
+                it["as"] = m["amount"]
     if "minecraft:equippable" in c:
         it["eq"] = c["minecraft:equippable"]["slot"]
     out_items.append(it)
@@ -275,7 +287,8 @@ reg = {
     "data_component_type": {short(k): v["protocol_id"] for k, v in registries["minecraft:data_component_type"]["entries"].items()},
 }
 
-block_tag_out = {t: block_set("#minecraft:" + t) for t in ("climbable", "fall_damage_resetting")}
+block_tag_out = {t: block_set("#minecraft:" + t) for t in ("climbable", "fall_damage_resetting", "dragon_immune",
+                                                               "dragon_transparent", "wither_immune")}
 out = {"block_tags": block_tag_out, "blocks": out_blocks, "items": out_items, "loot": loot, "recipes": recipes, "registries": reg}
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
 with open(os.path.join(ROOT, "data", "game.json"), "w") as fp:

@@ -4,6 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../plugins/plugins.hpp"
+#include "../boss/boss.hpp"
 
 #include <unistd.h>
 
@@ -51,6 +52,7 @@ inline void keepalive_tick(Player& p) {
 inline void start_game() {
     game_init();
     register_game_handlers();
+    boss::init();  // after the game handlers: it wraps some of them
     on_player_tick(keepalive_tick);
     start_tick_thread();
 }
