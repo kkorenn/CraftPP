@@ -23,6 +23,8 @@
 
 #if CRAFTPP_JNI
 #include <jni.h>
+#else
+#pragma GCC diagnostic ignored "-Wunused-function"  // built without JDK headers: only the stubs are live
 #endif
 
 namespace plugins {
@@ -113,9 +115,12 @@ void kick_player(Player& p, const std::string& reason) {
     Writer w;
     w.varint(play_cb::disconnect);
     legacy_component(w, reason);
-    try { p.send(w); p.out.flush(); } catch (...) {}
+    p.send(w);
+    p.out.flush();
     p.quit_reason = strip_codes(reason);
-    shutdown(p.fd, SHUT_RDWR);  // the connection thread sees EOF and runs the normal leave path
+    // Read side only: the connection thread sees EOF and runs the normal leave path, whose writer
+    // shutdown still delivers the queued disconnect packet.
+    shutdown(p.fd, SHUT_RD);
 }
 
 // ---------- JSON helpers ----------
@@ -202,7 +207,9 @@ std::string player_json(const Player& p) {
     return "{\"uuid\":" + q(uuid_str(p.uuid_hi, p.uuid_lo)) + ",\"name\":" + q(p.name) + ",\"x\":" + num(p.x) +
            ",\"y\":" + num(p.y) + ",\"z\":" + num(p.z) + ",\"yaw\":" + num(p.yaw) + ",\"pitch\":" + num(p.pitch) +
            ",\"gamemode\":" + std::to_string(p.gamemode) + ",\"op\":" + (is_op(p) ? "true" : "false") +
-           ",\"health\":20,\"food\":20,\"level\":0,\"exp\":0,\"totalExp\":0,\"ip\":\"127.0.0.1\",\"port\":0" +
+           ",\"health\":" + num(p.g.health) + ",\"food\":" + std::to_string(p.g.food) + ",\"level\":" +
+           std::to_string(p.g.xp_level) + ",\"exp\":" + num(p.g.xp_progress) + ",\"totalExp\":" + std::to_string(p.g.xp_total) +
+           ",\"ip\":\"127.0.0.1\",\"port\":0" +
            ",\"entityId\":" + std::to_string(p.eid) + ",\"onGround\":" + (p.on_ground ? "true" : "false") +
            ",\"ping\":0,\"heldSlot\":" + std::to_string(p.selected) + "}";
 }
@@ -317,6 +324,7 @@ std::string item_json(const Player::Slot& s) {
 // ---------- shared plugin state ----------
 
 std::atomic<bool> running{false};
+std::atomic<std::thread::id> tick_thread{};  // set by the first tick: Bukkit's main thread from then on
 std::mutex state_mtx;
 std::map<std::string, bool> listeners;           // hookable event -> some plugin listens (bridge "listeners" notify)
 std::set<std::string> labels;                    // plugin command roots (name, aliases, plugin:name)
@@ -345,8 +353,8 @@ void log_line(const std::string& level, const std::string& logger, const std::st
 
 #if CRAFTPP_JNI
 JavaVM* vm = nullptr;
-jclass main_cls, bytes_cls;
-jmethodID m_request, m_move, m_tick, m_exit, m_dump_cds;
+jclass main_cls;
+jmethodID m_request, m_move, m_tick;
 
 struct ThreadEnv {
     JNIEnv* env = nullptr;
@@ -630,8 +638,24 @@ std::string api(const std::string& m, const Json& a) {
             auto f = item_by_name.find(norm_id(text_arg(*it, "item")));
             if (f != item_by_name.end() && f->second > 0) slot = {f->second, std::max(1, int(num_arg(*it, "count", 1)))};
         }  // ponytail: item meta (name/lore/enchants) is dropped; CraftPP slots hold item + count only
-        p.inv[size_t(i)] = slot;
-        send_slot(p, i);
+        set_inv(p, i, slot);  // synced to the client at the end of the tick
+        return "null";
+    }
+    if (m == "player.setHealth") {
+        Player& p = require_player(a);
+        float v = float(std::clamp(num_arg(a, "value", 20), 0.0, 20.0));  // ponytail: max health fixed at 20 (no attributes)
+        if (v <= 0) kill(p, "generic_kill");
+        else p.g.health = v;  // survival's sync hook sends set_health
+        return "null";
+    }
+    if (m == "player.setFood") { require_player(a).g.food = std::clamp(int(num_arg(a, "value", 20)), 0, 20); return "null"; }
+    if (m == "player.damage") { hurt(require_player(a), float(num_arg(a, "amount", 1)), "generic"); return "null"; }
+    if (m == "player.setLevel" || m == "player.setExp" || m == "player.giveExp") {
+        Player& p = require_player(a);
+        if (m == "player.setLevel") p.g.xp_level = std::max(0, int(num_arg(a, "value")));
+        if (m == "player.setExp") p.g.xp_progress = float(std::clamp(num_arg(a, "value"), 0.0, 1.0));
+        if (m == "player.giveExp") p.g.xp_total += int(num_arg(a, "value"));
+        send_experience(p);
         return "null";
     }
     if (m == "player.setHeldSlot") {
@@ -705,7 +729,20 @@ jbyteArray JNICALL n_call(JNIEnv* e, jclass, jbyteArray type, jbyteArray json) {
         std::string t = from_bytes(e, type);
         if (t != "api") throw std::runtime_error("unknown request " + t);
         Json req = Json::parse(from_bytes(e, json));
-        return to_bytes(e, api(req["m"].asString(), req.has("a") ? req["a"] : Json{}));
+        const std::string& m = req["m"].asString();
+        const Json& args = req.has("a") ? req["a"] : Json{};
+        std::thread::id main = tick_thread;
+        if (main == std::thread::id{} || main == std::this_thread::get_id()) return to_bytes(e, api(m, args));
+        // A JVM thread other than the main one (async task, async chat listener): game state belongs to the
+        // tick thread, so run there and wait. ponytail: one round trip per call; batch if async plugins get chatty.
+        auto done = std::make_shared<std::promise<std::string>>();
+        auto fut = done->get_future();
+        run_on_tick([done, m, args] {
+            try { done->set_value(api(m, args)); } catch (...) { done->set_exception(std::current_exception()); }
+        });
+        if (fut.wait_for(std::chrono::seconds(10)) != std::future_status::ready)
+            throw std::runtime_error("tick thread did not run " + m + " within 10 s");
+        return to_bytes(e, fut.get());
     } catch (const std::exception& ex) {
         throw_java(e, ex.what());
         return nullptr;
@@ -902,15 +939,17 @@ bool boot_jvm() {
         opts.push_back("-Dprismmc.nms=true");
         opts.push_back("--enable-final-field-mutation=ALL-UNNAMED");
     }
-    std::string cds_file, cds_dump;
+    // AppCDS: the first run records the classes it loads; a background child JVM then dumps a static
+    // archive that later runs map read-only (faster start, less metaspace). Keyed by jars + flags.
+    std::string cds_file, cds_list;
     if (jvm_conf["cds"] == "true") {
         mkdir("cache", 0755);
-        std::string tag = file_key(bridge);
+        std::string tag = file_key(bridge) + jvm_conf["max-heap"] + std::to_string(java_major(home));
         for (auto& e : nms) tag += "-" + file_key(e);
-        cds_file = "cache/craftpp-bridge-" + std::to_string(std::hash<std::string>{}(tag) & 0xFFFFFFFF) + "-" +
-                   jvm_conf["c1-only"] + ".jsa";
+        std::string base = "cache/craftpp-bridge-" + std::to_string(std::hash<std::string>{}(tag) & 0xFFFFFFFF);
+        cds_file = base + ".jsa";
         if (stat(cds_file.c_str(), &st) == 0) opts.push_back("-XX:SharedArchiveFile=" + cds_file);
-        else { opts.push_back("-XX:+RecordDynamicDumpInfo"); cds_dump = cds_file; }
+        else { cds_list = base + ".classlist"; opts.push_back("-XX:DumpLoadedClassList=" + cds_list); }
     }
     std::istringstream extra(jvm_conf["extra-args"]);
     for (std::string o; extra >> o;) opts.push_back(o);
@@ -953,8 +992,6 @@ bool boot_jvm() {
     m_request = e->GetStaticMethodID(main_cls, "request", "([B[B)[B");
     m_move = e->GetStaticMethodID(main_cls, "move", "(JJDDDFFDDDFF)[D");
     m_tick = e->GetStaticMethodID(main_cls, "tick", "()V");
-    m_exit = e->GetStaticMethodID(main_cls, "exit", "(I)V");
-    m_dump_cds = e->GetStaticMethodID(main_cls, "dumpCds", "(Ljava/lang/String;)V");
     e->CallStaticVoidMethod(main_cls, e->GetStaticMethodID(main_cls, "boot", "()V"));
     if (auto err = take_exception(e); !err.empty()) { log_line("ERROR", "", "bridge boot failed: " + err); return false; }
 
@@ -986,15 +1023,24 @@ bool boot_jvm() {
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     log_line("INFO", "", "[PluginInitializerManager] Initialized " + std::to_string(plugin_list.size()) +
                              " plugin(s) in " + std::to_string(int(secs * 1000)) + " ms (Java " +
-                             std::to_string(java_major(home)) + (nms.empty() ? "" : ", NMS") + (cds_dump.empty() && !cds_file.empty() ? ", CDS" : "") + ")");
+                             std::to_string(java_major(home)) + (nms.empty() ? "" : ", NMS") + (!cds_file.empty() && cds_list.empty() ? ", CDS" : "") + ")");
     for (auto& [n, v] : plugin_list) log_line("INFO", "", " - " + n + " (" + v + ")");
-    if (!cds_dump.empty()) {
-        e = env();
-        e->PushLocalFrame(4);
-        e->CallStaticVoidMethod(main_cls, m_dump_cds, e->NewStringUTF(cds_dump.c_str()));
-        take_exception(e);
-        e->PopLocalFrame(nullptr);
-    }
+    if (!cds_list.empty())
+        std::thread([java = home + "/bin/java", cp, cds_list, cds_file, heap = jvm_conf["max-heap"]] {
+            std::this_thread::sleep_for(std::chrono::seconds(10));  // let startup-time class loading settle
+            std::string list, trimmed = cds_list + ".trim";
+            {
+                std::ifstream in(cds_list);
+                list.assign(std::istreambuf_iterator<char>(in), {});
+            }
+            list.resize(list.rfind('\n') + 1);  // the JVM may still be mid-line
+            std::ofstream(trimmed) << list;
+            std::string cmd = "'" + java + "' -Xshare:dump -XX:+UseSerialGC -Xmx" + heap + " -XX:SharedClassListFile='" +
+                              trimmed + "' -XX:SharedArchiveFile='" + cds_file + ".tmp' -cp '" + cp + "' >/dev/null 2>&1";
+            if (system(cmd.c_str()) == 0) rename((cds_file + ".tmp").c_str(), cds_file.c_str());
+            else log_line("WARN", "", "Could not write the AppCDS archive " + cds_file);
+            unlink(trimmed.c_str());
+        }).detach();
     return true;
 }
 
@@ -1187,6 +1233,9 @@ void start() {
     if (!running) return;
     install_handlers();
     patch_command_tree();
+    // Plugin timers expect the main thread to keep ticking with nobody online (Bukkit semantics);
+    // vanilla's empty-server pause stays available by setting the property explicitly.
+    if (!props.count("pause-when-empty-seconds")) props["pause-when-empty-seconds"] = "2000000000";
     on_tick([] { tick(); });  // Bukkit main thread = the game tick thread (game/tick.hpp)
 #else
     DIR* d = opendir("plugins");
@@ -1243,6 +1292,7 @@ bool console_command(const std::string& line) {
 void tick() {
 #if CRAFTPP_JNI
     if (!running) return;
+    tick_thread = std::this_thread::get_id();
     JNIEnv* e = env();
     e->CallStaticVoidMethod(main_cls, m_tick);
     if (auto err = take_exception(e); !err.empty()) log_line("ERROR", "", "plugin tick failed: " + err);
