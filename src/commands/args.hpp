@@ -10,7 +10,7 @@
 
 // ---------- SNBT (SnbtGrammar subset: compounds, lists, typed arrays, quoted/unquoted strings,
 // suffixed/hex/binary numbers, true/false) ----------
-inline Nbt read_snbt(StringReader& r);
+inline Nbt read_snbt(StringReader& r, int depth = 0);
 
 inline bool snbt_unquoted_char(char c) {
     return isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.' || c == '+';
@@ -77,7 +77,8 @@ inline std::string snbt_key(StringReader& r) {
     if (r.c == st) throw r.error("argument.nbt.expected.key");
     return r.s.substr(st, r.c - st);
 }
-inline Nbt read_snbt(StringReader& r) {
+inline Nbt read_snbt(StringReader& r, int depth) {
+    if (depth > 512) throw r.error("arguments.nbtpath.too_deep");  // Tag.MAX_DEPTH; also bounds the recursion
     r.skip_ws();
     if (!r.can()) throw r.error("argument.nbt.expected.value");
     char c = r.peek();
@@ -91,7 +92,7 @@ inline Nbt read_snbt(StringReader& r) {
             if (k.empty()) throw r.error_at(st, "snbt.parser.empty_key");
             r.skip_ws();
             r.expect(':');
-            n.set(k, read_snbt(r));
+            n.set(k, read_snbt(r, depth + 1));
             r.skip_ws();
             if (!r.can() || r.peek() != ',') break;
             r.skip();
@@ -111,7 +112,7 @@ inline Nbt read_snbt(StringReader& r) {
             r.skip_ws();
             while (r.can() && r.peek() != ']') {
                 size_t st = r.c;
-                Nbt e = read_snbt(r);
+                Nbt e = read_snbt(r, depth + 1);
                 if (!e.is_num() || e.t == Nbt::Float || e.t == Nbt::Double) throw r.error_at(st, "snbt.parser.invalid_array_element_type");
                 n.arr.push_back(e.i);
                 r.skip_ws();
@@ -125,7 +126,7 @@ inline Nbt read_snbt(StringReader& r) {
         Nbt n = Nbt::make_list();
         r.skip_ws();
         while (r.can() && r.peek() != ']') {
-            n.list.push_back(read_snbt(r));
+            n.list.push_back(read_snbt(r, depth + 1));
             r.skip_ws();
             if (!r.can() || r.peek() != ',') break;
             r.skip();
@@ -241,7 +242,7 @@ struct Coords {
     }
     void block(const Source& s, int& x, int& y, int& z) const {
         Vec3 v = pos(s);
-        x = int(std::floor(v.x)); y = int(std::floor(v.y)); z = int(std::floor(v.z));
+        x = Mth::floor(v.x); y = Mth::floor(v.y); z = Mth::floor(v.z);  // BlockPos.containing: saturating
     }
     // Vec2 / rotation: c[0], c[1]
     void rotation(const Source& s, float& yaw, float& pitch) const {

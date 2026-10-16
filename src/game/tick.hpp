@@ -23,6 +23,7 @@
 // ============================================================================================================
 #include "../server.hpp"
 
+#include <pthread.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 
@@ -124,13 +125,20 @@ inline void tick_once() {
         std::lock_guard lock(m);
         run.swap(tasks);
     }
-    for (auto& f : run) f();
+    for (auto& f : run) {
+        try {
+            f();
+        } catch (const std::exception& e) {  // one failing task (e.g. a save on a full disk) must not stop the server
+            log_error("Task failed: %s", e.what());
+        }
+    }
     run.clear();
     for (auto& pp : players) {  // tick thread is the only writer of `players`, so no lock or copy needed
         Player& p = *pp;
         {
             std::lock_guard lock(p.in.m);
             pkts.swap(p.in.q);
+            p.in.bytes = 0;
         }
         for (auto& pkt : pkts) {
             try {
@@ -150,14 +158,33 @@ inline void tick_once() {
     for (auto f : tick_end_hooks) f();
     for (auto& pp : players) {
         for (auto f : player_sync_hooks) f(*pp);
-        if (pp->out.pending() > (32u << 20)) kick(*pp);
+        if (pp->out.pending() > (32u << 20)) { pp->quit_reason = "Too far behind (32 MiB unsent)"; kick(*pp); }
         pp->out.flush();
     }
     server_tick++;
 }
 
+// Detached thread with an explicit stack size (std::thread gets 512 KiB on macOS, 8 MiB on Linux).
+inline void start_thread(size_t stack, std::function<void()> fn) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    auto* arg = new std::function<void()>(std::move(fn));
+    pthread_t t;
+    int err = pthread_create(&t, &attr, [](void* a) -> void* {
+        std::unique_ptr<std::function<void()>> f(static_cast<std::function<void()>*>(a));
+        (*f)();
+        return nullptr;
+    }, arg);
+    pthread_attr_destroy(&attr);
+    if (err) { delete arg; throw std::system_error(err, std::generic_category(), "pthread_create"); }
+}
+
 inline void start_tick_thread() {
-    std::thread([] {
+    // Commands and packet handlers run here; 8 MiB like a Linux main thread, so recursive parsers
+    // (SNBT up to Tag.MAX_DEPTH) have room on every platform.
+    start_thread(8u << 20, [] {
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::milliseconds(50);
         auto next = clock::now();
@@ -188,7 +215,7 @@ inline void start_tick_thread() {
             if (now > next + std::chrono::seconds(2)) next = now;  // way behind: skip ticks instead of bursting
             std::this_thread::sleep_until(next);
         }
-    }).detach();
+    });
 }
 
 // Network-thread side of a play connection: everything after join().
@@ -201,18 +228,36 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
         for (auto f : tick_detail::join_hooks) f(*pp);
     });
     std::vector<uint8_t> pkt;
-    while (read_packet(pp->fd, pkt)) {
-        std::lock_guard lock(pp->in.m);
-        pp->in.q.push_back(std::move(pkt));
-        pkt = {};
+    std::string error;  // a malformed frame (e.g. bad compression) must still unregister the player below
+    try {
+        while (read_packet(pp->fd, pkt)) {
+            // Backpressure: a client sending faster than the tick thread handles waits (TCP pushes back on it)
+            // instead of growing the queue without bound; 30 s without progress drops the connection.
+            int waited = 0;
+            while (pp->in.pending() > (1u << 20) && waited++ < 600) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (waited > 600) break;
+            std::lock_guard lock(pp->in.m);
+            pp->in.bytes += pkt.size();
+            pp->in.q.push_back(std::move(pkt));
+            pkt = {};
+        }
+    } catch (const std::exception& e) {
+        error = e.what();
     }
     std::promise<void> done;
     run_on_tick([&] {
-        if (std::find(players.begin(), players.end(), pp) != players.end()) {
-            for (auto f : tick_detail::leave_hooks) f(*pp);
-            on_unregister(pp);
+        if (!error.empty() && pp->quit_reason.empty()) pp->quit_reason = "Internal Exception: " + error;
+        try {
+            if (std::find(players.begin(), players.end(), pp) != players.end()) {
+                for (auto f : tick_detail::leave_hooks) f(*pp);
+                on_unregister(pp);
+            }
+        } catch (const std::exception& e) {
+            log_error("%s: leave failed: %s", pp->name.c_str(), e.what());
+            std::lock_guard lock(players_mtx);
+            std::erase(players, pp);
         }
-        done.set_value();
+        done.set_value();  // always: the network thread waits for it
     });
     done.get_future().wait();
     pp->out.flush();  // best effort: last packets (e.g. a disconnect message)
