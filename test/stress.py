@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bot import CFG_SB, PLAY_CB, PLAY_SB, PROTO, VERSION, login, string, text_of, varint, wait
 
 T0 = time.time()
+socket.setdefaulttimeout(30)  # every socket (bot.py's too): a stuck server fails the run instead of hanging it
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def frame(body): return varint(len(body)) + body
@@ -96,8 +97,11 @@ def alive(host, port, what):
     # join() runs on the network thread, so also prove the tick thread is alive: it echoes chat.
     word = "probe%d" % random.randrange(10**9)
     c.send(PLAY_SB["chat"], string(word) + bytes(8 + 8 + 1) + varint(0) + bytes(3) + b"\x00")
-    c.s.settimeout(30)
-    wait(c, PLAY_CB["system_chat"], lambda b: word in text_of(b), limit=100000)
+    deadline = time.time() + 30
+    while True:  # vanilla echoes chat as player_chat (system_chat when a plugin/command rewrites it)
+        assert time.time() < deadline, f"tick thread did not echo chat after {what}"
+        pid, b = c.recv()
+        if pid in (PLAY_CB["player_chat"], PLAY_CB["system_chat"]) and word.encode() in b.d: break
     close(c)
     print(f"{what} ok [{time.time() - T0:.1f}s]", flush=True)
 
@@ -236,7 +240,7 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
     def drain():
         try:  # raw reads: parsing 50 chunk streams in Python can't keep up (the server kicks at 32 MiB behind)
             while not stop.is_set():
-                if not c.s.recv(1 << 16): raise AssertionError("server closed connection")
+                c.recv()  # answers keep-alives (vanilla times out after 15 s) and confirms teleports
         except Exception as e:
             if not stop.is_set(): errs.append(f"{name} read: {e!r}")
     rt = threading.Thread(target=drain, daemon=True)
@@ -248,13 +252,15 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
         while time.time() < end:
             k = r.randrange(10)
             if k < 3:  # wander far enough to cross chunk borders (chunk streaming on the tick thread)
-                x += r.uniform(-5, 5); z += r.uniform(-5, 5)
-                x, z = max(x0 - 120, min(x0 + 120, x)), max(z0 - 120, min(z0 + 120, z))
-                c.send(PLAY_SB["move_player_pos_rot"], struct.pack(">dddffB", x, y0, z, r.uniform(-180, 180), 0, 1))
+                # <= ~3 blocks per packet (vanilla: "moved too quickly" past 10 blocks a tick); stay near spawn
+                # so bots share chunks. The server's corrections (player_position) are accepted in Conn.recv.
+                x, z = c.pos[0] + r.uniform(-2, 2), c.pos[2] + r.uniform(-2, 2)
+                x, z = max(x0 - 40, min(x0 + 40, x)), max(z0 - 40, min(z0 + 40, z))
+                c.pos = (x, c.pos[1], z)
+                c.send(PLAY_SB["move_player_pos_rot"], struct.pack(">dddffB", x, c.pos[1], z, r.uniform(-180, 180), 0, 1))
             elif k < 6:  # edits within reach; bots crowd around spawn, so they hit the same chunks
-                if r.randrange(2): x, z = x0 + r.uniform(-2, 2), z0 + r.uniform(-2, 2)  # back to the spawn chunk
-                bx, by, bz = int(x) + r.randrange(-3, 4), int(y0) + r.randrange(-2, 3), int(z) + r.randrange(-3, 4)
-                c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x, y0, z, 1))
+                x, z = c.pos[0], c.pos[2]
+                bx, by, bz = int(x) + r.randrange(-3, 4), int(c.pos[1]) + r.randrange(-2, 3), int(z) + r.randrange(-3, 4)
                 if r.randrange(2):
                     c.send(PLAY_SB["player_action"], varint(0) + pos(bx, by, bz) + b"\x01" + varint(seq))
                 else:
@@ -340,7 +346,8 @@ ARGS = {
 }
 GENERIC = ["0", "-1", "2147483647", "~", "@s", "x", "stone", "minecraft:stone", "{}", "a:b", "1.5", "true"]
 SKIP = {"stop", "kick", "op", "deop", "ban", "ban-ip", "whitelist", "transfer", "save-off", "publish", "jfr", "perf",
-        "debug", "reload", "setidletimeout", "unpublish"}  # would end the run or lock the fuzzer out
+        "debug", "reload", "setidletimeout", "unpublish",  # would end the run or lock the fuzzer out
+        "tick"}  # tick rate 1 makes the rest of the run crawl (packets are handled once per tick here)
 
 def random_command(tree, r):
     words, node = [], tree
@@ -425,7 +432,16 @@ def main():
     ap.add_argument("--seed", type=int, default=int(os.environ.get("STRESS_SEED", "1")))
     ap.add_argument("--op", default="Op", help="op player name for command bots ('' = none)")
     ap.add_argument("--no-rss-check", action="store_true", help="report RSS only (sanitizer builds)")
+    ap.add_argument("--timeout", type=float, help="hard limit in seconds for the whole run (default: generous)")
     a = ap.parse_args()
+    limit = a.timeout or (120 if a.quick else a.minutes * 60 + 1800 if "soak" in a.phases else 1800)
+    def watchdog():  # last resort: never let a wedged server hang ./build.sh test
+        print(f"stress: TIMEOUT after {limit:.0f}s", flush=True)
+        if proc: proc.kill()
+        os._exit(2)
+    wd = threading.Timer(limit, watchdog)
+    wd.daemon = True
+    wd.start()
     global RSS_CHECK
     RSS_CHECK = not a.no_rss_check
     proc = None
