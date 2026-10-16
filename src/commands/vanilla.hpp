@@ -825,7 +825,7 @@ inline void register_vanilla_commands() {
         auto f2 = [](double v) { return fmt_f(v, 2); };
         if (c.is("get")) {
             c.success(tr("commands.worldborder.get", {fmt_f(border.size(), 0)}), false);
-            return int(std::floor(border.size() + 0.5));
+            return Mth::floor(border.size() + 0.5);
         }
         if (c.is("center")) {
             Coords cc = c.get<Coords>("pos");
@@ -847,7 +847,7 @@ inline void register_vanilla_commands() {
             if (field == v) throw err(amount ? "commands.worldborder.damage.amount.failed" : "commands.worldborder.damage.buffer.failed");
             field = v;
             c.success(tr(amount ? "commands.worldborder.damage.amount.success" : "commands.worldborder.damage.buffer.success", {f2(v)}), true);
-            return int(v);
+            return Mth::d2i(v);  // Java (int) cast
         }
         if (c.is("warning")) {
             if (c.is("time")) {
@@ -888,7 +888,7 @@ inline void register_vanilla_commands() {
             broadcast(pkt(play_cb::set_border_size).f64(target));
             c.success(tr("commands.worldborder.set.immediate", {fd}), true);
         }
-        return int(target - current);
+        return Mth::d2i(target - current);
     });
 
     reg("experience", [](Cmd& c) {
@@ -1270,8 +1270,12 @@ inline void register_vanilla_commands() {
                     else if (op == "+=") x = int(uint32_t(x) + uint32_t(y));
                     else if (op == "-=") x = int(uint32_t(x) - uint32_t(y));
                     else if (op == "*=") x = int(uint32_t(x) * uint32_t(y));
-                    else if (op == "/=") { if (y != 0) x = int(std::floor(double(x) / y)); }
-                    else if (op == "%=") { if (y != 0) x = ((x % y) + y) % y; }
+                    else if (op == "/=" || op == "%=") {  // Math.floorDiv / Math.floorMod, Java int wrap-around
+                        if (y == 0) throw err("arguments.operation.div0");
+                        int q = y == -1 ? int(0u - uint32_t(x)) : x / y, m = y == -1 ? 0 : x % y;
+                        if (m != 0 && (m < 0) != (y < 0)) q--, m += y;
+                        x = op == "/=" ? q : m;
+                    }
                     else if (op == "<") x = std::min(x, y);
                     else if (op == ">") x = std::max(x, y);
                     else if (op == "><") { a.value = y; b.value = x; broadcast_score(sh, from.name); continue; }
@@ -1400,9 +1404,10 @@ inline void register_vanilla_commands() {
     reg("forceload", [](Cmd& c) {
         // Chunks are never unloaded here, so force-loading is pure bookkeeping (vanilla's messages).
         static std::set<std::pair<int, int>> forced;
-        auto col = [&](const char* n, int& cx, int& cz) {
+        auto col = [&](const char* n, int& cx, int& cz, bool bounded = false) {
             Coords cc = c.get<Coords>(n);
-            int x = int(std::floor(cc.c[0].rel ? c.src.x + cc.c[0].v : cc.c[0].v)), z = int(std::floor(cc.c[1].rel ? c.src.z + cc.c[1].v : cc.c[1].v));
+            int x = Mth::floor(cc.c[0].rel ? c.src.x + cc.c[0].v : cc.c[0].v), z = Mth::floor(cc.c[1].rel ? c.src.z + cc.c[1].v : cc.c[1].v);
+            if (bounded && (x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)) throw err("argument.pos.outofworld");
             cx = x >> 4; cz = z >> 4;
         };
         auto cp = [](int x, int z) { return "[" + std::to_string(x) + ", " + std::to_string(z) + "]"; };
@@ -1424,8 +1429,8 @@ inline void register_vanilla_commands() {
         if (c.is("all")) { forced.clear(); c.success(tr("commands.forceload.removed.all", {dim}), true); return 0; }
         bool add = c.is("add");
         int ax, az, bx, bz;
-        col("from", ax, az);
-        if (c.has("to")) col("to", bx, bz); else { bx = ax; bz = az; }
+        col("from", ax, az, true);
+        if (c.has("to")) col("to", bx, bz, true); else { bx = ax; bz = az; }
         if (ax > bx) std::swap(ax, bx);
         if (az > bz) std::swap(az, bz);
         int64_t n = int64_t(bx - ax + 1) * (bz - az + 1);

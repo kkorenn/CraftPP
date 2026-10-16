@@ -17,7 +17,8 @@ elseif(CRAFTPP_SANITIZE STREQUAL "thread")
   add_link_options(-fsanitize=thread)
 endif()
 add_executable(craftpp src/main.cpp)
-target_compile_options(craftpp PRIVATE -Wall -Wextra)
+# Game code is a Java port: signed int overflow wraps like Java instead of being UB.
+target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
 find_package(ZLIB QUIET)
 if(ZLIB_FOUND)

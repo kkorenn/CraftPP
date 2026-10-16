@@ -4,14 +4,15 @@
   python3 test/stress.py HOST PORT [--quick]            against a running server (build.sh test uses --quick)
   python3 test/stress.py --server build-asan/craftpp      spawns its own server (temp world, max-players 500)
 
-Phases (--phases, comma list): fuzz (malformed bytes in every protocol state), bots (concurrent bots moving,
+Phases (--phases, comma list): fuzz (malformed bytes in every protocol state), cmdfuzz (random op commands from
+vanilla's command tree with extreme arguments), bots (concurrent bots moving,
 breaking/placing in one shared chunk, chatting, op commands), storm (reconnect storm, abandoned logins),
 soak (bots in a loop for --minutes, sampling the server's RSS; needs --server or --pid).
 After every phase the server must still answer a status ping and accept a fresh login."""
 import argparse, math, os, random, shutil, socket, struct, subprocess, sys, threading, time, uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bot import CFG_SB, PLAY_CB, PLAY_SB, PROTO, VERSION, login, string, varint
+from bot import CFG_SB, PLAY_CB, PLAY_SB, PROTO, VERSION, login, string, text_of, varint, wait
 
 T0 = time.time()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +43,12 @@ def blast(host, port, data, linger=0.2):
     finally:
         s.close()
 
+def close(c):
+    """Really close a bot connection (c.f, the makefile, keeps the fd open after a plain close)."""
+    try: c.s.shutdown(socket.SHUT_RDWR)
+    except OSError: pass
+    c.s.close()
+
 def alive(host, port, what):
     """Status ping + a full login must still work."""
     for attempt in range(50):
@@ -60,7 +67,12 @@ def alive(host, port, what):
             time.sleep(0.2)
     c, n = login("Probe%d" % random.randrange(10**6), host, port)
     assert n > 0
-    c.s.close()
+    # join() runs on the network thread, so also prove the tick thread is alive: it echoes chat.
+    word = "probe%d" % random.randrange(10**9)
+    c.send(PLAY_SB["chat"], string(word) + bytes(8 + 8 + 1) + varint(0) + bytes(3) + b"\x00")
+    c.s.settimeout(30)
+    wait(c, PLAY_CB["system_chat"], lambda b: word in text_of(b), limit=100000)
+    close(c)
     print(f"{what} ok [{time.time() - T0:.1f}s]", flush=True)
 
 # ---------- fuzz ----------
@@ -212,7 +224,7 @@ def bot_session(host, port, name, seconds, r, errs, op=False):
     except OSError as e:
         errs.append(f"{name}: {e!r}")
     stop.set()
-    c.s.close()
+    close(c)
 
 def bots(host, port, n, seconds, seed, op_name):
     errs = []
@@ -246,6 +258,73 @@ def storm(host, port, n, seed, threads=8):
     assert not errs, errs[0]
     del full
     alive(host, port, f"storm: {n} connections")
+
+# ---------- op command fuzz ----------
+# Random walks over vanilla's command tree (generated/reports/commands.json) with extreme argument values.
+ARGS = {
+    "brigadier:integer": ["-2147483648", "2147483647", "-1", "0", "1", "1000000", "30000000", "64"],
+    "brigadier:double": ["1e308", "-1e308", "999999999999999999999", "30000001", "-0.0", ".5", "1"],
+    "brigadier:bool": ["true", "false"],
+    "minecraft:entity": ["@s", "@a", "@e", "@p", "@r", "@e[limit=2147483647]", "@e[distance=..-1]", "Nobody", "@e[type=item]"],
+    "minecraft:block_pos": ["~ ~ ~", "30000000 0 30000000", "~2147483647 ~ ~", "-2147483648 -2147483648 -2147483648",
+                            "^ ^ ^1000000", "0 -64 0", "0 319 0", "~-1 ~-1 ~-1", "29999999 320 -29999999"],
+    "minecraft:vec3": ["~ ~ ~", "1e308 0 0", "30000001 0 0", "~1000000 ~ ~", "^ ^ ^-1e9", "0.5 -2147483649 0.5"],
+    "minecraft:column_pos": ["30000000 30000000", "-2147483648 2147483647", "~ ~"],
+    "minecraft:rotation": ["~ ~", "1e30 -1e30", "180 90"], "minecraft:vec2": ["~ ~", "1e30 -1e30"],
+    "minecraft:int_range": ["..-1", "2147483647..", "5..1", "-2147483648..2147483647"],
+    "minecraft:float_range": ["..-1", "1e308..", "5..1"],
+    "minecraft:time": ["2147483647d", "-1", "0t", "1000000000s", "1"],
+    "minecraft:item_stack": ["stone", "stone[damage=2147483647]", "diamond_sword[max_damage=-1]", "air", "nosuch"],
+    "minecraft:block_state": ["stone", "oak_stairs[facing=up]", "air", "nosuch", "water[level=99]"],
+    "minecraft:block_predicate": ["stone", "#minecraft:logs", "*"],
+    "minecraft:nbt_compound_tag": ["{}", "{a:" * 3000 + "1" + "}" * 3000, "{a:[I;1,2]}", "{"],
+    "minecraft:nbt_tag": ["1b", "[" * 3000, "{}", '"x"'], "minecraft:nbt_path": ["a.b[0]", "a" + "[0]" * 2000, "{}"],
+    "minecraft:component": ['"x"', "[" * 3000, '{"text":"a"}', "{}"], "minecraft:message": ["hi", "@e " * 100],
+    "minecraft:objective": ["obj", "x" * 300], "minecraft:score_holder": ["@s", "*", "Nobody"],
+    "brigadier:string": ['"x"', "a" * 2000, '""', "word"],
+}
+GENERIC = ["0", "-1", "2147483647", "~", "@s", "x", "stone", "minecraft:stone", "{}", "a:b", "1.5", "true"]
+SKIP = {"stop", "kick", "op", "deop", "ban", "ban-ip", "whitelist", "transfer", "save-off", "publish", "jfr", "perf",
+        "debug", "reload", "setidletimeout", "unpublish"}  # would end the run or lock the fuzzer out
+
+def random_command(tree, r):
+    words, node = [], tree
+    for _ in range(40):
+        kids = {k: v for k, v in node.get("children", {}).items() if node is not tree or k not in SKIP}
+        if not kids or (node.get("executable") and r.random() < 0.3): break
+        name, node = r.choice(list(kids.items()))
+        words.append(name if node["type"] == "literal" else r.choice(ARGS.get(node.get("parser"), GENERIC)))
+        if "redirect" in node:
+            target = tree
+            for k in node["redirect"]: target = target["children"][k]
+            node = target
+        elif node.get("executable") and not node.get("children") and r.random() < 0.8: break
+    return " ".join(words)
+
+def cmdfuzz(host, port, n, seed, op):
+    import json
+    tree = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/commands.json")))
+    r = random.Random(seed)
+    sent = 0
+    while sent < n:
+        c, _ = login(op, host, port)
+        lock_send(c)
+        def drain():
+            try:
+                while True: c.recv()
+            except Exception:
+                pass
+        threading.Thread(target=drain, daemon=True).start()
+        try:
+            while sent < n:
+                c.send(PLAY_SB["chat_command"], string(random_command(tree, r)[:30000]))
+                sent += 1
+                time.sleep(0.005)
+        except OSError:
+            pass  # kicked (e.g. bad characters) or killed: log in again
+        close(c)
+    time.sleep(1)
+    alive(host, port, f"cmdfuzz: {n} op commands")
 
 # ---------- own server + soak ----------
 def rss_kib(pid):
@@ -283,7 +362,7 @@ def main():
     ap.add_argument("--view", type=int, default=4, help="view-distance (with --server)")
     ap.add_argument("--pid", type=int, help="server pid for RSS sampling")
     ap.add_argument("--quick", action="store_true", help="< 30 s: small fuzz + 12 bots + small storm")
-    ap.add_argument("--phases", default="fuzz,bots,storm")
+    ap.add_argument("--phases", default="fuzz,cmdfuzz,bots,storm")
     ap.add_argument("--bots", type=int, default=50)
     ap.add_argument("--seconds", type=int, default=20)
     ap.add_argument("--rounds", type=int, default=20)
@@ -302,6 +381,7 @@ def main():
         for ph in a.phases.split(","):
             if ph == "fuzz": fuzz(a.host, a.port, a.rounds, a.seed, a.pid, 24 if a.quick else 256)
             elif ph == "bots": bots(a.host, a.port, a.bots, a.seconds, a.seed, a.op)
+            elif ph == "cmdfuzz": cmdfuzz(a.host, a.port, 100 if a.quick else a.rounds * 100, a.seed, a.op)
             elif ph == "storm": storm(a.host, a.port, 40 if a.quick else 400, a.seed)
             elif ph == "soak":
                 assert a.pid, "soak needs --server or --pid"
