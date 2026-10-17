@@ -20,6 +20,7 @@ export ASAN_OPTIONS=${ASAN_OPTIONS:-abort_on_error=1:detect_leaks=0} UBSAN_OPTIO
 export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
 
 if [ -n "$TEST" ]; then
+  ./$B/boss_test
   # Free port per run, outside the ephemeral range so nothing takes it while the server restarts on it.
   FREE_PORT='import sys; sys.path.insert(0, "test"); from bot import free_port; print(free_port())'
   PORT=${TEST_PORT:-$(python3 -c "$FREE_PORT")}
@@ -115,5 +116,6 @@ if [ -n "$TEST" ]; then
   python3 -u test/stress.py --server ./$B/craftpp --quick ${SAN:+--no-rss-check} || fail "stress (log: $B/stress/server.log)"  # own server
   PLUGIN_PORT=$(python3 -c "$FREE_PORT")
   [ -n "$SAN" ] || python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
+  python3 -u test/boss_fight.py  # own server: debug-end-fight
   echo "all tests passed"
 fi
