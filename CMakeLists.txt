@@ -75,7 +75,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/test/terrain_test.cpp)
 endif()
 # Bukkit/Paper plugins (src/plugins, docs/plugins.md). libjvm is dlopen'd at runtime only when plugins/*.jar
 # exist, so nothing links against Java; jni.h is needed at build time (any JDK), else plugins are compiled out.
-target_sources(craftpp PRIVATE src/plugins/plugins.cpp src/plugins/api_items.cpp src/plugins/api_display.cpp src/plugins/api_entity.cpp)
+target_sources(craftpp PRIVATE src/plugins/plugins.cpp src/plugins/api_items.cpp src/plugins/api_display.cpp src/plugins/api_entity.cpp src/plugins/api_inventory.cpp)
 set(CRAFTPP_JNI_HOME "$ENV{JAVA_HOME}")
 if(NOT EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
   file(GLOB CRAFTPP_JDKS /Library/Java/JavaVirtualMachines/*/Contents/Home /usr/lib/jvm/*)

@@ -227,6 +227,21 @@ def main():
         print("entities (spawn, vitals, flags, tags, equipment, target, teleport, remove), item meta round trip, biomes,"
               " whitelist/bans, scoreboards, boss bars, sounds, particles ok")
 
+        a.send(PLAY_SB["chat_command"], string("crafttest gui"))
+        screen = wait(a, PLAY_CB["open_screen"])
+        window = screen.varint()
+        assert screen.varint() == 0 and texts(screen) == "Menu"  # generic_9x1
+        assert chat_with(a, "gui open") == "gui open"  # sent before the end-of-tick contents sync
+        content = wait(a, PLAY_CB["container_set_content"], lambda q: Buf(q.d[q.i:]).varint() == window)
+        assert b"Buy" in content.d
+        # pick up the emeralds (mode 0, left click): the plugin cancels, the server puts them back
+        a.send(PLAY_SB["container_click"], varint(window) + varint(0) + struct.pack(">hb", 0, 0) + varint(0) + varint(0) + b"\x00")
+        msg = chat_with(a, "gui click")
+        assert msg == "gui click 0 EMERALD 3 Buy", msg
+        a.send(PLAY_SB["container_close"], varint(window))
+        assert chat_with(a, "gui closed") == "gui closed, emeralds=3"
+        print("custom inventory GUI: open_screen, contents with meta, cancelled click, close event ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))

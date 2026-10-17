@@ -59,6 +59,10 @@ extern std::unordered_map<std::string, int> item_by_name;
 ItemStack item_from_json(const Json& j);
 std::string item_to_json(const ItemStack& s);
 
+// bridge requests (C++ -> Java); throws with the Java exception text
+Json request(const std::string& type, const std::string& json = "");
+PacketHandler original(int id);  // the handler registered before plugins wrapped it
+
 // events (bridge round trip; null Json when the bridge failed)
 Json event(const std::string& hook, const std::string& payload);
 bool cancelled(const Json& r);
@@ -67,5 +71,7 @@ bool has(const std::string& hook);  // some plugin listens for the hookable even
 // route groups
 std::optional<std::string> api_display(const std::string& m, const Json& a);  // api_display.cpp
 std::optional<std::string> api_entity(const std::string& m, const Json& a);   // api_entity.cpp
+std::optional<std::string> api_inventory(const std::string& m, const Json& a);  // api_inventory.cpp
+void install_inventory_handlers();                                             // api_inventory.cpp
 
 }  // namespace plugins::detail
