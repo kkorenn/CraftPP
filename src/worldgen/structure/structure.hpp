@@ -154,6 +154,8 @@ struct Level {
     (void)feature, (void)random, (void)pos;
     return false;
   }
+  // RandomizableContainer.setLootTable on the block entity at pos (LootTable + LootTableSeed NBT).
+  virtual void setLootTable(BlockPos pos, const std::string& table, int64_t seed) { (void)pos, (void)table, (void)seed; }
   bool isEmpty(int x, int y, int z) { return Blocks::get().isAir(getBlock(x, y, z)); }
   int get(BlockPos p) { return getBlock(p.x, p.y, p.z); }
   void set(BlockPos p, int state) { setBlock(p.x, p.y, p.z, state); }
@@ -224,9 +226,9 @@ struct Piece {
   void generateUpperHalfSphere(Level& level, const BoundingBox& bb, int x0, int y0, int z0, int x1, int y1, int z1, int fill, bool skipAir);
   void fillColumnDown(Level& level, int state, int x, int startY, int z, const BoundingBox& bb);
   static bool isReplaceableByStructures(int state);
-  bool createChest(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z);
-  bool createChest(Level& level, const BoundingBox& bb, RandomSource& random, BlockPos pos, int state);  // state -1: reorient
-  bool createDispenser(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, Dir facing);
+  bool createChest(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, const char* table);
+  bool createChest(Level& level, const BoundingBox& bb, RandomSource& random, BlockPos pos, const char* table, int state);  // state -1: reorient
+  bool createDispenser(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, Dir facing, const char* table);
   static int reorient(Level& level, BlockPos pos, int state);
 
  private:

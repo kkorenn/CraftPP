@@ -1,12 +1,13 @@
 // Light engine: a close port of vanilla 26.3 world/level/lighting.
 //
-// Storage (LayerLightSectionStorage): per chunk column, 26 light sections (y -5..20) for each layer. A section
+// Storage (LayerLightSectionStorage): per chunk column, level sections + 2 light sections (overworld y -5..20) per layer. A section
 // stores light while it or any of its 26 neighbours has blocks (SectionState: hasData bit + neighbour count),
 // exactly as vanilla, so the same sections are present in packets. A DataLayer is a 2048-byte nibble array or
 // null + a uniform value. After lighting, uniform layers are collapsed back to null (vanilla keeps the array
 // once written; only the packet's "empty" mask can differ: an all-zero section is sent as empty, not zeros).
 //
-// One engine, one mutex: vanilla runs light on its own thread; here every call happens under mutex(), and
+// One engine and one mutex per level (laid out from its dimension type; no sky engine without has_skylight, so
+// no sky layers are stored or sent). Vanilla runs light on its own thread; here every call happens under mutex(), and
 // block reads go straight to the chunks (World::set_block writes under mutex() too). Lock order: light, then
 // Chunk::m. World chunks are held by ChunkPtr and released when only the World holds them (unloading).
 //
@@ -29,8 +30,7 @@
 namespace light {
 namespace {
 
-constexpr int MIN_SEC = (MIN_Y >> 4) - 1, NSEC = SECTIONS + 2;  // light sections -5..20
-constexpr int SRC_MIN_Y = MIN_Y - 1;                              // ChunkSkyLightSources.minY
+constexpr int MAX_NSEC = 26;  // light sections of the tallest level (overworld: -5..20); masks are 32 bits
 
 // ---------- per-state properties (generated from the vanilla BlockState cache) ----------
 inline int emission(uint16_t s) { return light_data::PROPS[s] & 15; }
@@ -106,9 +106,9 @@ inline int idx(int x, int y, int z) { return (y & 15) << 8 | (z & 15) << 4 | (x 
 enum Status : uint8_t { NEW, INITIALIZED, LIT };
 
 struct Column {
-    Layer sky[NSEC], block[NSEC];
-    uint8_t state[NSEC] = {};  // SectionState: bit 5 hasData, bits 0-4 neighbour count
-    bool present[NSEC] = {};   // layer exists (both engines see identical section status updates)
+    Layer sky[MAX_NSEC], block[MAX_NSEC];
+    uint8_t state[MAX_NSEC] = {};  // SectionState: bit 5 hasData, bits 0-4 neighbour count
+    bool present[MAX_NSEC] = {};   // layer exists (both engines see identical section status updates)
     bool light_on = false;     // columnsWithSources
     bool has_top = false;      // SkyDataLayerStorageMap.topSections entry
     int top = 0;
@@ -121,13 +121,18 @@ struct Column {
     ChunkPtr hold;           // keeps a World chunk alive; released when only the World holds it (unloading)
     bool adopted = false;    // chunk is (or will be) the World's; null = released, look it up again
     bool resolve = false;    // chunk is produce()'s copy: switch to the World's map entry once it is there
-    int16_t sources[256];  // ChunkSkyLightSources (raw value, SRC_MIN_Y = none)
+    int16_t sources[256];  // ChunkSkyLightSources (raw value, Engine::src_min_y = none)
 };
 
 struct Node { int x, y, z; uint32_t data; };
 
 struct Engine {
     World* world = nullptr;
+    // Level layout (DimensionType min_y / height, has_skylight): light sections min_sec .. min_sec + nsec - 1.
+    int min_y = 0, height = 0, sections = 0, min_sec = 0, nsec = 0, src_min_y = 0;  // src_min_y: ChunkSkyLightSources.minY
+    bool has_sky = true;  // LevelLightEngine.skyEngine != null
+    std::mutex m;
+    std::once_flag once;
     worldgen::Pipeline* pipeline = nullptr;  // set: light is computed by the pipeline's light steps
     std::unordered_map<int64_t, std::unique_ptr<Column>> columns;
     int lowest = INT_MAX;  // SkyDataLayerStorageMap.currentLowestY
@@ -139,6 +144,8 @@ struct Engine {
     bool sky = false;  // engine being run (selects the layer and queues)
     double ms = 0;
     size_t lit = 0;
+    int ticks = 0;  // take_changes calls
+    int deferred = 0;  // take_changes calls in a row that found the lock busy
     int64_t cache_key[2] = {INT64_MIN, INT64_MIN};
     Column* cache_col[2] = {};
 
@@ -159,15 +166,15 @@ struct Engine {
         if (Column* c = col(cx, cz)) return *c;
         auto& p = columns[key(cx, cz)];
         p = std::make_unique<Column>();
-        std::fill(std::begin(p->sources), std::end(p->sources), int16_t(SRC_MIN_Y));
+        std::fill(std::begin(p->sources), std::end(p->sources), int16_t(src_min_y));
         cache_key[0] = cache_key[1] = INT64_MIN;
         return *p;
     }
 
     // ---------- storage ----------
     Layer* layer(Column* c, int sy) {
-        int si = sy - MIN_SEC;
-        if (!c || si < 0 || si >= NSEC || !c->present[si]) return nullptr;
+        int si = sy - min_sec;
+        if (!c || si < 0 || si >= nsec || !c->present[si]) return nullptr;
         return sky ? &c->sky[si] : &c->block[si];
     }
     bool storing(int cx, int sy, int cz) { return layer(col(cx, cz), sy) != nullptr; }
@@ -180,7 +187,7 @@ struct Engine {
                 for (int sy = (y - 1) >> 4; sy <= (y + 1) >> 4; sy++) mark_affected(sx, sy, sz);
     }
     void mark_affected(int cx, int sy, int cz) {
-        int si = sy - MIN_SEC;
+        int si = sy - min_sec;
         Column* c = col(cx, cz);
         if (!c || si < 0 || si >= 32) return;
         (sky ? c->affected_sky : c->affected_block) |= 1u << si;
@@ -205,7 +212,7 @@ struct Engine {
             ch = acquire(n, x >> 4, z >> 4);
         }
         if (!ch) return blocks::bedrock;  // LightEngine.getState: chunk not loaded
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
+        if (y < min_y || y >= min_y + height) return blocks::air;
         return ch->get(x & 15, y, z & 15);
     }
     Chunk* acquire(Column& c, int cx, int cz) {  // the World's loaded chunk (never generates)
@@ -218,7 +225,7 @@ struct Engine {
     // LayerLightSectionStorage.updateSectionStatus (applied to both layers)
     void update_section_status(int cx, int sy, int cz, bool empty) {
         Column& c = col_create(cx, cz);
-        int si = sy - MIN_SEC;
+        int si = sy - min_sec;
         uint8_t st = c.state[si], ns = empty ? uint8_t(st & ~32) : uint8_t(st | 32);
         if (st == ns) return;
         put_state(cx, sy, cz, ns);
@@ -227,8 +234,8 @@ struct Engine {
             for (int oy = -1; oy <= 1; oy++)
                 for (int oz = -1; oz <= 1; oz++) {
                     if (!ox && !oy && !oz) continue;
-                    int nsy = sy + oy, nsi = nsy - MIN_SEC;
-                    if (nsi < 0 || nsi >= NSEC) continue;
+                    int nsy = sy + oy, nsi = nsy - min_sec;
+                    if (nsi < 0 || nsi >= nsec) continue;
                     Column& n = col_create(cx + ox, cz + oz);
                     uint8_t s = n.state[nsi];
                     put_state(cx + ox, nsy, cz + oz, uint8_t((s & ~31) | ((s & 31) + inc_n)));
@@ -236,7 +243,7 @@ struct Engine {
     }
     void put_state(int cx, int sy, int cz, uint8_t s) {
         Column& c = col_create(cx, cz);
-        int si = sy - MIN_SEC;
+        int si = sy - min_sec;
         uint8_t old = c.state[si];
         c.state[si] = s;
         if (s != 0 && old == 0) initialize_section(c, cx, sy, cz);
@@ -244,12 +251,12 @@ struct Engine {
     }
     void initialize_section(Column& c, int cx, int sy, int cz) {
         if (to_remove.erase(sec_key(cx, sy, cz))) return;
-        int si = sy - MIN_SEC;
+        int si = sy - min_sec;
         if (c.queued >> si & 1) {  // LayerLightSectionStorage.createDataLayer: queued (saved) data first
             c.queued &= ~(1u << si);
         } else {
             c.block[si] = Layer();
-            c.sky[si] = create_sky_layer(c, sy);
+            c.sky[si] = has_sky ? create_sky_layer(c, sy) : Layer();
         }
         c.present[si] = true;
         // SkyLightSectionStorage.onNodeAdded
@@ -258,15 +265,16 @@ struct Engine {
         for (int ox = -1; ox <= 1; ox++)  // markSectionAndNeighborsAsAffected
             for (int oz = -1; oz <= 1; oz++)
                 for (int oy = -1; oy <= 1; oy++)
-                    for (bool s : {false, true}) sky = s, mark_affected(cx + ox, sy + oy, cz + oz);
+                    for (bool s : {false, true})
+                        if (!s || has_sky) sky = s, mark_affected(cx + ox, sy + oy, cz + oz);
     }
     // SkyLightSectionStorage.createDataLayer
     Layer create_sky_layer(Column& c, int sy) {
         int t = top_section(&c);
         if (t != lowest && sy < t) {
             int ay = sy + 1;
-            while (!c.present[ay - MIN_SEC]) ay++;
-            const Layer& above = c.sky[ay - MIN_SEC];
+            while (!c.present[ay - min_sec]) ay++;
+            const Layer& above = c.sky[ay - min_sec];
             if (!above.data) return above.copy();
             Layer l;
             l.data.reset(new uint8_t[2048]);
@@ -289,7 +297,7 @@ struct Engine {
             int cx, sy, cz;
             unpack(k, cx, sy, cz);
             Column* c = col(cx, cz);
-            int si = sy - MIN_SEC;
+            int si = sy - min_sec;
             c->present[si] = false;
             c->sky[si] = Layer();
             c->block[si] = Layer();
@@ -312,18 +320,18 @@ struct Engine {
         Column* c = col(x >> 4, z >> 4);
         if (!c || c->status == NEW) return def;
         int v = c->sources[(z & 15) * 16 + (x & 15)];
-        return v == SRC_MIN_Y ? INT_MIN : v;
+        return v == src_min_y ? INT_MIN : v;
     }
     void fill_sources(Column& c, int cx, int cz) {
         int top_si = -1;
-        for (int si = SECTIONS - 1; si >= 0 && top_si < 0; si--)
+        for (int si = sections - 1; si >= 0 && top_si < 0; si--)
             if (!section_empty(*c.chunk, si)) top_si = si;
         for (int i = 0; i < 256; i++) {
-            c.sources[i] = int16_t(SRC_MIN_Y);
+            c.sources[i] = int16_t(src_min_y);
             if (top_si < 0) continue;
             int x = cx * 16 + (i & 15), z = cz * 16 + (i >> 4);
             uint16_t prev = blocks::air;
-            for (int y = MIN_Y + top_si * 16 + 15; y >= MIN_Y; y--) {
+            for (int y = min_y + top_si * 16 + 15; y >= min_y; y--) {
                 uint16_t cur = c.chunk->get(x & 15, y, z & 15);
                 if (edge_occluded(prev, cur)) { c.sources[i] = int16_t(y + 1); break; }
                 prev = cur;
@@ -340,9 +348,9 @@ struct Engine {
             if (edge_occluded(top, bottom)) {
                 if (top_y > cur) return c->sources[i] = int16_t(top_y), true;
             } else if (top_y == cur) {
-                int res = SRC_MIN_Y;  // findLowestSourceBelow(bottomPos = top_y - 1)
+                int res = src_min_y;  // findLowestSourceBelow(bottomPos = top_y - 1)
                 uint16_t t = bottom;
-                for (int by = top_y - 2; by >= SRC_MIN_Y; by--) {
+                for (int by = top_y - 2; by >= src_min_y; by--) {
                     uint16_t b = state(x, by, z);
                     if (edge_occluded(t, b)) { res = by + 1; break; }
                     t = b;
@@ -371,6 +379,7 @@ struct Engine {
         std::sort(to_check.begin(), to_check.end());
         to_check.erase(std::unique(to_check.begin(), to_check.end()), to_check.end());
         for (bool s : {false, true}) {
+            if (s && !has_sky) break;
             sky = s;
             for (auto [x, y, z] : to_check) s ? sky_check(x, y, z) : block_check(x, y, z);
             auto& dec = decq[s];
@@ -456,13 +465,13 @@ struct Engine {
     void block_propagate_sources(int cx, int cz) {
         Column* c = col(cx, cz);
         c->light_on = true;
-        for (int si = 0; si < SECTIONS; si++) {
+        for (int si = 0; si < sections; si++) {
             const auto& blocks = c->chunk->sections[size_t(si)].blocks;
             if (!blocks.bits && !emission(blocks.palette[0])) continue;
             for (int i = 0; i < 4096; i++) {
                 uint16_t s = blocks.get(i);
                 if (int e = emission(s))
-                    enqueue_inc(cx * 16 + (i & 15), MIN_Y + si * 16 + (i >> 8), cz * 16 + (i >> 4 & 15), qe::increase_emission(e, empty_shape(s)));
+                    enqueue_inc(cx * 16 + (i & 15), min_y + si * 16 + (i >> 8), cz * 16 + (i >> 4 & 15), qe::increase_emission(e, empty_shape(s)));
             }
         }
     }
@@ -613,13 +622,13 @@ struct Engine {
     void forget(int cx, int cz) {
         Column* c = col(cx, cz);
         if (!c) return;
-        for (int si = 0; si < SECTIONS; si++)
-            if (c->state[si + 1] & 32) update_section_status(cx, si + (MIN_Y >> 4), cz, true);
+        for (int si = 0; si < sections; si++)
+            if (c->state[size_t(si + 1)] & 32) update_section_status(cx, si + (min_y >> 4), cz, true);
         remove_sections();
         c->status = NEW, c->chunk = nullptr, c->hold.reset();
         c->adopted = c->resolve = c->from_disk = c->light_on = c->resend = false;
         c->queued = 0;
-        std::fill(std::begin(c->sources), std::end(c->sources), int16_t(SRC_MIN_Y));
+        std::fill(std::begin(c->sources), std::end(c->sources), int16_t(src_min_y));
         for (int dx = -1; dx <= 1; dx++)
             for (int dz = -1; dz <= 1; dz++) erase_if_unused(cx + dx, cz + dz);
     }
@@ -640,33 +649,41 @@ struct Engine {
         if (c.status != NEW) return;
         if (blocks) c.chunk = blocks;
         else c.adopted = true, acquire(c, cx, cz);
-        fill_sources(c, cx, cz);
+        if (has_sky) fill_sources(c, cx, cz);
         c.status = INITIALIZED;
-        for (int si = 0; si < SECTIONS; si++)
-            if (!section_empty(*c.chunk, si)) update_section_status(cx, si + (MIN_Y >> 4), cz, false);
+        for (int si = 0; si < sections; si++)
+            if (!section_empty(*c.chunk, si)) update_section_status(cx, si + (min_y >> 4), cz, false);
     }
 };
 
-Engine& engine() {
-    static Engine e;
+Engine engines[DIM_COUNT];
+Engine& engine(int dim) {  // one engine per level, laid out like the level's World (opened before any light call)
+    Engine& e = engines[dim];
+    std::call_once(e.once, [&] {
+        World& w = worlds[dim];
+        e.world = &w, e.min_y = w.min_y, e.height = w.height, e.sections = w.height / 16;
+        e.min_sec = (w.min_y >> 4) - 1, e.nsec = e.sections + 2, e.src_min_y = w.min_y - 1, e.has_sky = w.skylight;
+        if (e.nsec > MAX_NSEC) throw std::runtime_error("light: level too tall");
+    });
     return e;
 }
+Engine& engine(const World& w) { return engine(w.dimension); }
 
 // Generation mutations of palettes exposed to lighting hold mutex() and notify on_block_changed.
 // PULL_LIGHT_IN on the column's blocks along one side (DX/DZ direction d: NORTH SOUTH WEST EAST): their
 // neighbours across that side push light in. Vanilla never needs it (it saves proto chunks with their light);
 // here a chunk lit from saved light can meet a neighbour that was regenerated.
 void pull_edge(Engine& e, int cx, int cz, int d) {
-    for (int y = MIN_Y; y < MIN_Y + HEIGHT; y++)
+    for (int y = e.min_y; y < e.min_y + e.height; y++)
         for (int i = 0; i < 16; i++) {
             int x = d == WEST ? 0 : d == EAST ? 15 : i, z = d == NORTH ? 0 : d == SOUTH ? 15 : i;
-            for (int k = 0; k < 2; k++) e.decq[k].push_back({cx * 16 + x, y, cz * 16 + z, PULL_LIGHT_IN});
+            for (int k = 0; k < 1 + e.has_sky; k++) e.decq[k].push_back({cx * 16 + x, y, cz * 16 + z, PULL_LIGHT_IN});
         }
 }
 
 void light_column(Engine& e, int cx, int cz) {  // LevelLightEngine.propagateLightSources: block, then sky
     e.sky = false, e.block_propagate_sources(cx, cz);
-    e.sky = true, e.sky_propagate_sources(cx, cz);
+    if (e.has_sky) e.sky = true, e.sky_propagate_sources(cx, cz);
     e.col(cx, cz)->status = LIT;
     for (int d = NORTH; d <= EAST; d++)
         if (Column* n = e.col(cx + DX[d], cz + DZ[d]); n && n->from_disk) pull_edge(e, cx, cz, d);
@@ -677,7 +694,7 @@ void print_stats(Engine& e, size_t just_lit) {  // CRAFTPP_LIGHT_STATS=1: every 
     if (!on || e.lit % 64 >= just_lit) return;
     size_t layers = 0, arrays = 0;
     for (auto& [k, c] : e.columns)
-        for (int si = 0; si < NSEC; si++)
+        for (int si = 0; si < e.nsec; si++)
             if (c->present[si]) layers += 2, arrays += !!c->sky[si].data + !!c->block[si].data;
     printf("light: %zu chunks lit, %.3f ms/chunk, %zu columns, %zu layers, %zu arrays (%.1f MB)\n", e.lit,
            e.ms / double(e.lit), e.columns.size(), layers, arrays,
@@ -702,9 +719,10 @@ Saved save_affected(Engine& e) {
     return out;
 }
 
-void write_masks(Writer& w, const Column* c, uint32_t sky_filter, uint32_t block_filter) {
+void write_masks(Engine& e, Writer& w, const Column* c, uint32_t sky_filter, uint32_t block_filter) {
+    if (!e.has_sky) sky_filter = 0;  // no sky engine: DummyLightLayerEventListener has no data layers
     uint32_t m[4] = {};  // sky, block, empty sky, empty block
-    for (int si = 0; c && si < NSEC; si++) {
+    for (int si = 0; c && si < e.nsec; si++) {
         if (!c->present[si]) continue;
         if (sky_filter >> si & 1) m[c->sky[si].empty() ? 2 : 0] |= 1u << si;
         if (block_filter >> si & 1) m[c->block[si].empty() ? 3 : 1] |= 1u << si;
@@ -716,7 +734,7 @@ void write_masks(Writer& w, const Column* c, uint32_t sky_filter, uint32_t block
     }
     for (int k = 0; k < 2; k++) {
         w.varint(std::popcount(m[k]));
-        for (int si = 0; si < NSEC; si++) {
+        for (int si = 0; si < e.nsec; si++) {
             if (!(m[k] >> si & 1)) continue;
             const Layer& l = k == 0 ? c->sky[si] : c->block[si];
             w.varint(2048);
@@ -728,25 +746,22 @@ void write_masks(Writer& w, const Column* c, uint32_t sky_filter, uint32_t block
 
 }  // namespace
 
-std::mutex& mutex() {
-    static std::mutex m;
-    return m;
-}
+std::mutex& mutex(const World& w) { return engine(w).m; }
 
 int get(int x, int y, int z, bool sky) {
-    std::lock_guard lock(mutex());
-    Engine& e = engine();
-    if (e.world != cur_level) return -1;  // Never read another dimension's columns.
+    Engine& e = engine(*cur_level);
+    if (sky && !e.has_sky) return 0;  // DummyLightLayerEventListener
+    std::lock_guard lock(e.m);
     auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
     Column* c = it == e.columns.end() ? nullptr : it->second.get();
     if (!c || c->status != LIT) return -1;
     int sy = y >> 4;
     if (!sky) {
-        int si = sy - MIN_SEC;
-        return si >= 0 && si < NSEC && c->present[si] ? c->block[si].get(idx(x, y, z)) : 0;
+        int si = sy - e.min_sec;
+        return si >= 0 && si < e.nsec && c->present[si] ? c->block[si].get(idx(x, y, z)) : 0;
     }
-    for (int s = sy; s - MIN_SEC < NSEC; s++) {  // SkyLightSectionStorage.getLightValue: first stored section up
-        int si = s - MIN_SEC;
+    for (int s = sy; s - e.min_sec < e.nsec; s++) {  // SkyLightSectionStorage.getLightValue: first stored section up
+        int si = s - e.min_sec;
         if (si < 0) continue;
         if (c->present[si]) return c->sky[si].get(s == sy ? idx(x, y, z) : idx(x, 0, z));
     }
@@ -754,16 +769,16 @@ int get(int x, int y, int z, bool sky) {
 }
 
 void attach(World& world, worldgen::Pipeline& p) {
-    engine().world = &world;
-    engine().pipeline = &p;
+    Engine* ep = &engine(world);
+    ep->pipeline = &p;
     using worldgen::Status;
-    p.set_step(Status::INITIALIZE_LIGHT, [](worldgen::Region& r) {
-        std::lock_guard lock(mutex());
-        engine().initialize(r.cx, r.cz, r.center().chunk.get());
+    p.set_step(Status::INITIALIZE_LIGHT, [ep](worldgen::Region& r) {
+        std::lock_guard lock(ep->m);
+        ep->initialize(r.cx, r.cz, r.center().chunk.get());
     });
-    p.set_step(Status::LIGHT, [](worldgen::Region& r) {  // reads the 3x3: lock it like vanilla's radius 1
-        std::lock_guard lock(mutex());
-        Engine& e = engine();
+    p.set_step(Status::LIGHT, [ep](worldgen::Region& r) {  // reads the 3x3: lock it like vanilla's radius 1
+        std::lock_guard lock(ep->m);
+        Engine& e = *ep;
         if (e.col(r.cx, r.cz)->status == LIT) return;  // loaded with its saved light
         auto t0 = std::chrono::steady_clock::now();
         light_column(e, r.cx, r.cz);
@@ -775,14 +790,14 @@ void attach(World& world, worldgen::Pipeline& p) {
         e.lit++;
         print_stats(e, 1);
     }, 1);
-    p.write_lock = &mutex();
-    p.on_block_changed = [](worldgen::ProtoChunk& c, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
+    p.write_lock = &ep->m;
+    p.on_block_changed = [&world](worldgen::ProtoChunk& c, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
         // ProtoChunk::set holds mutex() around both the palette mutation and this notification.
-        block_changed(c.cx * 16 + x, y, c.cz * 16 + z, old_state, new_state);
+        block_changed(world, c.cx * 16 + x, y, c.cz * 16 + z, old_state, new_state);
     };
-    p.on_evict = [](const std::function<bool(int, int)>& keep) {  // pipeline evict: generation is paused
-        std::lock_guard lock(mutex());
-        Engine& e = engine();
+    p.on_evict = [ep](const std::function<bool(int, int)>& keep) {  // pipeline evict: generation is paused
+        std::lock_guard lock(ep->m);
+        Engine& e = *ep;
         e.run();  // pending updates may read the columns about to go
         std::vector<int64_t> gone;
         for (auto& [k, c] : e.columns)
@@ -790,10 +805,12 @@ void attach(World& world, worldgen::Pipeline& p) {
         for (int64_t k : gone) e.forget(int(k >> 32), int(int32_t(uint32_t(k))));
         e.run();
         save_affected(e);  // nobody views these columns: no light_update for them
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %zu light columns kept, %zu forgotten\n", e.columns.size(), gone.size());
     };
-    p.on_take = [](worldgen::ProtoChunk& c, Chunk& out) {
-        std::lock_guard lock(mutex());
-        if (Column* col = engine().col(c.cx, c.cz)) col->chunk = &out, col->adopted = col->resolve = true;
+    p.on_take = [ep](worldgen::ProtoChunk& c, Chunk& out) {
+        std::lock_guard lock(ep->m);
+        if (Column* col = ep->col(c.cx, c.cz)) col->chunk = &out, col->adopted = col->resolve = true;
     };
 }
 
@@ -804,13 +821,13 @@ void adopt_loaded(Engine& e, Column& c, Chunk& w) {
     Chunk& proto = *c.chunk;
     c.chunk = &w, c.adopted = c.resolve = true;
     sync_sections(e, c, w);
-    for (int si = 0; si < SECTIONS; si++) {
+    for (int si = 0; si < e.sections; si++) {
         const auto &a = proto.sections[size_t(si)].blocks, &b = w.sections[size_t(si)].blocks;
         if (!a.bits && !b.bits && a.palette[0] == b.palette[0]) continue;
         for (int i = 0; i < 4096; i++) {
             uint16_t o = a.get(i), n = b.get(i);
             if (o != n && (dampening(o) != dampening(n) || emission(o) != emission(n) || !empty_shape(o) || !empty_shape(n)))
-                e.to_check.push_back({w.cx * 16 + (i & 15), MIN_Y + si * 16 + (i >> 8), w.cz * 16 + (i >> 4 & 15)});
+                e.to_check.push_back({w.cx * 16 + (i & 15), e.min_y + si * 16 + (i >> 8), w.cz * 16 + (i >> 4 & 15)});
         }
     }
     e.run();
@@ -819,18 +836,18 @@ void adopt_loaded(Engine& e, Column& c, Chunk& w) {
 
 // Section status + sky sources of a column from the World's blocks (they may differ from the proto's).
 void sync_sections(Engine& e, Column& c, Chunk& w) {
-    for (int si = 0; si < SECTIONS; si++) {
+    for (int si = 0; si < e.sections; si++) {
         bool has = !Engine::section_empty(w, si);
-        if (has != bool(c.state[si + 1] & 32)) e.update_section_status(w.cx, si + (MIN_Y >> 4), w.cz, !has);
+        if (has != bool(c.state[si + 1] & 32)) e.update_section_status(w.cx, si + (e.min_y >> 4), w.cz, !has);
     }
     e.fill_sources(c, w.cx, w.cz);
 }
 
 // Light saved with a chunk (light::save): per light section a flags byte (1 present, 2 sky array, 4 block
 // array), then sky and block as 2048 bytes or one uniform value.
-std::vector<uint8_t> save_column(const Column& c) {
+std::vector<uint8_t> save_column(const Engine& e, const Column& c) {
     std::vector<uint8_t> out;
-    for (int si = 0; si < NSEC; si++) {
+    for (int si = 0; si < e.nsec; si++) {
         const Layer &s = c.sky[si], &b = c.block[si];
         out.push_back(uint8_t(c.present[si] | (s.data ? 2 : 0) | (b.data ? 4 : 0)));
         if (!c.present[si]) continue;
@@ -844,10 +861,10 @@ std::vector<uint8_t> save_column(const Column& c) {
 // SkyLightEngine / BlockLightEngine for a chunk loaded with light (ChunkStatusTasks.isLighted): stored data,
 // sources on, no propagation. False if the data is malformed (the caller lights it from scratch).
 bool restore(Engine& e, Column& c, Chunk& w, const std::vector<uint8_t>& d) {
-    std::vector<std::pair<Layer, Layer>> layers(NSEC);
+    std::vector<std::pair<Layer, Layer>> layers(e.nsec);
     size_t at = 0;
-    std::vector<bool> has(NSEC);
-    for (int si = 0; si < NSEC; si++) {
+    std::vector<bool> has(e.nsec);
+    for (int si = 0; si < e.nsec; si++) {
         if (at >= d.size()) return false;
         uint8_t f = d[at++];
         has[size_t(si)] = f & 1;
@@ -867,7 +884,7 @@ bool restore(Engine& e, Column& c, Chunk& w, const std::vector<uint8_t>& d) {
     if (c.status == NEW) e.initialize(w.cx, w.cz, &w);
     else sync_sections(e, c, w);
     c.chunk = &w, c.adopted = c.resolve = true;
-    for (int si = 0; si < NSEC; si++) {
+    for (int si = 0; si < e.nsec; si++) {
         if (!has[size_t(si)]) continue;
         c.sky[si] = std::move(layers[size_t(si)].first), c.block[si] = std::move(layers[size_t(si)].second);
         if (!c.present[si]) c.queued |= 1u << si;  // a neighbour's blocks made it present when it was saved
@@ -889,7 +906,7 @@ void verify(Engine& e, int cx, int cz) {
     for (bool s : {false, true}) {
         e.sky = s;
         int shown = 0;
-        for (int y = MIN_Y; y < MIN_Y + HEIGHT; y++)
+        for (int y = e.min_y; y < e.min_y + e.height; y++)
             for (int z = cz * 16; z < cz * 16 + 16; z++)
                 for (int x = cx * 16; x < cx * 16 + 16; x++) {
                     if (!e.storing(x >> 4, y >> 4, z >> 4)) continue;
@@ -924,16 +941,12 @@ bool lit_3x3(Engine& e, int cx, int cz) {
 // ChunkMap.prepareTickingChunk: a chunk is sent once its 3x3 is FULL, so every light source that can reach it
 // (< 16 blocks) has been propagated.
 void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
-    Engine& e = engine();
-    {
-        std::lock_guard lock(mutex());
-        e.world = &world;
-    }
+    Engine& e = engine(world);
     if (loaded) {
         std::vector<uint8_t> saved = std::move(w.saved_light);
         w.saved_light.clear(), w.saved_light.shrink_to_fit();
         {
-            std::lock_guard lock(mutex());
+            std::lock_guard lock(e.m);
             Column& c = e.col_create(w.cx, w.cz);
             if (c.adopted) {  // reloaded after unloading: same blocks, and the engine kept its light
                 c.chunk = &w, c.resolve = true;
@@ -952,7 +965,7 @@ void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
             }
         }
         e.pipeline->ensure(w.cx, w.cz, worldgen::Status::LIGHT);  // no saved light: light the generated version
-        std::lock_guard lock(mutex());
+        std::lock_guard lock(e.m);
         Column& c = *e.col(w.cx, w.cz);
         if (!c.adopted) adopt_loaded(e, c, w);
         return;
@@ -961,20 +974,23 @@ void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
     // ChunkMap.prepareTickingChunk: sent once its 3x3 is lit (loaded neighbours keep their saved light).
     for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++) e.pipeline->ensure(w.cx + dx, w.cz + dz, worldgen::Status::LIGHT);
+    w.light_ready.store(true, std::memory_order_release);
 }
 
 std::vector<uint8_t> save(Chunk& c, uint32_t& version) {
-    std::lock_guard lock(mutex());
-    Column* col = engine().col(c.cx, c.cz);
+    Engine& e = engine(c.dimension);
+    std::lock_guard lock(e.m);
+    Column* col = e.col(c.cx, c.cz);
     version = c.light_version;
-    return col && col->status == LIT ? save_column(*col) : std::vector<uint8_t>{};
+    return col && col->status == LIT ? save_column(e, *col) : std::vector<uint8_t>{};
 }
 
-void ensure_lit(World& world, Chunk& center) {
+static void light_3x3(World& world, Chunk& center) {
     int cx = center.cx, cz = center.cz;
-    if (Engine& e = engine(); e.pipeline) {
+    Engine& e = engine(world);
+    if (e.pipeline) {
         {
-            std::lock_guard lock(mutex());
+            std::lock_guard lock(e.m);
             if (lit_3x3(e, cx, cz)) return;
         }
         for (int dx = -1; dx <= 1; dx++)  // normally done by produced() on the worker
@@ -982,15 +998,13 @@ void ensure_lit(World& world, Chunk& center) {
         return;
     }
     {
-        std::lock_guard lock(mutex());
-        engine().world = &world;
-        if (lit_3x3(engine(), cx, cz)) return;
+        std::lock_guard lock(e.m);
+        if (lit_3x3(e, cx, cz)) return;
     }
     std::vector<ChunkPtr> keep;  // generation is slow and thread-safe: keep it outside the light lock
     for (int dx = -2; dx <= 2; dx++)
         for (int dz = -2; dz <= 2; dz++) keep.push_back(world.get_ptr(cx + dx, cz + dz));
-    std::lock_guard lock(mutex());
-    Engine& e = engine();
+    std::lock_guard lock(e.m);
     if (lit_3x3(e, cx, cz)) return;
     auto t0 = std::chrono::steady_clock::now();
     e.run();  // queued block changes first: their affected sections still go out through take_changes
@@ -1018,13 +1032,20 @@ void ensure_lit(World& world, Chunk& center) {
     print_stats(e, todo.size());
 }
 
+void ensure_lit(World& world, Chunk& center) {
+    // Once its 3x3 is lit it stays lit: the tick thread then never waits here for a worker's light step.
+    if (center.light_ready.load(std::memory_order_acquire)) return;
+    light_3x3(world, center);
+    center.light_ready.store(true, std::memory_order_release);
+}
+
 uint32_t write(Writer& w, Chunk& c) {
-    std::lock_guard lock(mutex());
-    Engine& e = engine();
+    Engine& e = engine(c.dimension);
+    std::lock_guard lock(e.m);
     e.run();
     static const bool check = getenv("CRAFTPP_LIGHT_VERIFY");
     if (check) verify(e, c.cx, c.cz);
-    write_masks(w, e.col(c.cx, c.cz), ~0u, ~0u);
+    write_masks(e, w, e.col(c.cx, c.cz), ~0u, ~0u);
     return c.light_version;
 }
 
@@ -1033,13 +1054,13 @@ int level(bool sky, int x, int y, int z) {
     return v >= 0 ? v : sky ? 15 : 0;
 }
 
-void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state) {
-    Engine& e = engine();
+void block_changed(const World& world, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
+    Engine& e = engine(world);
     Column* c = e.col(x >> 4, z >> 4);
     if (!c || c->status == NEW || old_state == new_state) return;  // initialize() reads the final blocks
     bool old_air = state_flags()[old_state] & STATE_AIR, new_air = state_flags()[new_state] & STATE_AIR;
     if (old_air != new_air) {  // LevelChunk.setBlockState: section emptiness changed
-        int si = (y - MIN_Y) >> 4, here = idx(x, y, z), others = 0;
+        int si = (y - e.min_y) >> 4, here = idx(x, y, z), others = 0;
         if (c->adopted && (c->resolve || !c->chunk)) e.acquire(*c, x >> 4, z >> 4);
         if (!c->chunk) return;
         const auto& blocks = c->chunk->sections[size_t(si)].blocks;
@@ -1049,17 +1070,23 @@ void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state) 
     // LightEngine.hasDifferentLightProperties (useShapeForLightOcclusion ~ a face tuple: only those occlude)
     if (dampening(old_state) != dampening(new_state) || emission(old_state) != emission(new_state) ||
         !empty_shape(old_state) || !empty_shape(new_state)) {
-        e.update_sources(x, y, z);
+        if (e.has_sky) e.update_sources(x, y, z);
         e.to_check.push_back({x, y, z});
     }
 }
 
-std::vector<Change> take_changes() {
-    std::lock_guard lock(mutex());
-    Engine& e = engine();
+std::vector<Change> take_changes(World& world) {
+    Engine& e = engine(world);
+    // A worker's light step can hold the lock for tens of ms: send this level's light next tick rather than
+    // stall this one (vanilla's light thread is asynchronous too), but defer at most a second.
+    std::unique_lock lock(e.m, std::try_to_lock);
+    if (!lock) {
+        if (++e.deferred < 20) return {};
+        lock.lock();
+    }
+    e.deferred = 0;
     e.run();
-    static int ticks = 0;
-    if (++ticks % 100 == 0)  // let the World unload chunks only the light engine still holds
+    if (++e.ticks % 100 == 0)  // let the World unload chunks only the light engine still holds
         for (auto& [k, c] : e.columns)
             if (c->hold && c->hold.use_count() <= 2) c->hold.reset(), c->chunk = nullptr;
     std::vector<Change> out;
@@ -1071,10 +1098,11 @@ std::vector<Change> take_changes() {
     return out;
 }
 
-void write_update(Writer& w, const Change& ch) {
-    std::lock_guard lock(mutex());
+void write_update(World& world, Writer& w, const Change& ch) {
+    Engine& e = engine(world);
+    std::lock_guard lock(e.m);
     w.varint(ch.cx).varint(ch.cz);
-    write_masks(w, engine().col(ch.cx, ch.cz), ch.sky, ch.block);
+    write_masks(e, w, e.col(ch.cx, ch.cz), ch.sky, ch.block);
 }
 
 }  // namespace light

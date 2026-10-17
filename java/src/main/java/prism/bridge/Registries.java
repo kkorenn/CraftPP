@@ -190,7 +190,7 @@ final class Registries {
         // Registries PrismMC does not sync (structures, keyed API constants) still
         // resolve every constant the API declares: derive keys from its static fields.
         for (Field field : elementType.getDeclaredFields()) {
-            if (java.lang.reflect.Modifier.isStatic(field.getModifiers()) && field.getType() == elementType) {
+            if (elementType != org.bukkit.GameRule.class && java.lang.reflect.Modifier.isStatic(field.getModifiers()) && field.getType() == elementType) {
                 String derived = "minecraft:" + field.getName().toLowerCase(Locale.ROOT);
                 if (!keys.contains(derived)) {
                     keys.add(derived);
@@ -204,6 +204,8 @@ final class Registries {
     }
 
     private static Object create(Class<?> type, NamespacedKey key) {
+        if (type == org.bukkit.GameRule.class) return GameRulesBridge.create(key);
+        if (type == org.bukkit.damage.DamageType.class) return new Damage.TypeImpl(key);
         if (type == Enchantment.class) {
             return new EnchantmentImpl(key);
         }

@@ -106,8 +106,17 @@ inline void register_core_handlers() {
         (void)id;
         int x, y, z;
         read_block_pos(in, x, y, z);
-        // ponytail: no reach check and includeData (ctrl+pick block entity NBT) ignored.
-        int item = pick_item(world.get_block(x, y, z));
+        // handlePickItemFromBlock: within reach (+1) and loaded, so a forged position never loads or generates.
+        // ponytail: includeData (ctrl+pick block entity NBT) ignored.
+        if (!within_reach(p, x, y, z) || y < world.min_y() || y >= world.max_y()) return;
+        ChunkPtr c = world.get_if_loaded(x >> 4, z >> 4);
+        if (!c) return;
+        uint16_t state;
+        {
+            std::lock_guard lock(c->m);
+            state = c->get(x & 15, y, z & 15);
+        }
+        int item = pick_item(state);
         if (item >= 0) pick_block(p, item);
     });
     on(play_sb::use_item_on, [](Player& p, Reader& in, int id) {

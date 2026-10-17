@@ -294,9 +294,12 @@ inline Entity* add_entity(std::unique_ptr<Entity> up) {
 template <class T> inline T* add_entity_t(std::unique_ptr<T> up) { return static_cast<T*>(add_entity(std::move(up))); }
 
 // Frees one removed entity: remove packets, unindex.
+inline std::vector<void (*)(Entity&)> entity_removed_hooks;  // non-player entity leaves the world (any reason)
 inline void free_entity(Entity& e) {
     InLevel in_level(e.level());  // its level's chunk index
     e.on_removed();
+    if (!e.as_player())
+        for (auto f : entity_removed_hooks) f(e);
     if (!e.trk.watchers.empty()) {
         Writer w = remove_entities_packet({e.id});
         for (Player* p : e.trk.watchers) {

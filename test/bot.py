@@ -13,6 +13,20 @@ def ids(ns):
 
 LOGIN_CB, CFG_CB, CFG_SB, PLAY_CB, PLAY_SB = map(ids, ["login_cb", "config_cb", "config_sb", "play_cb", "play_sb"])
 
+def free_port():
+    """A free port below every OS's ephemeral range (Linux 32768+, macOS 49152+): outgoing connections and bind(0)
+    probes from parallel test runs never take it while a test server restarts on it."""
+    import random
+    while True:
+        s, port = socket.socket(), random.randint(20000, 32767)
+        try:
+            s.bind(("", port))
+            return port
+        except OSError:
+            pass
+        finally:
+            s.close()
+
 def varint(n):
     n &= 0xFFFFFFFF
     out = b""

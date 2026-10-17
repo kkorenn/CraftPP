@@ -120,7 +120,7 @@ struct ChestCorridor : SHPiece {
     for (int z = 2; z <= 4; z++) placeBlock(level, blocks::stone_brick_slab, 2, 1, z, bb);
     if (!hasPlacedChest && bb.isInside(worldPos(3, 2, 3))) {
       hasPlacedChest = true;
-      createChest(level, bb, random, 3, 2, 3);
+      createChest(level, bb, random, 3, 2, 3, "minecraft:chests/stronghold_corridor");
     }
   }
 };
@@ -293,10 +293,10 @@ struct Library : SHPiece {
       placeBlock(level, torch, 7, 8, 6, bb);
       placeBlock(level, torch, 7, 8, 8, bb);
     }
-    createChest(level, bb, random, 3, 3, 5);
+    createChest(level, bb, random, 3, 3, 5, "minecraft:chests/stronghold_library");
     if (isTall) {
       placeBlock(level, CAVE_AIR, 12, 9, 1, bb);
-      createChest(level, bb, random, 12, 8, 1);
+      createChest(level, bb, random, 12, 8, 1, "minecraft:chests/stronghold_library");
     }
   }
 };
@@ -484,7 +484,7 @@ struct RoomCrossing : SHPiece {
         placeBlock(level, ladder, 9, 1, 3, bb);
         placeBlock(level, ladder, 9, 2, 3, bb);
         placeBlock(level, ladder, 9, 3, 3, bb);
-        createChest(level, bb, random, 3, 4, 8);
+        createChest(level, bb, random, 3, 4, 8, "minecraft:chests/stronghold_crossing");
         break;
       }
       default: break;

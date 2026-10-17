@@ -10,6 +10,10 @@ inline int clear_inventory(Player& p, int item, int max);
 inline void kill(Player& p, const std::string& type);
 inline bool hurt(Player& p, float amount, const std::string& type);
 inline void send_experience(Player& p);
+inline int xp_needed_for_next_level(int level);  // game/survival.hpp
+inline void give_experience_levels(Player& p, int amount);
+inline void give_experience_points(Player& p, int i);
+inline void set_experience_points(Player& p, int amount);
 // Non-player entity operations (src/mobs/mobs.cpp).
 void entity_kill(Entity* e);
 bool entity_hurt(Entity* e, float amount, const std::string& type);
@@ -323,7 +327,8 @@ inline void register_vanilla_commands() {
         if (c.is("destroy") && world.get_block(x, y, z) != blocks::air) batch.set(x, y, z, blocks::air);  // ponytail: no drops
         bool ok = batch.set(x, y, z, b.state);
         batch.flush();
-        if (!ok) throw err("commands.setblock.failed");
+        if (b.nbt && set_block_nbt_hook) set_block_nbt_hook(x, y, z, *b.nbt);
+        if (!ok && !b.nbt) throw err("commands.setblock.failed");
         c.success(tr("commands.setblock.success", {x, y, z}), true);
         return 1;
     });
@@ -895,8 +900,8 @@ inline void register_vanilla_commands() {
         if (c.is("warning")) {
             if (c.is("time")) {
                 int t = int(c.num("time"));
-                if (border.warn_time == t / 20) throw err("commands.worldborder.warning.time.failed");
-                border.warn_time = int(t / 20);
+                if (border.warn_time == t) throw err("commands.worldborder.warning.time.failed");
+                border.warn_time = t;
                 broadcast(pkt(play_cb::set_border_warning_delay).varint(border.warn_time));
                 c.success(tr("commands.worldborder.warning.time.success", {f2(t / 20.0)}), true);
                 return t;
@@ -934,44 +939,31 @@ inline void register_vanilla_commands() {
         return Mth::d2i(target - current);
     });
 
-    reg("experience", [](Cmd& c) {
+    reg("experience", [](Cmd& c) {  // ExperienceCommand
         bool levels = c.is("levels");
-        auto send_xp = [](Player& p) { send_experience(p); };
-        auto need = [](int lvl) { return lvl >= 30 ? 112 + (lvl - 30) * 9 : lvl >= 15 ? 37 + (lvl - 15) * 5 : 7 + lvl * 2; };  // getXpNeededForNextLevel
-        auto give_points = [&](Player& p, int amount) {  // Player.giveExperiencePoints
-            p.g.xp_progress += float(amount) / float(need(p.g.xp_level));
-            p.g.xp_total = std::clamp(p.g.xp_total + amount, 0, INT32_MAX);
-            while (p.g.xp_progress < 0) {
-                float f = p.g.xp_progress * float(need(p.g.xp_level));
-                if (p.g.xp_level > 0) { p.g.xp_level--; p.g.xp_progress = 1 + f / float(need(p.g.xp_level)); }
-                else { p.g.xp_level = 0; p.g.xp_progress = 0; }
-            }
-            while (p.g.xp_progress >= 1) {
-                p.g.xp_progress = (p.g.xp_progress - 1) * float(need(p.g.xp_level));
-                p.g.xp_level++;
-                p.g.xp_progress /= float(need(p.g.xp_level));
-            }
-        };
         if (c.is("query")) {
             auto t = c.player("target");
-            int v = levels ? t->g.xp_level : int(t->g.xp_progress * float(need(t->g.xp_level)));
+            int v = levels ? t->g.xp_level : int(std::floor(t->g.xp_progress * float(xp_needed_for_next_level(t->g.xp_level))));
             c.success(tr(levels ? "commands.experience.query.levels" : "commands.experience.query.points", {player_name(*t), v}), false);
             return v;
         }
         auto targets = c.players("target");
         int amount = int(c.num("amount"));
         bool set = c.is("set");
+        std::vector<PlayerPtr> ok;
         for (auto& t : targets) {
-            if (set && levels) { t->g.xp_level = std::max(0, amount); }
+            if (set && levels) t->g.xp_level = amount;  // setExperienceLevels
             else if (set) {
-                if (amount > need(t->g.xp_level)) throw err("commands.experience.set.points.invalid");
-                t->g.xp_progress = float(amount) / float(need(t->g.xp_level));
-            } else if (levels) { t->g.xp_level = std::max(0, t->g.xp_level + amount); }
-            else give_points(*t, amount);
-            send_xp(*t);
+                if (amount >= xp_needed_for_next_level(t->g.xp_level)) continue;  // tracker: this player counts as 0
+                set_experience_points(*t, amount);
+            } else if (levels) give_experience_levels(*t, amount);
+            else give_experience_points(*t, amount);
+            send_experience(*t);
+            ok.push_back(t);
         }
+        if (ok.empty()) throw err("commands.experience.set.points.invalid");
         std::string k = std::string("commands.experience.") + (set ? "set." : "add.") + (levels ? "levels" : "points") + ".success";
-        return respond(c, targets, true, [&](Text n) { return tr(k + ".single", {amount, n}); }, [&](int n) { return tr(k + ".multiple", {amount, n}); });
+        return respond(c, ok, true, [&](Text n) { return tr(k + ".single", {amount, n}); }, [&](int n) { return tr(k + ".multiple", {amount, n}); });
     });
 
     reg("tag", [](Cmd& c) {

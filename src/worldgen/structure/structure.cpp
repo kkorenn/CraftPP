@@ -290,25 +290,25 @@ int Piece::reorient(Level& level, BlockPos pos, int state) {
   return b.with(state, "facing", dirName(lock));
 }
 
-bool Piece::createChest(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z) {
-  return createChest(level, bb, random, worldPos(x, y, z), -1);
+bool Piece::createChest(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, const char* table) {
+  return createChest(level, bb, random, worldPos(x, y, z), table, -1);
 }
 
-bool Piece::createChest(Level& level, const BoundingBox& bb, RandomSource& random, BlockPos pos, int state) {
+bool Piece::createChest(Level& level, const BoundingBox& bb, RandomSource& random, BlockPos pos, const char* table, int state) {
   const Blocks& b = Blocks::get();
   if (!bb.isInside(pos) || b.is(level.getBlock(pos.x, pos.y, pos.z), "chest")) return false;
   if (state < 0) state = reorient(level, pos, b.defaultState("chest"));
   level.setBlock(pos.x, pos.y, pos.z, state);
-  if (b.is(state, "chest") || b.is(state, "trapped_chest")) random.nextLong();  // setLootTable(table, random.nextLong())
+  if (b.is(state, "chest") || b.is(state, "trapped_chest")) level.setLootTable(pos, table, random.nextLong());
   return true;
 }
 
-bool Piece::createDispenser(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, Dir facing) {
+bool Piece::createDispenser(Level& level, const BoundingBox& bb, RandomSource& random, int x, int y, int z, Dir facing, const char* table) {
   const Blocks& b = Blocks::get();
   BlockPos pos = worldPos(x, y, z);
   if (!bb.isInside(pos) || b.is(level.getBlock(pos.x, pos.y, pos.z), "dispenser")) return false;
   placeBlock(level, b.with(b.defaultState("dispenser"), "facing", dirName(facing)), x, y, z, bb);
-  if (b.is(level.getBlock(pos.x, pos.y, pos.z), "dispenser")) random.nextLong();
+  if (b.is(level.getBlock(pos.x, pos.y, pos.z), "dispenser")) level.setLootTable(pos, table, random.nextLong());
   return true;
 }
 

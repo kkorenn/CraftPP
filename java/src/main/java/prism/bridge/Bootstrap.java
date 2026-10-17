@@ -32,6 +32,10 @@ final class Bootstrap {
         com.google.gson.JsonElement registries = Main.rpc.api("server.registries");
         Registries.load(registries != null && registries.isJsonObject() ? registries.getAsJsonObject() : null);
 
+        // Initialize the legacy superclass first: its static constants load GameRules,
+        // which in turn constructs registry subclasses while superclass initialization is in progress.
+        Class.forName("org.bukkit.GameRule");
+
         File pluginsFolder = backing.getPluginsFolder();
         pluginsFolder.mkdirs();
         Plugin[] loaded = Main.pluginManager.loadPlugins(pluginsFolder);

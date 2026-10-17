@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.UUID;
 
 /** Backing for the single overworld {@link World} proxy. */
-public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvider {
+public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvider, ProxyBase.Overloads {
     private final String name;
     private final long seed;
     private final UUID uid;
@@ -149,12 +149,13 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public long getTime() {
-        return getFullTime() % 24000;
+        return Math.floorMod(getFullTime(), 24000L);
     }
 
     public void setTime(long time) {
         long full = getFullTime();
-        setFullTime(full - full % 24000 + time);
+        long delta = Math.floorMod(Math.floorMod(time, 24000L) - Math.floorMod(full, 24000L), 24000L);
+        setFullTime(Math.addExact(full, delta));
     }
 
     public long getFullTime() {
@@ -162,11 +163,12 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public void setFullTime(long time) {
-        Main.rpc.api("world.setTime", "time", time);
+        // Send decimal text so the C++ JSON double cannot round a Java long.
+        Main.rpc.api("world.setTime", "time", Long.toString(time));
     }
 
     public long getGameTime() {
-        return getFullTime();
+        return Main.rpc.api("world.gameTime").getAsLong();
     }
 
     public boolean isDayTime() {
@@ -197,6 +199,7 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public void setDifficulty(Difficulty difficulty) {
+        java.util.Objects.requireNonNull(difficulty, "difficulty");
         Main.rpc.api("world.setDifficulty", "value", difficulty.ordinal());
     }
 
@@ -206,20 +209,21 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
             return new Location(proxy, 0.5, 64, 0.5);
         }
         JsonObject spawn = result.getAsJsonObject();
-        return new Location(proxy, spawn.get("x").getAsInt() + 0.5, spawn.get("y").getAsInt(), spawn.get("z").getAsInt() + 0.5);
+        return new Location(proxy, spawn.get("x").getAsInt() + 0.5, spawn.get("y").getAsInt(), spawn.get("z").getAsInt() + 0.5, spawn.get("yaw").getAsFloat(), 0);
     }
 
     public boolean setSpawnLocation(Location location) {
-        return setSpawnLocation(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        java.util.Objects.requireNonNull(location, "location");
+        if (!proxy.equals(location.getWorld())) return false;
+        return setSpawnLocation(location.getBlockX(), location.getBlockY(), location.getBlockZ(), location.getYaw());
     }
 
     public boolean setSpawnLocation(int x, int y, int z) {
-        Main.rpc.api("world.setSpawn", "x", x, "y", y, "z", z);
-        return true;
+        return setSpawnLocation(x, y, z, 0);
     }
 
     public boolean setSpawnLocation(int x, int y, int z, float angle) {
-        return setSpawnLocation(x, y, z);
+        return Main.rpc.api("world.setSpawn", "x", x, "y", y, "z", z, "yaw", angle).getAsBoolean();
     }
 
     public List<Player> getPlayers() {
@@ -503,26 +507,6 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
         return true;
     }
 
-    public void playSound(Location location, org.bukkit.Sound sound, float volume, float pitch) {
-        for (Player player : getPlayers()) {
-            player.playSound(location, sound, volume, pitch);
-        }
-    }
-
-    public void playSound(Location location, String sound, float volume, float pitch) {
-        for (Player player : getPlayers()) {
-            player.playSound(location, sound, volume, pitch);
-        }
-    }
-
-    public void playSound(Location location, org.bukkit.Sound sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
-    public void playSound(Location location, String sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
     public Entity getEntity(UUID uuid) {
         for (Entity entity : getEntities()) {
             if (entity.getUniqueId().equals(uuid)) {
@@ -598,8 +582,14 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public boolean setGameRuleValue(String rule, String value) {
-        Main.rpc.api("world.setGameRule", "rule", rule, "value", value);
-        return true;
+        java.util.Objects.requireNonNull(rule, "rule");
+        java.util.Objects.requireNonNull(value, "value");
+        org.bukkit.GameRule<?> typed = org.bukkit.GameRule.getByName(rule);
+        if (!GameRulesBridge.valid(typed, value)) return false;
+        var event = new io.papermc.paper.event.world.WorldGameRuleChangeEvent(proxy, null, typed, value);
+        Main.pluginManager.callEvent(event);
+        if (event.isCancelled() || !GameRulesBridge.valid(typed, event.getValue())) return false;
+        return Main.rpc.api("world.setGameRule", "rule", typed.getKey().asString(), "value", event.getValue()).getAsBoolean();
     }
 
     public String getGameRuleValue(String rule) {
@@ -619,24 +609,16 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
         return getGameRuleValue(rule) != null;
     }
 
-    @SuppressWarnings("unchecked")
     public <T> T getGameRuleValue(org.bukkit.GameRule<T> rule) {
-        String value = getGameRuleValue(rule.getName());
-        if (value == null) {
-            return null;
-        }
-        if (rule.getType() == Boolean.class) {
-            return (T) Boolean.valueOf(value);
-        }
-        return (T) Integer.valueOf(value);
+        return GameRulesBridge.get(this, rule);
     }
 
     public <T> T getGameRuleDefault(org.bukkit.GameRule<T> rule) {
-        return getGameRuleValue(rule);
+        return java.util.Objects.requireNonNull(rule, "rule").getDefaultValue();
     }
 
     public <T> boolean setGameRule(org.bukkit.GameRule<T> rule, T value) {
-        return setGameRuleValue(rule.getName(), String.valueOf(value));
+        return GameRulesBridge.set(this, rule, value);
     }
 
     public double getHumidity(int x, int y, int z) {
@@ -660,5 +642,10 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     @Override
     public String toString() {
         return "CraftWorld{name=" + name + "}";
+    }
+
+    @Override
+    public Object overload(java.lang.reflect.Method method, Object[] args) {
+        return Effects.overload(method, args, null);
     }
 }

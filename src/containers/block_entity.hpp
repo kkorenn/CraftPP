@@ -171,7 +171,13 @@ inline void drop_stack(double x, double y, double z, ItemStack s) {
         spawn_item(part, xo, yo, zo, tri(0, 0.11485000171139836), tri(0.2, 0.11485000171139836), tri(0, 0.11485000171139836), 0);
     }
 }
+// RandomizableContainer.unpackLootTable(null): getItem / isEmpty on a container with a pending loot table.
+inline void (*unpack_hook)(Live& b) = nullptr;
+inline void unpack(Live& b) {
+    if (!b.loot_table.empty() && unpack_hook) unpack_hook(b);
+}
 inline void drop_contents(Live& b) {
+    unpack(b);
     for (auto& s : b.items)
         if (!s.empty()) drop_stack(b.x, b.y, b.z, s), s = {};
 }
@@ -182,6 +188,17 @@ inline void block_changed(int x, int y, int z, int old_state, int new_state) {
     bool same = state_block_index(old_state) == state_block_index(new_state);
     auto& live = live_map();
     auto it = live.find(key(x, y, z));
+    if (it == live.end() && !same && factories.count(block_entity_type(old_state))) {  // not live: load it to remove it
+        ChunkPtr c = world.get_ptr(x >> 4, z >> 4);
+        std::vector<uint8_t> nbt;
+        bool have = false;
+        {
+            std::lock_guard lock(c->m);
+            for (auto& e : c->block_entities)
+                if (e.x == (x & 15) && e.z == (z & 15) && e.y == y && e.type == block_entity_type(old_state)) nbt = e.nbt, have = true;
+        }
+        if (have && create(c, x, y, z, old_state, block_entity_type(old_state), &nbt)) it = live.find(key(x, y, z));
+    }
     if (it != live.end()) {
         if (same) {
             it->second->state = new_state;
@@ -195,8 +212,14 @@ inline void block_changed(int x, int y, int z, int old_state, int new_state) {
     }
     if (same) return;
     int type = block_entity_type(new_state);
-    if (type < 0) return;
     ChunkPtr c = world.get_ptr(x >> 4, z >> 4);
+    if (type < 0) {  // the old entry goes with the block
+        std::lock_guard lock(c->m);
+        size_t n = c->block_entities.size();
+        std::erase_if(c->block_entities, [&](const BlockEntity& e) { return e.x == (x & 15) && e.z == (z & 15) && e.y == y; });
+        if (c->block_entities.size() != n) c->dirty = true;
+        return;
+    }
     if (factories.count(type)) {
         auto b = create(c, x, y, z, new_state, type, nullptr);
         flush(*b);
@@ -297,6 +320,7 @@ inline int (*container_signal_hook)(Live& b) = nullptr;
 inline int comparator_signal(int x, int y, int z) {
     auto b = get(x, y, z);
     if (!b || b->items.empty()) return 0;
+    unpack(*b);
     if (container_signal_hook) return container_signal_hook(*b);
     return signal_from_items(b->items.data(), int(b->items.size()), b->max_stack());
 }

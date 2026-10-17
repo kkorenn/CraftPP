@@ -27,8 +27,8 @@ option(CRAFTPP_LTO "Link-time optimization" OFF)
 if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
-file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp)
-add_executable(craftpp src/main.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
+file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp src/effects/*.cpp)
+add_executable(craftpp src/main.cpp src/boss/end_worldgen.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
 # Game code is a Java port: signed int overflow wraps like Java instead of being UB.
 target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
@@ -75,7 +75,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/test/terrain_test.cpp)
 endif()
 # Bukkit/Paper plugins (src/plugins, docs/plugins.md). libjvm is dlopen'd at runtime only when plugins/*.jar
 # exist, so nothing links against Java; jni.h is needed at build time (any JDK), else plugins are compiled out.
-target_sources(craftpp PRIVATE src/plugins/plugins.cpp)
+file(GLOB CRAFTPP_PLUGIN_SOURCES CONFIGURE_DEPENDS src/plugins/*.cpp)
+target_sources(craftpp PRIVATE ${CRAFTPP_PLUGIN_SOURCES})
 set(CRAFTPP_JNI_HOME "$ENV{JAVA_HOME}")
 if(NOT EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
   file(GLOB CRAFTPP_JDKS /Library/Java/JavaVirtualMachines/*/Contents/Home /usr/lib/jvm/*)
@@ -94,6 +95,10 @@ if(EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
 else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
+# Boss fights (src/boss): pure parts (End spikes, podium, gateways, Mth tables).
+add_executable(boss_test test/boss_test.cpp)
+target_link_libraries(boss_test PRIVATE craftpp_worldgen)
+target_compile_options(boss_test PRIVATE -Wall -Wextra -UNDEBUG)
 # Structures (src/worldgen/structure): placement, starts, jigsaw, legacy pieces, beardifier, /locate.
 find_package(ZLIB REQUIRED)
 target_sources(craftpp_worldgen PRIVATE src/worldgen/structure/blocks.cpp src/worldgen/structure/nbt_io.cpp
@@ -126,3 +131,7 @@ endif()
 target_link_libraries(craftpp PRIVATE craftpp_net)
 add_executable(crypto_test test/crypto_test.cpp)
 target_link_libraries(crypto_test PRIVATE craftpp_net)
+# Mob roster checks: trading / breeding / taming logic (runs from the repo root, needs data/*.json).
+add_executable(roster_test test/roster_test.cpp ${CRAFTPP_PLUGIN_SOURCES} src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
+target_include_directories(roster_test PRIVATE src)
+target_link_libraries(roster_test PRIVATE craftpp_worldgen craftpp_net ${CMAKE_DL_LIBS})

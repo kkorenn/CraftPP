@@ -35,9 +35,11 @@ inline ContainerRef container_at(int x, int y, int z) {  // getBlockContainer
     if (be::block_entity_type(state) < 0) return {};
     auto b = be::get(x, y, z);
     if (!b || b->items.empty()) return {};
+    be::unpack(*b);
     ContainerRef r{b, nullptr};
     if (is_chest_state(state))
         if (auto p = chest_partner(*b)) {  // ignoreBeingBlocked = true
+            be::unpack(*p);
             bool first = bs::R().value(state, "type") == "right";
             r = first ? ContainerRef{b, p} : ContainerRef{p, b};
         }

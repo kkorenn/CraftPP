@@ -68,6 +68,7 @@ static Template load(const std::string& id) {
       tn.finalState = str(*n, "final_state", "minecraft:air");
       tn.metadata = str(*n, "metadata");
       tn.mode = str(*n, "mode");
+      tn.lootTable = str(*n, "LootTable");
       nbtIndex.push_back((int)t.nbts.size());
       t.nbts.push_back(std::move(tn));
     }
@@ -268,7 +269,11 @@ bool placeInWorld(const Template& t, Level& level, BlockPos pos, BlockPos ref, c
     mn = {std::min(mn.x, p.x), std::min(mn.y, p.y), std::min(mn.z, p.z)};
     mx = {std::max(mx.x, p.x), std::max(mx.y, p.y), std::max(mx.z, p.z)};
     placed.push_back(p);
-    if (info.nbt != -1 && (b.flags(state) & BS_RANDOMIZABLE)) random.nextLong();  // LootTableSeed
+    if (info.nbt != -1 && (b.flags(state) & BS_RANDOMIZABLE)) {  // LootTableSeed (+ the template's LootTable)
+      int64_t seed = random.nextLong();
+      if (info.nbt >= 0 && info.nbt < (int)t.nbts.size() && !t.nbts[info.nbt].lootTable.empty())
+        level.setLootTable(p, t.nbts[info.nbt].lootTable, seed);
+    }
     if (previous >= 0) {
       if (isFluidSource(state)) {
         locked.push_back(p);

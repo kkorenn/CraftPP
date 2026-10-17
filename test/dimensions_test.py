@@ -78,14 +78,18 @@ print("dimension kept across rejoin ok")
 cmd(c, "gamemode survival")
 move(c, px, py, pz + 3)
 time.sleep(1)  # off cooldown, out of the portal
-t0 = time.time()
+def game_time():
+    cmd(c, "time query gametime")
+    until(c, lambda: c.last is not None and b"commands.time.query.gametime" in c.last.d)
+    return int(text_of(c.last))
+t0 = game_time()
 move(c, px, py, pz)
 arrive(c, "minecraft:overworld")
-dt = time.time() - t0
-assert dt > 3.5, f"survival portal delay too short: {dt:.1f}s"
+dt = game_time() - t0  # game ticks: lag catch-up makes wall time unreliable
+assert dt >= 80, f"survival portal delay too short: {dt} ticks"
 if abs(px * 8 - 11.5) <= 128 and abs(pz * 8 - 5.5) <= 128:  # the original frame is within the search radius
     assert 10 <= c.pos[0] <= 13 and abs(c.pos[2] - 5.5) < 1 and abs(c.pos[1] + 59) < 1, c.pos
-print(f"back to the original portal ok ({dt:.1f}s survival delay): {c.pos}")
+print(f"back to the original portal ok ({dt} ticks survival delay): {c.pos}")
 
 # Breaking the frame collapses the portal.
 cmd(c, "gamemode creative")
@@ -94,9 +98,10 @@ until(c, lambda: all(block(c, x, y, 5) not in PORTAL | {-1} for x in (11, 12) fo
 print("portal collapse ok")
 
 # execute in: the source position scales by the coordinate scale.
+ox, oz = c.pos[0], c.pos[2]  # the original frame, or a new one when the nether exit was out of its search radius
 cmd(c, "execute in minecraft:the_nether run tp @s ~ 70 ~")
 arrive(c, "minecraft:the_nether")
-assert abs(c.pos[0] - 11.5 / 8) < 2 and c.pos[1] == 70, c.pos
+assert abs(c.pos[0] - ox / 8) < 1 and abs(c.pos[2] - oz / 8) < 1 and c.pos[1] == 70, c.pos
 # Per-dimension ticks: lava reaches level 7 in the Nether (drop-off 1, ten ticks per step),
 # while an Overworld client watching the same chunk coordinates receives no block changes.
 observer, _ = login("DimensionWatch", host, port, view=2, decode=True)
@@ -160,7 +165,7 @@ move(c, 100.5, 49, 3.5)
 for _ in range(20000):
     pid, b = c.recv()
     if pid == PLAY_CB["game_event"] and b.d[b.i] == 4:
-        b.u8(); assert struct.unpack(">f", b.take(4))[0] == 1.0  # roll the credits
+        b.u8(); assert struct.unpack(">f", b.take(4))[0] == 0.0  # WIN_GAME: 26.3 always sends 0
         break
 c.send(PLAY_SB["client_command"], varint(0))  # credits done: PERFORM_RESPAWN
 arrive(c, "minecraft:overworld")
