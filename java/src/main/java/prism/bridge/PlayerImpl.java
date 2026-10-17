@@ -30,7 +30,7 @@ import java.util.UUID;
  * proxies. Position/health/etc. are read through to PrismMC on every call;
  * permissions live here in a real PermissibleBase so plugin attachments work.
  */
-public final class PlayerImpl implements ProxyBase.Backing, ProxyBase.HandleProvider, ServerOperator {
+public final class PlayerImpl implements ProxyBase.Backing, ProxyBase.HandleProvider, ServerOperator, ProxyBase.Overloads {
     private static final LegacyComponentSerializer LEGACY = ServerImpl.LEGACY;
 
     private final UUID uuid;
@@ -373,32 +373,6 @@ public final class PlayerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
 
     public void clearTitle() {
         resetTitle();
-    }
-
-    public void playSound(Location location, String sound, float volume, float pitch) {
-        Main.rpc.api("player.playSound", "uuid", uuid, "sound", sound,
-                "x", location.getX(), "y", location.getY(), "z", location.getZ(), "volume", volume, "pitch", pitch);
-    }
-
-    public void playSound(Location location, org.bukkit.Sound sound, float volume, float pitch) {
-        playSound(location, sound.getKey().asString(), volume, pitch);
-    }
-
-    public void playSound(Location location, org.bukkit.Sound sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
-    public void playSound(Location location, String sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
-    public void playSound(net.kyori.adventure.sound.Sound sound) {
-        Location here = getLocation();
-        playSound(here, sound.name().asString(), sound.volume(), sound.pitch());
-    }
-
-    public void playSound(net.kyori.adventure.sound.Sound sound, double x, double y, double z) {
-        playSound(new Location(getWorld(), x, y, z), sound.name().asString(), sound.volume(), sound.pitch());
     }
 
     public void kick(Component message) {
@@ -1112,14 +1086,31 @@ public final class PlayerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     }
 
     public boolean isBanned() {
-        return false;
+        return UserLists.banList(false).isBanned(uuid.toString());
     }
 
     public boolean isWhitelisted() {
-        return true;
+        return UserLists.contains("whitelist", uuid, name);
     }
 
     public void setWhitelisted(boolean value) {
+        if (value) UserLists.add("whitelist", uuid, name);
+        else UserLists.remove("whitelist", uuid, name);
+    }
+
+    /** OfflinePlayer.ban / Player.ban / banIp overloads: (reason, Date|Instant|Duration, source, [kick]). */
+    private Object ban(java.lang.reflect.Method method, Object[] args) {
+        boolean ipBan = method.getName().equals("banIp");
+        Object when = args.length > 1 ? args[1] : null;
+        java.util.Date expires = when == null ? null : when instanceof java.util.Date d ? d
+                : when instanceof java.time.Instant i ? java.util.Date.from(i) : java.util.Date.from(java.time.Instant.now().plus((java.time.Duration) when));
+        String reason = (String) args[0], source = args.length > 2 ? (String) args[2] : null;
+        boolean kick = args.length > 3 ? (Boolean) args[3] : true;
+        Object target = ipBan ? (Object) getAddress().getAddress() : org.bukkit.Bukkit.createProfile(uuid, name);
+        Object entry = ipBan ? UserLists.banList(true).addBan(((java.net.InetAddress) target).getHostAddress(), reason, expires, source)
+                : ((org.bukkit.ban.ProfileBanList) UserLists.banList(false)).addBan((com.destroystokyo.paper.profile.PlayerProfile) target, reason, expires, source);
+        if (kick && proxy instanceof Player) kickPlayer(reason == null ? "You are banned from this server." : reason);
+        return entry;
     }
 
     @Override
@@ -1136,5 +1127,11 @@ public final class PlayerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     @Override
     public String toString() {
         return "CraftPlayer{name=" + name + "}";
+    }
+
+    @Override
+    public Object overload(java.lang.reflect.Method method, Object[] args) {
+        if (method.getName().equals("ban") || method.getName().equals("banIp")) return ban(method, args);
+        return Effects.overload(method, args, uuid);
     }
 }

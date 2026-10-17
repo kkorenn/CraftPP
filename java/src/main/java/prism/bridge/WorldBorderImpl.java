@@ -28,7 +28,7 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void reset() {
-        set("size", 59999968.0, "centerX", 0.0, "centerZ", 0.0, "warningDistance", 5, "warningTime", 15, "damageAmount", 0.2, "damageBuffer", 5.0);
+        set("size", 59999968.0, "centerX", 0.0, "centerZ", 0.0, "warningDistance", 5, "warningTimeTicks", 300, "damageAmount", 0.2, "damageBuffer", 5.0);
     }
 
     @Override
@@ -38,22 +38,31 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setSize(double size) {
-        set("size", size);
+        setSize(size, 0);
     }
 
     @Override
     public void setSize(double size, long seconds) {
-        set("size", size, "seconds", seconds);
+        if (seconds < 0) throw new IllegalArgumentException("seconds must be non-negative");
+        setSizeTicks(size, Math.multiplyExact(seconds, 20L));
     }
 
     @Override
     public void setSize(double size, java.util.concurrent.TimeUnit unit, long time) {
-        set("size", size, "seconds", unit.toSeconds(time));
+        java.util.Objects.requireNonNull(unit, "unit");
+        if (time < 0) throw new IllegalArgumentException("time must be non-negative");
+        changeSize(size, unit.toMillis(time));
     }
 
     @Override
     public void changeSize(double size, long milliseconds) {
-        set("size", size, "seconds", milliseconds / 1000);
+        if (milliseconds < 0) throw new IllegalArgumentException("milliseconds must be non-negative");
+        setSizeTicks(size, milliseconds / 50 + (milliseconds % 50 == 0 ? 0 : 1));
+    }
+
+    private void setSizeTicks(double size, long ticks) {
+        if (!Double.isFinite(size) || size < 1 || size > getMaxSize()) throw new IllegalArgumentException("Invalid border size");
+        set("size", size, "ticks", Long.toString(ticks));
     }
 
     @Override
@@ -64,6 +73,8 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setCenter(double x, double z) {
+        if (!Double.isFinite(x) || !Double.isFinite(z) || Math.abs(x) > getMaxCenterCoordinate() || Math.abs(z) > getMaxCenterCoordinate())
+            throw new IllegalArgumentException("Invalid border center");
         set("centerX", x, "centerZ", z);
     }
 
@@ -79,6 +90,7 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setDamageBuffer(double blocks) {
+        if (!Double.isFinite(blocks) || blocks < 0) throw new IllegalArgumentException("Invalid damage buffer");
         set("damageBuffer", blocks);
     }
 
@@ -89,6 +101,7 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setDamageAmount(double damage) {
+        if (!Double.isFinite(damage) || damage < 0) throw new IllegalArgumentException("Invalid damage amount");
         set("damageAmount", damage);
     }
 
@@ -99,17 +112,19 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setWarningTime(int seconds) {
-        set("warningTime", seconds);
+        if (seconds < 0) throw new IllegalArgumentException("Invalid warning time");
+        setWarningTimeTicks(Math.multiplyExact(seconds, 20));
     }
 
     @Override
     public int getWarningTimeTicks() {
-        return state().get("warningTime").getAsInt() * 20;
+        return state().get("warningTimeTicks").getAsInt();
     }
 
     @Override
     public void setWarningTimeTicks(int ticks) {
-        set("warningTime", ticks / 20);
+        if (ticks < 0) throw new IllegalArgumentException("Invalid warning time");
+        set("warningTimeTicks", ticks);
     }
 
     @Override
@@ -119,6 +134,7 @@ final class WorldBorderImpl implements WorldBorder {
 
     @Override
     public void setWarningDistance(int distance) {
+        if (distance < 0) throw new IllegalArgumentException("Invalid warning distance");
         set("warningDistance", distance);
     }
 
@@ -128,7 +144,11 @@ final class WorldBorderImpl implements WorldBorder {
         double half = state.get("size").getAsDouble() / 2;
         double centerX = state.get("centerX").getAsDouble();
         double centerZ = state.get("centerZ").getAsDouble();
-        return Math.abs(location.getX() - centerX) <= half && Math.abs(location.getZ() - centerZ) <= half;
+        return world.equals(location.getWorld())
+                && location.getX() >= Math.max(-getMaxCenterCoordinate(), centerX - half)
+                && location.getX() < Math.min(getMaxCenterCoordinate(), centerX + half)
+                && location.getZ() >= Math.max(-getMaxCenterCoordinate(), centerZ - half)
+                && location.getZ() < Math.min(getMaxCenterCoordinate(), centerZ + half);
     }
 
     @Override

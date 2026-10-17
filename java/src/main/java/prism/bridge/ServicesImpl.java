@@ -102,7 +102,7 @@ public final class ServicesImpl {
 
         @Override
         public <MODERN, LEGACY> org.bukkit.GameRule<LEGACY> legacyGameRuleBridge(org.bukkit.GameRule<MODERN> modern, java.util.function.Function<LEGACY, MODERN> toModern, java.util.function.Function<MODERN, LEGACY> toLegacy, Class<LEGACY> legacyType) {
-            throw unsupported("legacyGameRuleBridge");
+            return GameRulesBridge.legacy(modern, toModern, toLegacy, legacyType);
         }
 
         @Override

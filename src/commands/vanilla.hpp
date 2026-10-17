@@ -895,8 +895,8 @@ inline void register_vanilla_commands() {
         if (c.is("warning")) {
             if (c.is("time")) {
                 int t = int(c.num("time"));
-                if (border.warn_time == t / 20) throw err("commands.worldborder.warning.time.failed");
-                border.warn_time = int(t / 20);
+                if (border.warn_time == t) throw err("commands.worldborder.warning.time.failed");
+                border.warn_time = t;
                 broadcast(pkt(play_cb::set_border_warning_delay).varint(border.warn_time));
                 c.success(tr("commands.worldborder.warning.time.success", {f2(t / 20.0)}), true);
                 return t;
