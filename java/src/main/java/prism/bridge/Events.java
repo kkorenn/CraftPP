@@ -294,16 +294,14 @@ final class Events {
                 player.setHeldSlotCached(event.isCancelled() ? p.get("previous").getAsInt() : p.get("slot").getAsInt());
                 result.addProperty("cancelled", event.isCancelled());
             }
-            case "drop" -> {
+            case "drop" -> {  // CraftPP already spawned the item; cancelling removes it and restores the slot
                 PlayerImpl player = Main.server.ensurePlayer(p);
-                ItemStack stack = PrismItemStack.fromJson(p.get("item"));
-                org.bukkit.entity.Item item = Main.server.overworld().dropItem(player.getLocation(), stack);
-                org.bukkit.event.player.PlayerDropItemEvent event = new org.bukkit.event.player.PlayerDropItemEvent(player.proxy(), item);
-                call(event);
-                if (event.isCancelled()) {
-                    item.remove();
+                EntityImpl entity = EntityImpl.byId(p.get("entityId").getAsInt());
+                if (entity != null && entity.proxy() instanceof org.bukkit.entity.Item item) {
+                    org.bukkit.event.player.PlayerDropItemEvent event = new org.bukkit.event.player.PlayerDropItemEvent(player.proxy(), item);
+                    call(event);
+                    result.addProperty("cancelled", event.isCancelled());
                 }
-                result.addProperty("cancelled", event.isCancelled());
             }
             case "chunkload" -> {
                 org.bukkit.Chunk chunk = Main.server.overworld().getChunkAt(p.get("x").getAsInt(), p.get("z").getAsInt());

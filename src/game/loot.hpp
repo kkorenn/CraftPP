@@ -6,21 +6,32 @@
 // stacks carry no components). Enchantment levels are always 0 until enchantments exist.
 #include "entity.hpp"
 
+// LootContext.getRandom: a seeded RandomSource while one is set (container loot: RandomSource.create(seed)),
+// else the game random. Tick thread only.
+inline RandomSource* loot_rng = nullptr;
+inline float loot_float() { return loot_rng ? loot_rng->nextFloat() : rand_float(); }
+inline int loot_int(int bound) { return bound <= 0 ? 0 : loot_rng ? loot_rng->nextInt(bound) : rand_int(bound); }
+struct LootRngScope {
+    RandomSource* prev;
+    explicit LootRngScope(RandomSource* r) : prev(loot_rng) { loot_rng = r; }
+    ~LootRngScope() { loot_rng = prev; }
+};
+
 struct LootNumber {  // NumberProvider: constant / uniform / binomial
     enum T : uint8_t { CONST, UNIFORM, BINOMIAL } t = CONST;
     float a = 1, b = 0;
     float get_float() const {
-        if (t == UNIFORM) return a + rand_float() * (b - a);
+        if (t == UNIFORM) return a >= b ? a : loot_float() * (b - a) + a;  // Mth.nextFloat
         return t == CONST ? a : float(get_int());
     }
     int get_int() const {
         if (t == CONST) return int(std::lround(a));
-        if (t == UNIFORM) {
+        if (t == UNIFORM) {  // Mth.nextInt
             int lo = int(std::lround(a)), hi = int(std::lround(b));
-            return lo >= hi ? lo : lo + rand_int(hi - lo + 1);
+            return lo >= hi ? lo : lo + loot_int(hi - lo + 1);
         }
         int n = 0;
-        for (int i = 0; i < int(a); i++) n += rand_float() < b;
+        for (int i = 0; i < int(a); i++) n += loot_float() < b;
         return n;
     }
 };
@@ -35,6 +46,7 @@ struct LootContext {
     Entity* direct = nullptr;           // DIRECT_ATTACKING_ENTITY
     Entity* last_player = nullptr;      // LAST_DAMAGE_PLAYER (only when killed by a player)
     const DamageSource* source = nullptr;
+    bool origin = false;  // ORIGIN is (x, y, z) + 0.5 (container loot): location_check uses it
 };
 // entity_properties predicate check, pre-compiled by tools/gen_mob_data.py
 struct EntityCheck {
@@ -54,7 +66,7 @@ struct StateMatch {  // match_block / location_check "state": property -> exact 
 
 struct LootCond {
     enum T : uint8_t { TRUE_, FALSE_, SURVIVES_EXPLOSION, MATCH_TOOL, TABLE_BONUS, RANDOM_CHANCE, MATCH_BLOCK,
-                       LOCATION, INVERTED, ANY_OF, ALL_OF, KILLED_BY_PLAYER, ENTITY_PROPS, DAMAGE_SOURCE } t = TRUE_;
+                       LOCATION, INVERTED, ANY_OF, ALL_OF, KILLED_BY_PLAYER, ENTITY_PROPS, DAMAGE_SOURCE, BIOME } t = TRUE_;
     uint8_t which = 0;  // ENTITY_PROPS: 0 this, 1 attacker, 2 direct_attacker, 3 attacking_player
     std::vector<EntityCheck> checks, checks2;  // ENTITY_PROPS; DAMAGE_SOURCE: source_entity, direct_entity
     std::vector<std::pair<std::vector<uint16_t>, bool>> dtags;  // DAMAGE_SOURCE: damage type tags
@@ -69,7 +81,8 @@ struct LootCond {
 };
 
 struct LootFunc {
-    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT, SMELT, COPY_BE } t = NOP;
+    enum T : uint8_t { NOP, SET_COUNT, ORE_DROPS, UNIFORM_BONUS, BINOMIAL_BONUS, EXPLOSION_DECAY, LIMIT, SMELT, COPY_BE, EXT } t = NOP;
+    int ext = -1;  // EXT: index in the extension module's table (loot_ext_compile / loot_ext_apply)
     std::vector<std::string> include;  // COPY_BE: component names
     LootNumber n;
     bool add = false;
@@ -99,6 +112,11 @@ struct LootTable {
     std::vector<LootFunc> funcs;
 };
 inline std::vector<LootTable> loot_tables;
+// Extension functions (src/containers/chest_loot.hpp): compile returns true and sets f.t = EXT, f.ext.
+inline bool (*loot_ext_compile)(const std::string& type, const Json& j, LootFunc& f) = nullptr;
+inline void (*loot_ext_apply)(const LootFunc& f, ItemStack& s, const struct LootContext& ctx) = nullptr;
+inline int (*loot_biome_at)(int x, int y, int z) = nullptr;
+inline int (*loot_biome_id)(const std::string& name) = nullptr;
 
 // ---------- compile ----------
 namespace loot_detail {
@@ -171,6 +189,26 @@ inline LootCond cond(const Json& j) {
         c.chance = number(j["chance"]);
     } else if (t == "match_block" || t == "location_check") {
         c.t = t == "match_block" ? LootCond::MATCH_BLOCK : LootCond::LOCATION;
+        if (t == "location_check" && j.find("predicate")) {  // raw datapack form: biomes only
+            const Json& pr = j["predicate"];
+            const Json* bi = pr.find("biomes");
+            if (!bi || pr.obj.size() != 1 || !loot_biome_id) {
+                warn("location_check predicate");
+                c.t = LootCond::FALSE_;
+                return c;
+            }
+            c.t = LootCond::BIOME;
+            std::vector<std::string> names;
+            if (bi->isArray()) for (auto& v : bi->arr) names.push_back(v.asString());
+            else names.push_back(bi->asString());
+            for (auto& n : names) {
+                int id = loot_biome_id(n);
+                if (id < 0) warn("biome " + n);  // tags are not resolved here
+                else c.ids.push_back(uint16_t(id));
+            }
+            std::sort(c.ids.begin(), c.ids.end());
+            return c;
+        }
         if (t == "location_check") {
             if (j["unsupported"].asBool()) c.t = LootCond::FALSE_;
             for (int i = 0; i < 3; i++) c.off[i] = j["off"][size_t(i)].asInt();
@@ -247,6 +285,7 @@ inline LootFunc func(const Json& j) {
         for (auto& c : j["include"].arr) f.include.push_back(strip(c.asString()));
     } else if (t == "furnace_smelt") {
         f.t = LootFunc::SMELT;
+    } else if (loot_ext_compile && loot_ext_compile(t, j, f)) {
     } else if (t != "copy_components" && t != "copy_state" && t != "enchanted_count_increase" && t != "set_potion" &&
                t != "set_damage" && t != "enchant_with_levels" && t != "enchant_randomly" && t != "set_ominous_bottle_amplifier") {
         warn("function " + t);  // the listed ones need enchantments / components: no-ops until those exist
@@ -380,11 +419,15 @@ inline bool test(const LootCond& c, const LootContext& ctx) {
         case LootCond::TRUE_: return true;
         case LootCond::FALSE_: return false;
         case LootCond::SURVIVES_EXPLOSION:
-            return ctx.explosion_radius <= 0 || rand_float() <= 1.0f / ctx.explosion_radius;
+            return ctx.explosion_radius <= 0 || loot_float() <= 1.0f / ctx.explosion_radius;
+        case LootCond::BIOME: return loot_biome_at && in_sorted(c.ids, loot_biome_at(ctx.x, ctx.y, ctx.z));
         case LootCond::MATCH_TOOL:
             return !ctx.tool.empty() && (c.any_id || in_sorted(c.ids, ctx.tool.item));
-        case LootCond::TABLE_BONUS: return !c.chances.empty() && rand_float() < c.chances[0];  // enchantment level 0
-        case LootCond::RANDOM_CHANCE: return rand_float() < c.chance.get_float();
+        case LootCond::TABLE_BONUS: return !c.chances.empty() && loot_float() < c.chances[0];  // enchantment level 0
+        case LootCond::RANDOM_CHANCE: {
+            float p = c.chance.get_float();
+            return loot_float() < p;
+        }
         case LootCond::MATCH_BLOCK:
             return (c.any_id || in_sorted(c.ids, block_index(ctx.state))) && state_matches(ctx.state, c.state);
         case LootCond::LOCATION: {
@@ -416,23 +459,27 @@ inline void apply(const std::vector<LootFunc>& fs, ItemStack& s, const LootConte
             case LootFunc::NOP: break;
             case LootFunc::SET_COUNT: s.count = (f.add ? s.count : 0) + f.n.get_int(); break;
             case LootFunc::ORE_DROPS:
-                if (level > 0) s.count *= std::max(rand_int(level + 2) - 1, 0) + 1;
+                if (level > 0) s.count *= std::max(loot_int(level + 2) - 1, 0) + 1;
                 break;
-            case LootFunc::UNIFORM_BONUS: s.count += rand_int(int(f.p1) * level + 1); break;
+            case LootFunc::UNIFORM_BONUS: s.count += loot_int(int(f.p1) * level + 1); break;
             case LootFunc::BINOMIAL_BONUS:
-                for (int i = 0; i < level + int(f.p1); i++) s.count += rand_float() < f.p2;
+                for (int i = 0; i < level + int(f.p1); i++) s.count += loot_float() < f.p2;
                 break;
             case LootFunc::EXPLOSION_DECAY:
                 if (ctx.explosion_radius > 0) {
                     float p = 1.0f / ctx.explosion_radius;
                     int n = 0;
-                    for (int i = 0; i < s.count; i++) n += rand_float() <= p;
+                    for (int i = 0; i < s.count; i++) n += loot_float() <= p;
                     s.count = n;
                 }
                 break;
             case LootFunc::LIMIT: s.count = std::clamp(s.count, f.lo, f.hi); break;
             case LootFunc::COPY_BE:
                 if (loot_copy_block_entity) loot_copy_block_entity(ctx.x, ctx.y, ctx.z, f.include, s);
+                break;
+            case LootFunc::EXT:
+                if (loot_ext_apply) loot_ext_apply(f, s, ctx);
+                break;
             case LootFunc::SMELT:
                 if (auto it = smelt_result.find(s.item); it != smelt_result.end()) s.item = it->second;
                 break;
@@ -464,18 +511,20 @@ inline void roll_loot(const LootTable& t, const LootContext& ctx, std::vector<It
     std::vector<const LootEntry*> cand;
     for (auto& p : t.pools) {
         if (!all(p.conds, ctx)) continue;
-        int rolls = p.rolls.get_int() + int(std::floor(p.bonus.get_float() * 0));  // luck 0
+        int rolls = p.rolls.get_int();
+        rolls += int(std::floor(p.bonus.get_float() * 0));  // luck 0
         for (int r = 0; r < rolls; r++) {
             cand.clear();
             for (auto& e : p.entries) expand(e, ctx, cand);
+            std::erase_if(cand, [](const LootEntry* c) { return c->weight <= 0; });  // getWeight(luck) > 0
             const LootEntry* pick = nullptr;
             if (cand.size() == 1) pick = cand[0];
             else if (!cand.empty()) {
                 int total = 0;
-                for (auto* c : cand) total += std::max(c->weight, 0);
-                int v = rand_int(total);
+                for (auto* c : cand) total += c->weight;
+                int v = loot_int(total);
                 for (auto* c : cand)
-                    if ((v -= std::max(c->weight, 0)) < 0) { pick = c; break; }
+                    if ((v -= c->weight) < 0) { pick = c; break; }
             }
             if (pick && pick->t == LootEntry::TABLE) {  // LootTableReference: roll the referenced table
                 auto it = entity_loot_index.find(pick->table);

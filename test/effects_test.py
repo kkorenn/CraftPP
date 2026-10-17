@@ -61,17 +61,25 @@ assert speed_modifier(c) is None
 c.eid = getattr(c, "eid", 0)
 print("effect give/clear + speed attribute ok")
 
+def wait_item(c, item_id):
+    def pred(b):
+        b.varint(); b.varint(); b.take(2)
+        count = b.varint()
+        return count > 0 and b.varint() == item_id
+    wait(c, PLAY_CB["container_set_slot"], pred)
+
 # 2. Golden apple: regeneration II (100 ticks) + absorption (2400); milk clears them.
 cmd(c, "gamemode survival")
+c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
 cmd(c, "clear @s")
 cmd(c, "give @s golden_apple")
-wait(c, PLAY_CB["container_set_slot"])
+wait_item(c, rid("item", "golden_apple"))
 c.send(PLAY_SB["use_item"], varint(0) + varint(1) + struct.pack(">ff", 0, 0))
 assert effect_added(c, REGEN)[:2] == (1, 100)
 assert effect_added(c, ABSORB)[:2] == (0, 2400)
 cmd(c, "clear @s")
 cmd(c, "give @s milk_bucket")
-wait(c, PLAY_CB["container_set_slot"])
+wait_item(c, rid("item", "milk_bucket"))
 c.send(PLAY_SB["use_item"], varint(0) + varint(2) + struct.pack(">ff", 0, 0))
 removed(c, REGEN)
 print("golden apple + milk ok")

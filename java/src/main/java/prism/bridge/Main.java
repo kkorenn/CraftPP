@@ -256,6 +256,10 @@ public final class Main {
                 }
                 return new JsonObject();
             }
+            case "entitygone" -> {  // entities CraftPP freed last tick: drop their cached proxies
+                for (com.google.gson.JsonElement id : payload.getAsJsonArray("ids")) EntityImpl.forget(id.getAsInt());
+                return new JsonObject();
+            }
             case "shutdown" -> {
                 running = false;
                 return new JsonObject();

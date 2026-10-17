@@ -27,6 +27,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class CraftTestPlugin extends JavaPlugin implements Listener {
     private final AtomicInteger ticks = new AtomicInteger();
     private boolean cancelRuleChange, rewriteRuleChange;
+    private org.bukkit.inventory.Inventory gui;
+    private boolean eventsArmed;
+    private org.bukkit.entity.Cow eventCow;
 
     private static void rejects(Runnable action) {
         try { action.run(); } catch (IllegalArgumentException expected) { return; }
@@ -288,6 +291,26 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
                     cow.remove();
                     sender.sendMessage("entityapi ok");
                 }
+                if (sender instanceof Player p && args.length > 0 && args[0].equals("events")) {
+                    eventsArmed = true;
+                    p.getInventory().setHeldItemSlot(0);
+                    p.getInventory().setItem(0, new org.bukkit.inventory.ItemStack(Material.DIAMOND, 5));
+                    eventCow = p.getWorld().spawn(p.getLocation().add(1.5, 0, 0), org.bukkit.entity.Cow.class);
+                    eventCow.setAI(false);
+                    sender.sendMessage("events ready " + eventCow.getEntityId());
+                }
+                if (args.length > 0 && args[0].equals("killcow")) eventCow.setHealth(0);
+                if (sender instanceof Player p && args.length > 0 && args[0].equals("gui")) {
+                    gui = Bukkit.createInventory(null, 9, "§5Menu");
+                    org.bukkit.inventory.ItemStack icon = new org.bukkit.inventory.ItemStack(Material.EMERALD, 3);
+                    org.bukkit.inventory.meta.ItemMeta meta = icon.getItemMeta();
+                    meta.setDisplayName("§aBuy");
+                    icon.setItemMeta(meta);
+                    gui.setItem(0, icon);
+                    p.openInventory(gui);
+                    check(p.getOpenInventory().getTopInventory() == gui, "open inventory view");
+                    sender.sendMessage("gui open");
+                }
                 if (args.length > 0 && args[0].equals("worldverify")) {
                     org.bukkit.World world = Bukkit.getWorlds().getFirst();
                     Location spawn = world.getSpawnLocation();
@@ -370,6 +393,66 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
         return command.getName().equals("crafttest") && args.length == 1
                 ? List.of("creative", "tp", "lookup", "broadcast", "kick").stream().filter(s -> s.startsWith(args[0])).toList()
                 : List.of();
+    }
+
+    @EventHandler
+    public void onInteract(org.bukkit.event.player.PlayerInteractEvent event) {
+        if (!eventsArmed) return;
+        org.bukkit.block.Block b = event.getClickedBlock();
+        event.getPlayer().sendMessage("interact " + event.getAction() + (b == null ? "" : " " + b.getX() + " " + b.getY() + " " + b.getZ()
+                + " " + event.getBlockFace()) + " item=" + (event.getItem() == null ? "none" : event.getItem().getType()));
+        event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onHeld(org.bukkit.event.player.PlayerItemHeldEvent event) {
+        if (!eventsArmed) return;
+        event.getPlayer().sendMessage("held " + event.getPreviousSlot() + " -> " + event.getNewSlot());
+        event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onDrop(org.bukkit.event.player.PlayerDropItemEvent event) {
+        if (!eventsArmed) return;
+        org.bukkit.inventory.ItemStack stack = event.getItemDrop().getItemStack();
+        event.getPlayer().sendMessage("drop " + stack.getType() + " " + stack.getAmount());
+        event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onInteractEntity(org.bukkit.event.player.PlayerInteractEntityEvent event) {
+        if (eventsArmed) event.getPlayer().sendMessage("interact entity " + event.getRightClicked().getType() + " " + event.getHand());
+    }
+
+    @EventHandler
+    public void onDamage(org.bukkit.event.entity.EntityDamageByEntityEvent event) {
+        if (!eventsArmed || !(event.getDamager() instanceof Player p)) return;
+        p.sendMessage("attack " + event.getEntity().getType() + " damage=" + event.getDamage());
+        event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onDeath(org.bukkit.event.entity.EntityDeathEvent event) {
+        if (!eventsArmed || !event.getEntity().equals(eventCow)) return;
+        Bukkit.broadcastMessage("death " + event.getEntityType() + " valid=" + eventCow.isValid());
+        eventsArmed = false;
+    }
+
+    @EventHandler
+    public void onClick(org.bukkit.event.inventory.InventoryClickEvent event) {
+        if (gui == null || event.getInventory() != gui) return;
+        event.setCancelled(true);
+        org.bukkit.inventory.ItemStack current = event.getCurrentItem();
+        event.getWhoClicked().sendMessage("gui click " + event.getRawSlot() + " " + (current == null ? "none" : current.getType() + " "
+                + current.getAmount() + " " + current.getItemMeta().getDisplayName()));
+    }
+
+    @EventHandler
+    public void onClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
+        if (gui != null && event.getInventory() == gui) {
+            event.getPlayer().sendMessage("gui closed, emeralds=" + gui.getItem(0).getAmount());
+            gui = null;
+        }
     }
 
     @EventHandler

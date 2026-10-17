@@ -386,7 +386,7 @@ std::string take_exception(JNIEnv* e) {
 }
 
 // C++ -> bridge request (Main.request). Throws std::runtime_error with the Java exception text.
-Json request(const std::string& type, const std::string& json = "") {
+Json request(const std::string& type, const std::string& json) {
     if (!vm) throw std::runtime_error("plugins are not running");
     JNIEnv* e = env();
     e->PushLocalFrame(16);
@@ -424,7 +424,7 @@ std::vector<std::string> registry_names(const std::string& registry) {
     return out;
 }
 #else
-Json request(const std::string&, const std::string& = "") { throw std::runtime_error("built without JNI"); }
+Json request(const std::string&, const std::string&) { throw std::runtime_error("built without JNI"); }
 #endif
 
 // Event round trip; null Json when the bridge failed (logged).
@@ -661,7 +661,6 @@ std::string api(const std::string& m, const Json& a) {
         chat(p, text_arg(a, "text"));
         return "null";
     }
-    if (m == "player.closeInventory") return "null";  // CraftPP never opens containers
     if (m == "player.inventory") {  // protocol (menu) slot order 0-45
         Player& p = require_player(a);
         std::string s = "{\"heldSlot\":" + std::to_string(p.selected) + ",\"window\":null,\"items\":[";
@@ -866,7 +865,7 @@ std::string api(const std::string& m, const Json& a) {
         if (id == "limited_crafting") broadcast(game_event(12, value ? 1.f : 0.f));
         return "true";
     }
-    for (auto* more : {api_display, api_entity})
+    for (auto* more : {api_display, api_entity, api_inventory})
         if (auto r = more(m, a)) return *r;
     throw std::runtime_error("CraftPP does not implement plugin API call " + m + " yet");
 }
@@ -1238,6 +1237,7 @@ PlayerPtr ptr_of(Player& p) {
 }
 
 void install_handlers() {
+    install_inventory_handlers();
     for (int id : {play_sb::chat_command, play_sb::chat_command_signed}) {
         auto orig = original(id);
         on(id, [orig](Player& p, Reader& in, int id) {
@@ -1268,7 +1268,7 @@ void install_handlers() {
         read_block_pos(peek, x, y, z);
         peek.u8();
         int seq = peek.varint();
-        bool breaks = (action == 0 && p.gamemode == 1) || (action == 2 && p.gamemode != 1 && p.gamemode != 3);
+        bool breaks = (action == 0 && p.gamemode == 1) || (action == 3 && p.gamemode != 1 && p.gamemode != 3);  // START / STOP_DESTROY_BLOCK
         if (breaks && has("blockbreak")) {
             int state = world.get_block(x, y, z);
             Json r = event("blockbreak", "{" + player_ref(p) + ",\"x\":" + std::to_string(x) + ",\"y\":" +
@@ -1365,6 +1365,7 @@ void install_handlers() {
             for (auto& v : c->arr) w.str(v.isString() ? v.asString() : "").boolean(false);
         p.send(w);
     });
+    install_event_handlers();
 }
 
 }  // namespace detail
@@ -1447,6 +1448,7 @@ void tick() {
 #if CRAFTPP_JNI
     if (!running) return;
     tick_thread = std::this_thread::get_id();
+    flush_gone_entities();
     JNIEnv* e = env();
     e->CallStaticVoidMethod(main_cls, m_tick);
     if (auto err = take_exception(e); !err.empty()) log_line("ERROR", "", "plugin tick failed: " + err);

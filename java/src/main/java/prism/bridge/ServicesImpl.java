@@ -117,12 +117,12 @@ public final class ServicesImpl {
 
         @Override
         public org.bukkit.damage.DamageSource.Builder createDamageSourceBuilder(org.bukkit.damage.DamageType type) {
-            throw unsupported("createDamageSourceBuilder");
+            return new Damage.Builder(type);
         }
 
         @Override
         public org.bukkit.damage.DamageEffect getDamageEffect(String key) {
-            throw unsupported("getDamageEffect");
+            return Damage.effect(key.replace("minecraft:", ""));
         }
 
         @Override

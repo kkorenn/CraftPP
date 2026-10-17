@@ -15,17 +15,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STUBS = {
-    "entity.list": "Returns no non-player entities",
-    "player.closeInventory": "No-op; plugin custom inventories unsupported",
-    "server.hasWhitelist": "Constant false",
-    "server.whitelist": "Constant empty list",
     "server.registries": "Null; Java falls back to bundled registry report",
 }
 PARTIAL = {
     "world.setGameRule": "Shared rule state across dimensions; command changes do not emit Bukkit events",
     "entity.setPluginData": "Session only; entity IDs not included in storage key",
-    "player.inventory": "Item metadata omitted",
-    "player.setSlot": "Item metadata omitted",
     "player.setPluginData": "Session only",
     "player.giveExp": "Changes total XP without recomputing level/progress",
     "player.teleport": "Dimension argument ignored",
@@ -49,12 +43,20 @@ def audit(revision=None):
         return path.read_text()
     routes = set()
     for path in (ROOT / "java/src/main/java/prism/bridge").rglob("*.java"):
-        routes.update(re.findall(r'Main\.rpc\.api\(\s*"([\w.]+)"', read(path)))
+        text = read(path)
+        routes.update(re.findall(r'Main\.rpc\.api\(\s*"([\w.]+)"', text))
+        # helpers that build {m, a} payloads: send("scoreboard.x", ...), call("bossbar.x", ...), payload "m"
+        routes.update(re.findall(r'\b(?:send|call)\(\s*"((?:scoreboard|bossbar)\.[\w.]+)"', text))
+        routes.update(re.findall(r'addProperty\("m",\s*"([\w.]+)"\)', text))
     source = read(ROOT / "src/plugins/plugins.cpp")
     source = source.split("std::string api(", 1)[1].split("// ---------- natives", 1)[0]
+    for extra in sorted((ROOT / "src/plugins").glob("api_*.cpp")):  # route groups api() falls through to
+        source += "\n" + read(extra)
     # Ignore C++ comments, so a commented-out branch never counts as implemented.
     source = re.sub(r'/\*.*?\*/|//[^\n]*', '', source, flags=re.S)
     handlers = set(re.findall(r'\bm\s*==\s*"([\w.]+)"', source))
+    # prefix-dispatched groups: op/method switch inside one handler (scoreboard.*, bossbar.*)
+    handlers |= {r for r in routes if r.split(".")[0] in ("scoreboard", "bossbar") and f'"{r}"' in source}
     stale = (STUBS.keys() | PARTIAL.keys()) - routes
     if stale:
         raise SystemExit("Coverage classifications need updating: " + ", ".join(sorted(stale)))

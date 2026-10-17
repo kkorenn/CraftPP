@@ -3,6 +3,7 @@
 // registers block entity types and installs the hooks in world.hpp / survival.hpp / loot.hpp / server.hpp.
 #include "hopper.hpp"
 #include "item_nbt.hpp"
+#include "chest_loot.hpp"
 
 namespace cont {
 
@@ -54,6 +55,7 @@ inline void containers_init() {
     cont::register_chests();
     cont::register_furnaces();
     cont::register_hoppers();
+    cont::register_chest_loot();
     cont::load_enchant_data(cont::data_json);
     cont::load_brewing_data(cont::data_json);
     {
@@ -79,6 +81,12 @@ inline void containers_init() {
         if (auto* m = dynamic_cast<cont::AnvilMenu*>(p.g.menu.get())) m->rename(p, name);
     });
     block_changed_hook = cont::block_changed;
+    set_block_nbt_hook = [](int x, int y, int z, const Nbt& nbt) {
+        if (auto b = be::get(x, y, z)) {
+            be::load_nbt(*b, nbt);
+            be::flush(*b);
+        }
+    };
     chunk_loaded_hook = be::chunk_loaded;
     block_entity_update_tag = be::update_tag;
     use_block_hook = cont::use_block;
