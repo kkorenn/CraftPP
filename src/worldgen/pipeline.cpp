@@ -363,6 +363,7 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     out.block_entities = p->chunk->block_entities;
     out.level.post = p->chunk->level.post;  // ProtoChunk.postProcessing -> LevelChunk (src/level/ runs it)
     out.structure_mobs = std::move(p->chunk->structure_mobs);
+    for (auto& s : out.sections) s.blocks.compact(), s.biomes.compact();  // before on_take shows `out` to lighting
     if (on_take) on_take(*p, out);
     p->taken = true;
   }

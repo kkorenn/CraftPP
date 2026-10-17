@@ -173,6 +173,7 @@ struct Chunk {
     bool on_disk = false;
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::atomic<bool> light_ready{false};  // its 3x3 is lit (light::ensure_lit needs no light lock)
     std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     explicit Chunk(int min_y = MIN_Y, int height = HEIGHT) : min_y(min_y), sections(size_t(height / 16)) {}
@@ -577,7 +578,7 @@ struct World {
         return c->get(x & 15, y, z & 15);
     }
 
-    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded.
+    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded and its 3x3 is lit.
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
@@ -586,6 +587,20 @@ struct World {
                 if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
                 produce(cx, cz, *job, true);
             });
+        else if (ChunkPtr c = get_if_loaded(cx, cz); c && !fullbright && !c->light_ready) {
+            // Loaded by a synchronous get_ptr (only the chunk itself lit): light its 3x3 on the pool, not on
+            // the tick thread that sends it.
+            auto lit = std::make_shared<std::promise<ChunkPtr>>();
+            f = lit->get_future().share();
+            pool.submit([this, c, lit] {
+                try {
+                    light::ensure_lit(*this, *c);
+                    lit->set_value(c);
+                } catch (...) {
+                    lit->set_exception(std::current_exception());
+                }
+            });
+        }
         return f;
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
@@ -806,10 +821,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
             c->level.post_processed = false;
-            generator(*c);
-            // Pipeline::on_take has already exposed this chunk to lighting readers.
-            std::lock_guard light_lock(light::mutex(*this));
-            for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
+            generator(*c);  // Pipeline::take compacts the palettes before lighting can read them
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);
         if (encode) chunk_frame(*c);

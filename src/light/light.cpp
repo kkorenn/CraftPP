@@ -145,6 +145,7 @@ struct Engine {
     double ms = 0;
     size_t lit = 0;
     int ticks = 0;  // take_changes calls
+    int deferred = 0;  // take_changes calls in a row that found the lock busy
     int64_t cache_key[2] = {INT64_MIN, INT64_MIN};
     Column* cache_col[2] = {};
 
@@ -935,6 +936,7 @@ void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
     // ChunkMap.prepareTickingChunk: sent once its 3x3 is lit (loaded neighbours keep their saved light).
     for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++) e.pipeline->ensure(w.cx + dx, w.cz + dz, worldgen::Status::LIGHT);
+    w.light_ready.store(true, std::memory_order_release);
 }
 
 std::vector<uint8_t> save(Chunk& c, uint32_t& version) {
@@ -945,7 +947,7 @@ std::vector<uint8_t> save(Chunk& c, uint32_t& version) {
     return col && col->status == LIT ? save_column(e, *col) : std::vector<uint8_t>{};
 }
 
-void ensure_lit(World& world, Chunk& center) {
+static void light_3x3(World& world, Chunk& center) {
     int cx = center.cx, cz = center.cz;
     Engine& e = engine(world);
     if (e.pipeline) {
@@ -992,6 +994,13 @@ void ensure_lit(World& world, Chunk& center) {
     print_stats(e, todo.size());
 }
 
+void ensure_lit(World& world, Chunk& center) {
+    // Once its 3x3 is lit it stays lit: the tick thread then never waits here for a worker's light step.
+    if (center.light_ready.load(std::memory_order_acquire)) return;
+    light_3x3(world, center);
+    center.light_ready.store(true, std::memory_order_release);
+}
+
 uint32_t write(Writer& w, Chunk& c) {
     Engine& e = engine(c.dimension);
     std::lock_guard lock(e.m);
@@ -1030,7 +1039,14 @@ void block_changed(const World& world, int x, int y, int z, uint16_t old_state, 
 
 std::vector<Change> take_changes(World& world) {
     Engine& e = engine(world);
-    std::lock_guard lock(e.m);
+    // A worker's light step can hold the lock for tens of ms: send this level's light next tick rather than
+    // stall this one (vanilla's light thread is asynchronous too), but defer at most a second.
+    std::unique_lock lock(e.m, std::try_to_lock);
+    if (!lock) {
+        if (++e.deferred < 20) return {};
+        lock.lock();
+    }
+    e.deferred = 0;
     e.run();
     if (++e.ticks % 100 == 0)  // let the World unload chunks only the light engine still holds
         for (auto& [k, c] : e.columns)
