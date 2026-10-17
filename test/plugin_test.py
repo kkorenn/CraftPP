@@ -242,6 +242,31 @@ def main():
         assert chat_with(a, "gui closed") == "gui closed, emeralds=3"
         print("custom inventory GUI: open_screen, contents with meta, cancelled click, close event ok")
 
+        a.send(PLAY_SB["chat_command"], string("crafttest events"))
+        cow_id = int(chat_with(a, "events ready").split()[-1])
+        a.send(PLAY_SB["use_item_on"], varint(0) + pos(0, -61, 0) + varint(1) + struct.pack(">fff", 0.5, 1, 0.5) + b"\x00\x00" + varint(90))
+        msg = chat_with(a, "interact RIGHT")
+        assert msg == "interact RIGHT_CLICK_BLOCK 0 -61 0 UP item=DIAMOND", msg
+        a.send(PLAY_SB["use_item"], varint(0) + varint(91) + struct.pack(">ff", 0, 0))
+        assert chat_with(a, "interact RIGHT") == "interact RIGHT_CLICK_AIR item=DIAMOND"
+        a.send(PLAY_SB["player_action"], varint(0) + pos(0, -61, 0) + b"\x01" + varint(92))
+        assert chat_with(a, "interact LEFT") == "interact LEFT_CLICK_BLOCK 0 -61 0 UP item=DIAMOND"
+        a.send(PLAY_SB["set_carried_item"], struct.pack(">h", 7))
+        assert chat_with(a, "held") == "held 0 -> 7"
+        assert wait(a, PLAY_CB["set_held_slot"]).varint() == 0  # cancelled: the client goes back to slot 0
+        a.send(PLAY_SB["player_action"], varint(5) + pos(0, 0, 0) + b"\x00" + varint(0))
+        msg = chat_with(a, "drop "); assert msg == "drop DIAMOND 1", msg
+        a.send(PLAY_SB["interact"], varint(cow_id) + varint(0) + b"\x00" + b"\x00")
+        assert chat_with(a, "interact entity") == "interact entity COW HAND"
+        a.send(PLAY_SB["attack"], varint(cow_id))
+        msg = chat_with(a, "attack")
+        assert msg.startswith("attack COW damage="), msg
+        a.send(PLAY_SB["chat_command"], string("crafttest killcow"))
+        assert chat_with(a, "death") == "death COW valid=false"
+        a.send(PLAY_SB["chat_command"], string("ct lookup"))  # the cancelled drop put the diamond back
+        print("PlayerInteractEvent (block, air, left click), PlayerItemHeldEvent, PlayerDropItemEvent, PlayerInteractEntityEvent,"
+              " EntityDamageByEntityEvent, EntityDeathEvent ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))

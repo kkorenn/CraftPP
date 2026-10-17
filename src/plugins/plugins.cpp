@@ -1268,7 +1268,7 @@ void install_handlers() {
         read_block_pos(peek, x, y, z);
         peek.u8();
         int seq = peek.varint();
-        bool breaks = (action == 0 && p.gamemode == 1) || (action == 2 && p.gamemode != 1 && p.gamemode != 3);
+        bool breaks = (action == 0 && p.gamemode == 1) || (action == 3 && p.gamemode != 1 && p.gamemode != 3);  // START / STOP_DESTROY_BLOCK
         if (breaks && has("blockbreak")) {
             int state = world.get_block(x, y, z);
             Json r = event("blockbreak", "{" + player_ref(p) + ",\"x\":" + std::to_string(x) + ",\"y\":" +
@@ -1365,6 +1365,7 @@ void install_handlers() {
             for (auto& v : c->arr) w.str(v.isString() ? v.asString() : "").boolean(false);
         p.send(w);
     });
+    install_event_handlers();
 }
 
 }  // namespace detail
@@ -1447,6 +1448,7 @@ void tick() {
 #if CRAFTPP_JNI
     if (!running) return;
     tick_thread = std::this_thread::get_id();
+    flush_gone_entities();
     JNIEnv* e = env();
     e->CallStaticVoidMethod(main_cls, m_tick);
     if (auto err = take_exception(e); !err.empty()) log_line("ERROR", "", "plugin tick failed: " + err);

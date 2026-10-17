@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct Entity;
+
 namespace plugins::detail {
 
 // JSON
@@ -73,5 +75,8 @@ std::optional<std::string> api_display(const std::string& m, const Json& a);  //
 std::optional<std::string> api_entity(const std::string& m, const Json& a);   // api_entity.cpp
 std::optional<std::string> api_inventory(const std::string& m, const Json& a);  // api_inventory.cpp
 void install_inventory_handlers();                                             // api_inventory.cpp
+std::string entity_snapshot(Entity& e);                                        // api_entity.cpp (entity.state)
+void install_event_handlers();                                                 // api_events.cpp
+void flush_gone_entities();                                                    // api_events.cpp, once per tick
 
 }  // namespace plugins::detail
