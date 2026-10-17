@@ -5,6 +5,7 @@
 #include "survival.hpp"
 #include "../level/glue.hpp"
 #include "portal.hpp"
+#include "../containers/containers.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -49,6 +50,7 @@ inline void start_game() {
     game_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
+    containers_init();
     dimensions_init();  // after the game handlers: wraps client_command
     portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
