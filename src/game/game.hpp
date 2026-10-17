@@ -20,6 +20,9 @@ inline void dispatch_packet(Player& p, const std::vector<uint8_t>& pkt) {
 // Tick thread: make a joined player visible (tab list + entities both ways).
 inline void register_player(const PlayerPtr& pp) {
     Player& p = *pp;
+    for (auto& q : players)  // handleConfigurationFinished: the same profile joined meanwhile
+        if ((q->uuid_hi == p.uuid_hi && q->uuid_lo == p.uuid_lo) || q->name == p.name)
+            return disconnect(p, tr("multiplayer.disconnect.duplicate_login"));
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
     p.send(info_add(all));  // entities (players too) are spawned by the tracker (src/mobs/manager.hpp)
