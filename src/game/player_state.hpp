@@ -145,5 +145,7 @@ struct NetState {
 };
 
 struct Player;
-inline void load_player_extra(Player& p, std::istream& f);       // survival.hpp
-inline void save_player_extra(const Player& p, std::ostream& f);  // survival.hpp
+struct Nbt;
+inline void load_player_extra(Player& p, const Nbt& t);     // survival.hpp (players/data/<uuid>.dat tags)
+inline void save_player_extra(const Player& p, Nbt& t);     // survival.hpp
+inline void load_player_extra_txt(Player& p, std::istream& f);  // old playerdata/<uuid>.txt
