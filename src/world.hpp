@@ -604,9 +604,20 @@ struct World {
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(dir, *c), c->saved_at = now;
         if (on_flush) on_flush(all);
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %s %zu chunks loaded, %zu idle candidates, %zu viewed\n", id.c_str(), loaded(), idle.size(), viewers.size());
         storage::flush();
         {
             std::lock_guard lock(m);
+            if (portals_dirty) {  // ponytail: whole set rewritten; fine for hundreds of portal blocks
+                portals_dirty = false;
+                std::filesystem::create_directories(dir);
+                {
+                    std::ofstream f(dir + "/portals.txt.tmp");
+                    for (auto& [x, y, z] : portals) f << x << ' ' << y << ' ' << z << '\n';
+                }
+                std::filesystem::rename(dir + "/portals.txt.tmp", dir + "/portals.txt");
+            }
             for (auto& c : dirty) idle.push_back(std::move(c));
             for (auto& c : idle) {
                 Key k{c->cx, c->cz};

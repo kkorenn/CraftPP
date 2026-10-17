@@ -805,6 +805,8 @@ void attach(World& world, worldgen::Pipeline& p) {
         for (int64_t k : gone) e.forget(int(k >> 32), int(int32_t(uint32_t(k))));
         e.run();
         save_affected(e);  // nobody views these columns: no light_update for them
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %zu light columns kept, %zu forgotten\n", e.columns.size(), gone.size());
     };
     p.on_take = [ep](worldgen::ProtoChunk& c, Chunk& out) {
         std::lock_guard lock(ep->m);
