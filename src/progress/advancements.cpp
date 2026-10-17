@@ -1121,13 +1121,17 @@ void advancements_init() {
 // ---------- init: background load, hooks ----------
 void init() {
     loaded = std::async(std::launch::async, [] {
-                 auto t0 = std::chrono::steady_clock::now();
-                 load_recipes();
-                 load_advancements();
-                 ready.store(true, std::memory_order_release);
-                 log_info("Loaded %zu recipes, %zu advancements (%zu criteria) in %.0f ms", recipe_defs.size(), advs.size(),
-                          criteria.size(),
-                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                 try {
+                     auto t0 = std::chrono::steady_clock::now();
+                     load_recipes();
+                     load_advancements();
+                     ready.store(true, std::memory_order_release);
+                     log_info("Loaded %zu recipes, %zu advancements (%zu criteria) in %.0f ms", recipe_defs.size(), advs.size(),
+                              criteria.size(),
+                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                 } catch (const std::exception& e) {
+                     log_error("progression load failed: %s", e.what());
+                 }
              }).share();
     advancements_init();
     recipe_book_init();

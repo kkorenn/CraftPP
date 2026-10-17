@@ -37,7 +37,8 @@ static void sd_optional(Writer& w, const Ingredient* i) {
 static void sd_item(Writer& w, const char* id) { w.varint(SD_ITEM).varint(std::max(0, reg_id("item", id))); }
 static void sd_stack(Writer& w, int item, int count) { w.varint(SD_ITEM_STACK).varint(std::max(0, item)).varint(count).varint(0).varint(0); }
 static void sd_result(Writer& w, const Json& r) {  // ItemStackSlotDisplay(ItemStackTemplate); component patches not encoded
-    sd_stack(w, reg_id("item", r["id"].asString()), r.getInt("count", 1));
+    int item = r.find("id") ? reg_id("item", r["id"].asString()) : 0;
+    sd_stack(w, item, r.getInt("count", 1));
 }
 
 static int crafting_category(const Json& j) {
@@ -109,7 +110,9 @@ void load_recipes() {
             IRange mc = j.find("material_count") ? irange(j.find("material_count")) : IRange{1, 1};
             int lo = mc.lo == INT64_MIN ? 1 : int(mc.lo), hi = mc.hi == INT64_MAX ? 8 : int(mc.hi);
             bool add = j.find("add_material_count_to_result") && j["add_material_count_to_result"].b;
-            int count = j["result"].getInt("count", 1), item = reg_id("item", j["result"]["id"].asString());
+            int count = j["result"].getInt("count", 1);
+            int item = j["result"].find("id") ? reg_id("item", j["result"]["id"].asString())
+                                              : (input.items && !input.items->empty() ? int((*input.items)[0]) : 0);
             r.place.push_back(input);
             for (int k = 0; k < hi; k++) r.place.push_back(material);
             std::vector<const Ingredient*> ins{&r.place[0]};

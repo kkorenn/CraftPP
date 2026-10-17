@@ -18,14 +18,14 @@ for attempt in range(50):
 
 # 1. /advancement revoke + grant -> update_advancements packet.
 cmd(c, "advancement revoke @s everything")
-cmd(c, "advancement grant @s only minecraft:story/mine_stone")
-wait(c, PLAY_CB["update_advancements"], lambda b: b"minecraft:story/mine_stone" in b.b[b.i:], 5000)
+cmd(c, "advancement grant @s through minecraft:story/mine_stone")
+wait(c, PLAY_CB["update_advancements"], lambda b: b"minecraft:story/mine_stone" in b.d[b.i:], 5000)
 
-# 2. inventory_changed trigger: revoke story/root, give crafting_table -> story/root awarded.
+# 2. inventory_changed trigger: revoke everything, give cobblestone -> story/mine_stone awarded.
 cmd(c, "clear @s")
 cmd(c, "advancement revoke @s everything")
 cmd(c, "give @s minecraft:crafting_table")
-wait(c, PLAY_CB["update_advancements"], lambda b: b"minecraft:story/root" in b.b[b.i:], 5000)
+wait(c, PLAY_CB["update_advancements"], lambda b: b"minecraft:story/root" in b.d[b.i:], 5000)
 
 # 3. /recipe take + give -> recipe_book_add + recipe_book_remove packets.
 cmd(c, "recipe take @s *")
@@ -41,7 +41,8 @@ c.send(PLAY_SB["client_command"], varint(1))
 b = wait(c, PLAY_CB["award_stats"], limit=5000)
 stats = {}
 for _ in range(b.varint()):
-    stats[(b.varint(), b.varint())] = b.varint()
+    st, sid, val = b.varint(), b.varint(), b.varint()
+    stats[(st, sid)] = val
 assert stats.get((CUSTOM_TYPE, PLAY_TIME), 0) > 0, stats
 
 c.s.close()
