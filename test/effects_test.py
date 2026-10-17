@@ -5,7 +5,7 @@ import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REG = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))
+REG = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))
 def rid(reg, n): return REG["minecraft:" + reg]["entries"]["minecraft:" + n]["protocol_id"]
 SPEED, REGEN, ABSORB, RESIST = (rid("mob_effect", n) for n in ("speed", "regeneration", "absorption", "resistance"))
 MOVE_SPEED = rid("attribute", "movement_speed")
