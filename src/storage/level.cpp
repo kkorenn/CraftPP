@@ -110,7 +110,7 @@ inline void write_vanilla(const std::map<std::string, std::string>& kv) {
     Nbt ver = Nbt::compound();
     ver.set("Id", I(DATA_VERSION)), ver.set("Name", S(GAME_VERSION)), ver.set("Series", S("main")), ver.set("Snapshot", B(0));
     data.set("Version", ver);
-    data.set("LevelName", S(props["level-name"]));
+    data.set("LevelName", S(std::filesystem::path(world_dir).filename().string()));  // display name
     data.set("GameType", I(std::max(0, gamemode_id(props["gamemode"]))));
     data.set("Time", Nbt::num(Nbt::Long, num_of("game-time", 0)));
     data.set("LastPlayed", Nbt::num(Nbt::Long, std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -442,9 +442,10 @@ ProtoPtr Pipeline::load(int cx, int cz) {
     if (st == Status::EMPTY) return nullptr;
     if (st >= Status::INITIALIZE_LIGHT && st < Status::FULL) st = Status::FEATURES;  // relight (as saved)
     auto p = std::make_shared<ProtoChunk>(cx, cz, this);
-    if (st == Status::FULL) {  // the World's chunk: a header only (nothing reads a FULL chunk's blocks)
-      p->taken = true;
-    } else if (st >= Status::BIOMES) {
+    // The World's chunk (FULL) is read too: a world saved elsewhere (vanilla) can have a proto chunk below FEATURES
+    // next to it, and that step reads its neighbours' biomes and blocks. sweep() frees it again.
+    p->taken = st == Status::FULL;
+    if (st >= Status::BIOMES) {
       p->chunk = std::make_unique<Chunk>(min_y, height);
       p->chunk->cx = cx, p->chunk->cz = cz;
       storage::decode(root, *p->chunk, nullptr);
