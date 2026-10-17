@@ -16,7 +16,7 @@ CraftPP is a Minecraft Java Edition **26.3** (protocol 777) server written in C+
 
 ## Workflow
 - Work only in your own git worktree under `/Users/koren/Documents/CraftPP-worktrees/<name>`. Never edit `/Users/koren/Documents/CraftPP` (main); the coordinator merges.
-- Commit small working steps: `git -c user.name=CraftPP -c user.email=craftpp@localhost commit`. Every commit must pass `./build.sh test`, which picks a free port per run.
+- Commit small working steps: `git -c user.name=kkorenn -c user.email=ollalo654@gmail.com commit`. Always commit as `kkorenn`. Every commit must pass `./build.sh test`, which picks a free port per run.
 - `git merge main` periodically to pick up other agents' merged work. Resolve conflicts carefully.
 - Keep edits to shared files (src/server.hpp, play.hpp, main.cpp, world.hpp, CMakeLists.txt) small and targeted. Put new subsystems in their own files or directories.
 - Never kill processes by broad patterns (`pkill craftpp`): other agents' servers run in parallel. Kill by PID or by port.

@@ -23,7 +23,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Memory/data repairs: keep fluid-tag JSON alive during iteration; reacquire released initialized light-column chunk handles; bind vanilla block/fluid tags in the build-time mob extractor before querying fluid/path data. Generated mob data now distinguishes water/lava correctly; invalid type 3 is rejected at load time.
 - Regression fixtures: cauldron checks synchronize requests and filter bucket sounds; water timing is measured in server ticks; cow combat selects the intended summoned entity by position.
 
-- Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md.
+- Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md. Done: new world 1.5–1.9 s → 0.19–0.24 s (M4), 4.4 → 1.05 s (Pi-like Docker, 1.5 CPU); restart 0.08–0.10 s. Spawn y uses vanilla getLevelRespawnPos predicates. Startup warnings go through the logger. Stronghold rings are computed lazily (about 1 s pause on a Pi at the first far chunk or /locate stronghold).
 
 - Client selectors: resend permission status and command tree after death/respawn, in vanilla packet order; regression covers `@s` and `@a`.
 
@@ -34,7 +34,6 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| dimensions | Core travel/generation integrated; remaining Nether features, lighting and environment attributes |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
 | effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
@@ -42,6 +41,9 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
 | feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
+| dim-light | per-World light engine (nether no skylight, end), light_ensure stall, TSan re-check |
+| nether-end-gen | nether/end feature types, end gateways, nether/end natural spawning |
+| dim-bughunt | end-portal segfault (ASan), portal destinations vs vanilla, pick-block reach, duplicate UUID kick, flaky tests |
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
