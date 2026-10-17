@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "log.hpp"
+
 namespace worldgen {
 
 template <class K, class Hash>  // Hash(k) -> Java hashCode()
@@ -118,7 +120,7 @@ class JavaHashSet {
   }
   static void warn() {
     static bool once = false;
-    if (!once) once = true, fprintf(stderr, "worldgen: JavaHashSet bin would treeify; iteration order may differ\n");
+    if (!once) once = true, log_warn("worldgen: JavaHashSet bin would treeify; iteration order may differ");
   }
 };
 

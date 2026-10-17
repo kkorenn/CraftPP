@@ -14,7 +14,7 @@ MENU = {"minecraft:" + k: {"protocol_id": v} for k, v in GAME["registries"]["men
 def item(n): return ITEMS[n]
 def pos(x, y, z): return struct.pack(">q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF))
 UID = uuid.uuid3(uuid.NAMESPACE_DNS, "Cora")
-CHEST, FURNACE = (20, -60, 20), (22, -60, 20)
+CHEST, FURNACE = (60, -60, 60), (62, -60, 60)  # beyond spawn protection
 
 def slot_item(b):
     n = b.varint()
@@ -28,6 +28,17 @@ def give(c, hotbar, name, count):
 
 def use(c, p, seq):
     c.send(PLAY_SB["use_item_on"], varint(0) + pos(*p) + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(seq))
+
+def wait_block(c, p):  # block_update or section_blocks_update touching p
+    for _ in range(4000):
+        pid, b = c.recv()
+        if pid == PLAY_CB["block_update"] and block_pos(b.i64()) == p: return
+        if pid == PLAY_CB["section_blocks_update"]:
+            v = b.i64(); sx, sy, sz = v >> 42, sext(v, 20), sext(v >> 20, 22)
+            for _ in range(b.varint()):
+                e = b.varint()
+                if (sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15)) == p: return
+    raise AssertionError(f"no block update at {p}, pos {getattr(c, 'pos', None)}")
 
 def open_menu(c, p, seq, menu):
     use(c, p, seq)
@@ -58,10 +69,8 @@ def close(c, cid):
 
 host, port = sys.argv[1], int(sys.argv[2])
 c, _ = login("Cora", host, port, uid=UID)
-x0, _, z0 = c.pos
-for k in range(1, 9):  # walk over in small steps (the server rejects moves that are too fast)
-    c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x0 + (21.5 - x0) * k / 8, -60, z0 + (22.5 - z0) * k / 8, 1))
-    time.sleep(0.06)
+c.send(PLAY_SB["chat_command"], string("tp @s 61.5 -60 62.5"))  # Cora is op (build.sh ops.json)
+while play_step(c) != PLAY_CB["player_position"]: pass
 
 if "--after-restart" in sys.argv:
     cid, items = open_menu(c, CHEST, 1, "generic_9x3")
@@ -75,7 +84,7 @@ if "--after-restart" in sys.argv:
 # Chest: place, open, move 40 cobblestone from the hotbar into slot 0, reopen and check.
 give(c, 0, "chest", 1)
 use(c, (CHEST[0], CHEST[1] - 1, CHEST[2]), 1)
-wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == CHEST)
+wait_block(c, CHEST)
 give(c, 0, "cobblestone", 40)
 cid, items = open_menu(c, CHEST, 2, "generic_9x3")
 assert len(items) == 63 and items[54] == (40, item("cobblestone")), items[54]
@@ -91,7 +100,7 @@ print("chest ok")
 # Blast furnace: raw iron + coal by shift-click, iron ingot after 100 ticks (200 / speed 2).
 give(c, 0, "blast_furnace", 1)
 use(c, (FURNACE[0], FURNACE[1] - 1, FURNACE[2]), 4)
-wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == FURNACE)
+wait_block(c, FURNACE)
 give(c, 1, "coal", 1)
 give(c, 2, "raw_iron", 2)
 cid, items = open_menu(c, FURNACE, 5, "blast_furnace")
@@ -114,7 +123,7 @@ close(c, cid)
 give(c, 0, "hopper", 1)
 c.send(PLAY_SB["player_input"], b"\x20")
 c.send(PLAY_SB["use_item_on"], varint(0) + pos(*CHEST) + varint(5) + struct.pack(">fff", 1, .5, .5) + b"\0\0" + varint(6))
-wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == (CHEST[0] + 1, CHEST[1], CHEST[2]))
+wait_block(c, (CHEST[0] + 1, CHEST[1], CHEST[2]))
 c.send(PLAY_SB["player_input"], b"\x00")
 give(c, 0, "cobblestone", 5)
 time.sleep(0.2)
@@ -131,10 +140,10 @@ print("hopper ok")
 # Stonecutter: 2 stone, pick the stone_slab option -> 2 slabs in the result slot (client list = update_recipes order).
 CDATA = json.load(open(os.path.join(ROOT, "data/containers.json")))
 opts = [r["r"][0] for r in CDATA["stonecutting"] if item("stone") in r["i"]]
-STONECUTTER = (24, -60, 22)
+STONECUTTER = (64, -60, 62)
 give(c, 0, "stonecutter", 1)
 use(c, (STONECUTTER[0], STONECUTTER[1] - 1, STONECUTTER[2]), 9)
-wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == STONECUTTER)
+wait_block(c, STONECUTTER)
 give(c, 0, "stone", 2)
 time.sleep(0.2)
 cid, items = open_menu(c, STONECUTTER, 10, "stonecutter")
@@ -147,10 +156,10 @@ close(c, cid)
 print("stonecutter ok")
 
 # Anvil rename: the result carries minecraft:custom_name (component patch present).
-ANVIL = (26, -60, 22)
+ANVIL = (66, -60, 62)
 give(c, 0, "anvil", 1)
 use(c, (ANVIL[0], ANVIL[1] - 1, ANVIL[2]), 11)
-wait(c, PLAY_CB["block_update"], lambda b: block_pos(b.i64()) == ANVIL)
+wait_block(c, ANVIL)
 give(c, 0, "iron_sword", 1)
 time.sleep(0.2)
 cid, items = open_menu(c, ANVIL, 12, "anvil")

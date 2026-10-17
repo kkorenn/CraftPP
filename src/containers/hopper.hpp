@@ -112,7 +112,7 @@ inline void HopperBE::tick() {
     if (cooldown > 0) return;
     cooldown = 0;
     if (bs::R().value(state, "enabled") != "true") return;
-    ContainerRef self{std::static_pointer_cast<be::Live>(be::live[be::key(x, y, z)]), nullptr};
+    ContainerRef self{std::static_pointer_cast<be::Live>(be::live_map()[be::key(x, y, z)]), nullptr};
     if (!self) return;
     bool changed = false;
     bool any = false;

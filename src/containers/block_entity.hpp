@@ -21,6 +21,7 @@ namespace be {
 
 struct Live {
     int x = 0, y = 0, z = 0, type = -1, state = 0;
+    World* lvl = nullptr;  // dimension
     ChunkPtr chunk;
     bool removed = false, dirty = false;
     std::vector<uint8_t> custom_name;  // CustomName text component (network NBT), empty = none
@@ -49,7 +50,8 @@ struct Live {
     void set_changed() { dirty = true; }
 };
 
-inline std::unordered_map<uint64_t, std::shared_ptr<Live>> live;
+inline std::unordered_map<uint64_t, std::shared_ptr<Live>> live_maps[DIM_COUNT];  // per dimension
+inline std::unordered_map<uint64_t, std::shared_ptr<Live>>& live_map() { return live_maps[dim_of(cur_level)]; }
 inline std::shared_ptr<Live> graveyard;  // block entity removed this tick (loot copy_components reads it)
 inline int64_t graveyard_tick = -1;
 using Factory = std::shared_ptr<Live> (*)(int type);
@@ -123,7 +125,7 @@ inline std::shared_ptr<Live> create(const ChunkPtr& c, int x, int y, int z, int 
     auto f = factories.find(type);
     if (f == factories.end()) return nullptr;
     auto b = f->second(type);
-    b->x = x, b->y = y, b->z = z, b->type = type, b->state = state, b->chunk = c;
+    b->x = x, b->y = y, b->z = z, b->type = type, b->state = state, b->chunk = c, b->lvl = cur_level;
     if (nbt) {
         try {
             load_nbt(*b, comp::nbt_parse(*nbt));
@@ -131,14 +133,14 @@ inline std::shared_ptr<Live> create(const ChunkPtr& c, int x, int y, int z, int 
             log_warn("Block entity at %d %d %d: bad NBT (%s)", x, y, z, e.what());
         }
     }
-    live[key(x, y, z)] = b;
+    live_map()[key(x, y, z)] = b;
     return b;
 }
 
 // The live block entity at a position (loads the chunk if needed), or null.
 inline std::shared_ptr<Live> get(int x, int y, int z) {
-    if (auto it = live.find(key(x, y, z)); it != live.end()) return it->second;
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return nullptr;
+    if (auto it = live_map().find(key(x, y, z)); it != live_map().end()) return it->second;
+    if (y < world.min_y() || y >= world.max_y()) return nullptr;
     ChunkPtr c = world.get_ptr(x >> 4, z >> 4);
     int state, type;
     std::vector<uint8_t> nbt;
@@ -178,6 +180,7 @@ inline void drop_contents(Live& b) {
 // and create the new block's entry.
 inline void block_changed(int x, int y, int z, int old_state, int new_state) {
     bool same = state_block_index(old_state) == state_block_index(new_state);
+    auto& live = live_map();
     auto it = live.find(key(x, y, z));
     if (it != live.end()) {
         if (same) {
@@ -204,7 +207,7 @@ inline void block_changed(int x, int y, int z, int old_state, int new_state) {
 }
 // The block entity just removed at a position (for drops computed after removal), or null.
 inline std::shared_ptr<Live> removed_at(int x, int y, int z) {
-    if (graveyard && graveyard_tick == server_tick && graveyard->x == x && graveyard->y == y && graveyard->z == z) return graveyard;
+    if (graveyard && graveyard_tick == server_tick && graveyard->lvl == cur_level && graveyard->x == x && graveyard->y == y && graveyard->z == z) return graveyard;
     return nullptr;
 }
 
@@ -214,13 +217,17 @@ inline bool viewed(int cx, int cz) {
     return false;
 }
 inline void flush_all() {
-    for (auto& [k, b] : live)
-        if (b->dirty) flush(*b);
+    for (auto& live : live_maps)
+        for (auto& [k, b] : live)
+            if (b->dirty) flush(*b);
 }
 
 inline void tick() {
     static std::vector<std::shared_ptr<Live>> ticking;
-    ticking.clear();
+    for (int d = 0; d < DIM_COUNT; d++) {
+    auto& live = live_maps[d];
+    if (live.empty()) continue;
+    InLevel in(&worlds[d]);
     for (auto& [k, b] : live)
         if (b->ticks()) ticking.push_back(b);
     for (auto& b : ticking)
@@ -237,12 +244,13 @@ inline void tick() {
             }
         }
     }
+    }
     if (server_tick % 600 == 0) flush_all();
     if (graveyard && graveyard_tick != server_tick) graveyard.reset();
 }
 
 // Chunk loaded (worker thread): revive ticking block entities.
-inline void chunk_loaded(const ChunkPtr& c) {
+inline void chunk_loaded(World* w, const ChunkPtr& c) {
     std::vector<std::tuple<int, int, int>> todo;
     {
         std::lock_guard lock(c->m);
@@ -251,7 +259,9 @@ inline void chunk_loaded(const ChunkPtr& c) {
         }
     }
     if (todo.empty()) return;
-    run_on_tick([c, todo] {
+    run_on_tick([w, c, todo] {
+        InLevel in(w);
+        auto& live = live_map();
         for (auto [x, y, z] : todo) {
             if (live.count(key(x, y, z))) continue;
             std::vector<uint8_t> nbt;

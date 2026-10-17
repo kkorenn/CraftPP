@@ -40,7 +40,10 @@ bool ScatteredPiece::updateHeightPositionToLowestGroundHeight(Level& level, int 
 namespace {
 
 struct SwampHutPiece : ScatteredPiece {
+  bool spawnedWitch = false, spawnedCat = false;
   explicit SwampHutPiece(RandomSource& random, int west, int north) : ScatteredPiece(west, 64, north, 7, 7, 9, randomHorizontal(random)) {}
+  void saveState(std::vector<int>& out) const override { ScatteredPiece::saveState(out), out.push_back(spawnedWitch | spawnedCat << 1); }
+  void loadState(const int*& p) override { ScatteredPiece::loadState(p), spawnedWitch = *p & 1, spawnedCat = *p++ >> 1 & 1; }
    void postProcess(Level& level, RandomSource&, const BoundingBox& chunkBB, int, int, BlockPos) override {
       if (updateAverageGroundHeight(level, chunkBB, 0)) {
          generateBox(level, chunkBB, 1, 1, 1, 5, 1, 7, BS(blocks::spruce_planks), BS(blocks::spruce_planks), false);
@@ -83,7 +86,9 @@ struct SwampHutPiece : ScatteredPiece {
             }
          }
 
-         // ponytail: witch/cat entities not spawned (no entity system in worldgen yet)
+         BlockPos pos = worldPos(2, 2, 5);
+         if (!spawnedWitch && chunkBB.isInside(pos)) spawnedWitch = true, level.addMob(entity_types::witch, pos, true);
+         if (!spawnedCat && chunkBB.isInside(pos)) spawnedCat = true, level.addMob(entity_types::cat, pos, true);
       }
    }
 };

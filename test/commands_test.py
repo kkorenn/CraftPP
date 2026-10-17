@@ -48,7 +48,8 @@ def join(name):
     orig = bot.play_step
     def step(c):
         pid, b = c.recv()
-        if pid == PLAY_CB["commands"]: seen["tree"] = parse_tree(b)
+        if pid == PLAY_CB["login"]: seen["eid"] = b.i32()
+        elif pid == PLAY_CB["commands"]: seen["tree"] = parse_tree(b)
         elif pid == PLAY_CB["set_time"] and "time" not in seen: seen["time"] = read_time(b)
         return pid
     bot.play_step = step
@@ -126,8 +127,8 @@ if __name__ == "__main__":
     cmd(a, "setblock 1 -59 1 stone")
     wait(a, PLAY_CB["block_update"])
     cmd(a, "fill 0 -59 0 3 -59 3 oak_planks hollow")
-    wait(a, PLAY_CB["section_blocks_update"])
     assert b"commands.fill.success" in chat_with(a, b"commands.fill")
+    wait(a, PLAY_CB["section_blocks_update"])  # level sync: block updates go out at the end of the tick
     cmd(a, "fill 0 0 0 100 100 100 stone")
     assert b"commands.fill.toobig" in chat_with(a, b"commands.fill")
     print("setblock/fill ok")
@@ -190,6 +191,32 @@ if __name__ == "__main__":
         assert not (pid == PLAY_CB["game_event"] and buf.d[buf.i] == 3), "non-op changed game mode"
         if pid == PLAY_CB["system_chat"] and b"commands.list" in buf.d: break
     print("F3+F4 gamemode switcher ok")
+
+    # The vanilla client replaces LocalPlayer on death, clearing selector permissions.
+    # Verify the server restores the event and tree AFTER respawn, before the next request.
+    cmd(a, "kill Alice")
+    wait(a, PLAY_CB["player_combat_kill"])
+    a.send(PLAY_SB["client_command"], varint(0))
+    wait(a, PLAY_CB["respawn"])
+    a.send(PLAY_SB["ping_request"], struct.pack(">q", 0x53454c))
+    permission = None
+    respawn_tree = None
+    for _ in range(50000):
+        pid, buf = a.recv()
+        if pid == PLAY_CB["entity_event"]:
+            eid, event = buf.i32(), buf.u8()
+            if eid == seen["eid"] and 24 <= event <= 28: permission = event
+        elif pid == PLAY_CB["commands"]:
+            assert permission == 28, "commands arrived before restored selector permissions"
+            respawn_tree = parse_tree(buf)
+        elif pid == PLAY_CB["pong_response"] and buf.i64() == 0x53454c:
+            break
+    assert permission == 28 and respawn_tree is not None, (permission, respawn_tree)
+    assert "damage" in root_names(respawn_tree)
+    for selector in ("@s", "@a[name=Alice]"):
+        cmd(a, f"execute as {selector} run say selector_after_respawn")
+        chat_with(a, b"selector_after_respawn")
+    print("selector permissions restored after respawn ok")
 
     cmd(a, "save-all")
     chat_with(a, b"commands.save.success")

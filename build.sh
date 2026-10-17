@@ -4,6 +4,7 @@
 set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
+[ -f data/level.json ] || python3 tools/gen_level_data.py
 [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
 [ data/containers.json -nt tools/gen_container_data.py ] || python3 tools/gen_container_data.py
 TEST=; SAN=; B=build
@@ -29,6 +30,11 @@ if [ -n "$TEST" ]; then
     fail "no '$1' in $LOG"
   }
 
+  ./$B/pipeline_test --failure-recovery
+
+  # Structures: template loading, persistence round trip, /locate of 8 structure types (asserts inside).
+  ./$B/structure_test > $B/structure_test.log 2>&1 || { tail -5 $B/structure_test.log; echo "FAIL: structure_test"; exit 1; }
+
   # EULA gate: a fresh directory gets eula.txt (eula=false) and a full server.properties, then refuses to start.
   rm -rf $B/eula-test && mkdir -p $B/eula-test
   printf 'server-port=%s\nlevel-name=%s/eula-test/world\n' "$PORT" $B > $B/eula-test/server.properties
@@ -42,7 +48,7 @@ if [ -n "$TEST" ]; then
   printf 'server-port=%s\nlevel-name=%s/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\nspawn-protection=0\n' "$PORT" $B > $B/test.properties
   echo "eula=true" > $B/eula.txt
   rm -f $B/banned-players.json $B/banned-ips.json $B/whitelist.json
-  printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}]\n' > $B/ops.json  # bot.py and survival.py run op commands
+  printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Cora", "level": 4, "bypassesPlayerLimit": false}]\n' > $B/ops.json  # bot.py and survival.py run op commands
   # The console is a FIFO kept open on fd 3, so the tests type commands into it like an admin would.
   rm -f $B/console.fifo && mkfifo $B/console.fifo
   ./$B/craftpp $B/test.properties < $B/console.fifo > $LOG 2>&1 &
@@ -55,9 +61,13 @@ if [ -n "$TEST" ]; then
   python3 -u test/bot.py 127.0.0.1 $PORT
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
+  python3 -u test/level_test.py 127.0.0.1 $PORT
+  python3 -u test/placement_test.py 127.0.0.1 $PORT
+  python3 -u test/cauldron_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
+  python3 -u test/dimensions_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
   python3 -u test/containers_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"

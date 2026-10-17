@@ -48,9 +48,14 @@ struct BlockBatch {
     std::map<std::tuple<int, int, int>, std::vector<std::pair<uint16_t, int>>> sections;  // section -> (local pos, state)
     int changed = 0;
     bool set(int x, int y, int z, int state) {
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT || world.get_block(x, y, z) == state) return false;
+        if (y < world.min_y() || y >= world.max_y() || world.get_block(x, y, z) == state) return false;
+        if (level_command_place) {
+            if (!level_command_place(x, y, z, state)) return false;
+            changed++;
+            return true;
+        }
         world.set_block(x, y, z, uint16_t(state));
-        sections[{x >> 4, (y - MIN_Y) >> 4, z >> 4}].push_back({uint16_t((x & 15) << 8 | (z & 15) << 4 | ((y - MIN_Y) & 15)), state});
+        sections[{x >> 4, y >> 4, z >> 4}].push_back({uint16_t((x & 15) << 8 | (z & 15) << 4 | (y & 15)), state});
         changed++;
         return true;
     }
@@ -59,15 +64,15 @@ struct BlockBatch {
             auto [sx, sy, sz] = sec;
             if (list.size() == 1) {
                 auto [local, state] = list[0];
-                broadcast(block_update(sx * 16 + (local >> 8), sy * 16 + MIN_Y + (local & 15), sz * 16 + (local >> 4 & 15), state));
+                broadcast_level(block_update(sx * 16 + (local >> 8), sy * 16 + (local & 15), sz * 16 + (local >> 4 & 15), state), cur_level);
                 continue;
             }
             Writer w = pkt(play_cb::section_blocks_update);
-            int ys = sy + (MIN_Y >> 4);
+            int ys = sy;
             w.i64(int64_t((uint64_t(int64_t(sx) & 0x3FFFFF) << 42) | (uint64_t(int64_t(sz) & 0x3FFFFF) << 20) | (uint64_t(int64_t(ys) & 0xFFFFF))));
             w.varint(int32_t(list.size()));
             for (auto [local, state] : list) write_varlong(w, int64_t(state) << 12 | local);
-            broadcast(w);
+            broadcast_level(w, cur_level);
         }
         sections.clear();
     }
@@ -141,6 +146,7 @@ inline void register_vanilla_commands() {
 
     // teleport / tp
     reg("teleport", [](Cmd& c) {
+        World* to = level_by_id(c.src.dimension);  // TeleportCommand: into the source's level (or the destination's)
         auto do_tp = [&](Target& t, double x, double y, double z, std::optional<std::pair<float, float>> rot) {
             if (std::abs(x) > 30000000 || std::abs(z) > 30000000 || y < -20000000 || y >= 20000000) throw err("commands.teleport.invalidPosition");
             if (!t.p) {
@@ -154,7 +160,8 @@ inline void register_vanilla_commands() {
                 p.yaw = std::remainder(rot->first, 360.0f);
                 p.pitch = std::clamp(std::remainder(rot->second, 360.0f), -90.f, 90.f);
             }
-            teleport(p, x, y, z);
+            if (p.level != to) change_dimension(p, to, x, y, z, p.yaw, p.pitch);
+            else teleport(p, x, y, z);
         };
         auto face = [&](Target& t, Vec3 at) {  // LookAt.perform (feet anchor of the victim's eyes)
             Vec3 tp = t.pos();
@@ -175,6 +182,7 @@ inline void register_vanilla_commands() {
         if (c.has("destination")) {
             auto dest = c.targets("destination")[0];
             Vec3 d = dest.pos();
+            to = dest.p ? dest.p->level : entity_level(dest.e);  // to an entity: into its level
             for (auto& t : targets) do_tp(t, d.x, d.y, d.z, rot_of(dest));
             return respond(c, targets, true, [&](Text n) { return tr("commands.teleport.success.entity.single", {n, dest.display()}); },
                            [&](int k) { return tr("commands.teleport.success.entity.multiple", {k, dest.display()}); });
@@ -371,7 +379,7 @@ inline void register_vanilla_commands() {
         bool overlap = dx <= x1 && dx + sx - 1 >= x0 && dy <= y1 && dy + sy - 1 >= y0 && dz <= z1 && dz + sz - 1 >= z0;
         bool force = c.is("force"), move = c.is("move");
         if (overlap && !force && !move) throw err("commands.clone.overlap");
-        if (dy < MIN_Y || dy + sy - 1 >= MIN_Y + HEIGHT) throw err("argument.pos.outofworld");
+        if (dy < world.min_y() || dy + sy - 1 >= world.max_y()) throw err("argument.pos.outofworld");
         std::optional<BlockSpec> filter;
         if (c.has("filter")) filter = c.get<BlockSpec>("filter");
         bool masked = c.is("masked");

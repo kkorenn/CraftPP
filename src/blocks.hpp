@@ -17,9 +17,15 @@ inline void read_block_pos(Reader& in, int& x, int& y, int& z) {
     z = int(v << 26 >> 38);
 }
 
+// Set by the level tick system (src/level/): Level.setBlock with UPDATE_ALL (neighbor updates, client sync).
+inline bool (*level_set_block)(int x, int y, int z, int state, int flags) = nullptr;
 inline void change_block(int x, int y, int z, int state) {
-    if (world.set_block(x, y, z, uint16_t(state))) broadcast(block_update(x, y, z, state));
+    if (level_set_block) level_set_block(x, y, z, state, 3);
+    else if (world.set_block(x, y, z, uint16_t(state))) broadcast_level(block_update(x, y, z, state), cur_level);
 }
+// /setblock, /fill: BlockInput.place(2 | 256) + updateNeighboursOnBlockSet (level sends the client updates).
+inline bool (*level_command_place)(int x, int y, int z, int state) = nullptr;
+
 
 inline int pick_item(int state) {
     auto it = std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state);

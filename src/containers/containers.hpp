@@ -16,42 +16,15 @@ inline bool use_block(Player& p, int hand, int x, int y, int z, int) {
            use_station(p, state, x, y, z) || use_brewing_or_beacon(p, state, x, y, z);
 }
 
-// getStateForPlacement for the blocks of this module; other states pass through.
-inline int place_state(Player& p, int state, int x, int y, int z, int face) {
-    const auto& reg = bs::R();
-    const bs::Block& blk = reg.block(reg.block_of(state));
-    Dir clicked = Dir(face >= 0 && face < 6 ? face : 1);
-    if (reg.has(state, "waterlogged")) {
-        int here = world.get_block(x, y, z);
-        state = with(state, "waterlogged", reg.fluid_type(here) == bs::WATER ? "true" : "false");
-    }
-    if (blk.is_a("ChestBlock")) return place_chest(p, state, x, y, z, face);
-    int type = blk.block_entity;
-    namespace t = block_entity_types;
-    if (type == t::barrel || type == t::dispenser || type == t::dropper)
-        return with(state, "facing", dir_name(bs::opposite(nearest_looking(p))));
-    if (type == t::shulker_box) return with(state, "facing", dir_name(clicked));
-    if (type == t::hopper) {
-        Dir d = bs::opposite(clicked);
-        return with(state, "facing", dir_name(d == bs::UP ? bs::DOWN : d));
-    }
-    if (type == t::furnace || type == t::smoker || type == t::blast_furnace || type == t::ender_chest || type == t::lectern ||
-        blk.name == "loom" || blk.name == "stonecutter")
-        return with(state, "facing", dir_name(bs::opposite(horizontal_facing(p))));
-    if (blk.is_a("AnvilBlock")) return with(state, "facing", dir_name(clockwise(horizontal_facing(p))));
-    return state;
-}
-
 inline void placed(Player&, int x, int y, int z, const ItemStack& item) {
     int state = world.get_block(x, y, z);
-    chest_link_partner(x, y, z, state);
     if (be::block_entity_type(state) < 0) return;
     if (!comp::get(item, comp::custom_name()) && !comp::get(item, comp::container())) return;
     if (auto b = be::get(x, y, z)) apply_item(*b, item);
 }
 
-inline void block_changed(int x, int y, int z, int old_state, int new_state) {
-    if (state_block_index(old_state) != state_block_index(new_state)) chest_unlink_partner(x, y, z, old_state);
+inline void block_changed(World* w, int x, int y, int z, int old_state, int new_state) {
+    InLevel in(w);
     be::block_changed(x, y, z, old_state, new_state);
 }
 
@@ -113,8 +86,7 @@ inline void containers_init() {
     chunk_loaded_hook = be::chunk_loaded;
     block_entity_update_tag = be::update_tag;
     use_block_hook = cont::use_block;
-    placement_hook = cont::place_state;
-    placed_hook = cont::placed;
+    lvl::block_item_placed_hook = cont::placed;
     loot_copy_block_entity = cont::loot_copy;
     before_world_save = be::flush_all;
     on_tick(be::tick);

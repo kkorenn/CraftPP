@@ -114,9 +114,9 @@ inline int view_dist_cached() {
     static int v = view_distance();
     return v;
 }
-inline bool sees_chunk(const Player& p, int cx, int cz) {
+inline bool sees_chunk(const Player& p, int cx, int cz) {  // in cur_level and in the player's view
     int v = view_dist_cached();
-    return std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
+    return p.level == cur_level && std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
 }
 // Sends to every player whose view contains (x, z).
 inline void broadcast_near(double x, double z, const Writer& w, const Player* except = nullptr) {
@@ -154,7 +154,7 @@ inline Chunk* loaded_chunk(int cx, int cz) {
     return c.get();
 }
 inline int block_at(int x, int y, int z) {
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return blocks::air;
+    if (y < world.min_y() || y >= world.max_y()) return blocks::air;
     Chunk* c = loaded_chunk(x >> 4, z >> 4);
     return c ? c->get(x & 15, y, z & 15) : UNLOADED_BLOCK;
 }
@@ -180,7 +180,7 @@ inline void collect_block_boxes(const AABB& box, std::vector<AABB>& out) {
     for (int x = x0; x <= x1; x++)
         for (int z = z0; z <= z1; z++) {
             Chunk* c = loaded_chunk(x >> 4, z >> 4);
-            for (int y = std::max(y0, MIN_Y); y <= std::min(y1, MIN_Y + HEIGHT - 1); y++) {
+            for (int y = std::max(y0, world.min_y()); y <= std::min(y1, world.max_y() - 1); y++) {
                 int edges = (x == x0 || x == x1) + (y == y0 || y == y1) + (z == z0 || z == z1);
                 if (edges == 3) continue;
                 int s = c ? c->get(x & 15, y, z & 15) : UNLOADED_BLOCK;
@@ -420,6 +420,8 @@ struct Entity {
     float width = 0, height = 0, eye_height = 0;  // current EntityDimensions
     AABB bb{};
     int chunk_x = 0, chunk_z = 0;                  // chunk index the manager files us under
+    World* home = nullptr;                         // level (add_entity: cur_level); players: their Player's
+    World* level() const { const Player* p = as_player_const(); return p ? p->level : home; }
     bool on_ground = false, horizontal_collision = false, vertical_collision = false, vertical_collision_below = false,
          minor_horizontal_collision = false;
     bool no_physics = false, first_tick = true, needs_sync = false, sync_velocity = false, sync_position = false;
@@ -892,7 +894,7 @@ inline void Entity::base_tick() {  // Entity.baseTick
         fall_distance *= 0.5;
     }
     if (is_in_water_or_rain() && fire_ticks > 0) clear_fire();
-    if (pos.y < MIN_Y - 64) {  // checkBelowWorld -> onBelowWorld
+    if (pos.y < world.min_y() - 64) {  // checkBelowWorld -> onBelowWorld
         if (as_living()) hurt_server(DamageSource::of("out_of_world"), 4.0f);
         else discard();
     }
@@ -985,3 +987,4 @@ inline void Entity::send_pairing(Player& to) {  // ServerEntity.sendPairingData
 }
 
 #include "manager.hpp"
+inline void ent_detail::block_cache_reset() { block_cache_clear(); }

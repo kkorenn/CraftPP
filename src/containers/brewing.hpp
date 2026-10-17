@@ -226,7 +226,7 @@ struct BeaconBE : be::Live {
         play_sound("block.beacon.deactivate", x + 0.5, y + 0.5, z + 0.5, 1.0f, 1.0f);
     }
     bool beam_clear() const {  // the beam reaches the sky (no fully opaque block above, except bedrock)
-        for (int yy = y + 1; yy < MIN_Y + HEIGHT; yy++) {
+        for (int yy = y + 1; yy < world.max_y(); yy++) {
             int s = world.get_block(x, yy, z);
             if (s == blocks::bedrock) continue;
             if ((light_data::PROPS[s] >> 4 & 15) >= 15) return false;
@@ -238,7 +238,7 @@ struct BeaconBE : be::Live {
         int lv = 0;
         for (int step = 1; step <= 4; lv = step++) {
             int ly = y - step;
-            if (ly < MIN_Y) break;
+            if (ly < world.min_y()) break;
             for (int lx = x - step; lx <= x + step; lx++)
                 for (int lz = z - step; lz <= z + step; lz++)
                     if (!bs::R().in(world.get_block(lx, ly, lz), tag)) return lv;

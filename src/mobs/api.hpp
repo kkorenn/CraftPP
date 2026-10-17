@@ -17,4 +17,5 @@ void spawn_xp_orbs(double x, double y, double z, int amount);  // ExperienceOrb.
 float player_damage_after_armor(Player& p, const DamageSource& s, float amount);
 void player_knockback_from(Player& p, const DamageSource& s);  // LivingEntity.dealDefaultKnockback for players
 void mobs_save_all();
+void player_entity_hidden(Player& p);     // end credits: every watcher drops the player entity
 void player_entity_respawned(Player& p);  // respawn: watchers drop and re-add the player entity  // save every loaded entity chunk (server stop)

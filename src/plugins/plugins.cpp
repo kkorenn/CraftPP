@@ -707,7 +707,7 @@ std::string api(const std::string& m, const Json& a) {
     }
     if (m == "world.spawn") return "{\"x\":" + std::to_string(world_spawn.x) + ",\"y\":" + std::to_string(world_spawn.y) +
                                    ",\"z\":" + std::to_string(world_spawn.z) + "}";
-    if (m == "world.save") { world.save_dirty(); return "null"; }
+    if (m == "world.save") { world->save_dirty(); return "null"; }
     if (m == "world.lightAt") return "{\"sky\":15,\"block\":0}";  // matches what CraftPP sends: full sky light everywhere
     if (m == "world.border")  // CraftPP sends no border packets, so clients use the vanilla default
         return "{\"centerX\":0,\"centerZ\":0,\"size\":59999968,\"damageAmount\":0.2,\"damageBuffer\":5,\"warningDistance\":5,\"warningTime\":15}";
@@ -1121,7 +1121,7 @@ void install_handlers() {
                                              std::to_string(y) + ",\"z\":" + std::to_string(z) + ",\"block\":" + q(block_name(state)) + "}");
             if (cancelled(r)) {  // revert the client's predicted break
                 p.send(block_update(x, y, z, state));
-                p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+                ack_block_changes(p, seq);
                 return;
             }
         }
@@ -1156,7 +1156,7 @@ void install_handlers() {
                                                  ",\"replaced\":" + q(block_name(replaced)) + ",\"item\":" + q(block_name(state)) + "}");
                 if (cancelled(r)) {
                     p.send(block_update(x, y, z, replaced));
-                    p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+                    ack_block_changes(p, seq);
                     return;
                 }
             }

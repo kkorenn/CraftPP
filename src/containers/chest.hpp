@@ -204,50 +204,6 @@ inline int chest_signal(be::Live& b) {
     return be::signal_from_items(b.items.data(), int(b.items.size()), b.max_stack());
 }
 
-// ---------- placement (getStateForPlacement) ----------
-inline int chest_partner_facing(int x, int y, int z, Dir towards, int block) {  // candidatePartnerFacing
-    int s = world.get_block(x + bs::DX[towards], y, z + bs::DZ[towards]);
-    if (bs::R().block_of(s) != block || bs::R().value(s, "type") != "single") return -1;
-    return int(facing(s));
-}
-inline int place_chest(Player& p, int state, int x, int y, int z, int face) {
-    int block = bs::R().block_of(state);
-    Dir f = bs::opposite(horizontal_facing(p));
-    std::string type = "single";
-    bool secondary = p.g.sneaking;
-    Dir clicked = Dir(face >= 0 && face < 6 ? face : 1);
-    if (clicked >= bs::NORTH && secondary) {
-        int nf = chest_partner_facing(x, y, z, bs::opposite(clicked), block);
-        bool same_axis = nf >= 0 && (Dir(nf) == clicked || Dir(nf) == bs::opposite(clicked));
-        if (nf >= 0 && !same_axis) {
-            f = Dir(nf);
-            type = counter_clockwise(f) == bs::opposite(clicked) ? "right" : "left";
-        }
-    }
-    if (type == "single" && !secondary) {  // getChestType
-        if (chest_partner_facing(x, y, z, clockwise(f), block) == int(f)) type = "left";
-        else if (chest_partner_facing(x, y, z, counter_clockwise(f), block) == int(f)) type = "right";
-    }
-    return with(with(state, "facing", dir_name(f)), "type", type);
-}
-// ChestBlock.updateShape on the partner after a double chest forms / breaks.
-inline void chest_link_partner(int x, int y, int z, int state) {
-    if (!is_chest_state(state) || bs::R().value(state, "type") == "single") return;
-    Dir d = connected_dir(state);
-    int px = x + bs::DX[d], pz = z + bs::DZ[d];
-    int ps = world.get_block(px, y, pz);
-    if (bs::R().block_of(ps) != bs::R().block_of(state) || bs::R().value(ps, "type") != "single" || facing(ps) != facing(state)) return;
-    change_block(px, y, pz, with(ps, "type", bs::R().value(state, "type") == "left" ? "right" : "left"));
-}
-inline void chest_unlink_partner(int x, int y, int z, int old_state) {
-    if (!is_chest_state(old_state) || bs::R().value(old_state, "type") == "single") return;
-    Dir d = connected_dir(old_state);
-    int px = x + bs::DX[d], pz = z + bs::DZ[d];
-    int ps = world.get_block(px, y, pz);
-    if (bs::R().block_of(ps) == bs::R().block_of(old_state) && bs::R().value(ps, "type") != "single" && connected_dir(ps) == bs::opposite(d))
-        change_block(px, y, pz, with(ps, "type", "single"));
-}
-
 // ---------- item <-> block entity components ----------
 // BlockEntity.applyComponentsFromItemStack: custom_name, container.
 inline void apply_item(be::Live& b, const ItemStack& it) {

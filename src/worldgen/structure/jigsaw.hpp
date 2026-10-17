@@ -55,8 +55,8 @@ struct PoolElementPiece : Piece {  // PoolElementStructurePiece
   bool isPoolElement() const override { return true; }
 };
 
-int resolveAnchor(const Json& j);
-int sampleHeight(const Json& j, RandomSource& r);
+int resolveAnchor(const Json& j, int minY = MIN_Y, int height = GEN_HEIGHT);
+int sampleHeight(const Json& j, RandomSource& r, int minY = MIN_Y, int height = GEN_HEIGHT);
 std::unique_ptr<Structure> makeJigsawStructure(const Json& j);
 
 }  // namespace structure

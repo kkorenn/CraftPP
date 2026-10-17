@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <stdexcept>
 
+#include "log.hpp"
 #include "worldgen/block_state.hpp"
 
 namespace worldgen {
@@ -46,11 +47,18 @@ Heightmap heightmap_by_name(const std::string& n) {
 }
 
 // ---------------------------------------------------------------- ProtoChunk
+uint16_t ProtoChunk::get(int x, int y, int z) const {
+  return y < owner->min_y || y >= owner->min_y + owner->height ? uint16_t(blocks::void_air) : chunk->get(x, y, z);
+}
+
 void ProtoChunk::set(int x, int y, int z, uint16_t state) {
-  if (y < MIN_Y || y >= MIN_Y + HEIGHT) return;
+  const int MIN_Y = owner->min_y;
+  if (y < MIN_Y || y >= MIN_Y + owner->height) return;
+  Status st = get_status();
+  std::unique_lock<std::mutex> light_lock;
+  if (st >= Status::INITIALIZE_LIGHT && owner->write_lock) light_lock = std::unique_lock(*owner->write_lock);
   uint16_t old = chunk->get(x, y, z);
   chunk->set(x, y, z, state);
-  Status st = get_status();
   if (st < Status::TERRAIN) return;
   // Heightmap.update for the final heightmaps (ProtoChunk.setBlockState, heightmapsAfter = FINAL_HEIGHTMAPS).
   const auto& op = opaque();
@@ -70,7 +78,8 @@ void ProtoChunk::set(int x, int y, int z, uint16_t state) {
 
 void ProtoChunk::prime_heightmaps() {
   const auto& op = opaque();
-  int top = MIN_Y + HEIGHT - 1;
+  const int MIN_Y = owner->min_y;
+  int top = MIN_Y + owner->height - 1;
   for (int z = 0; z < 16; z++)
     for (int x = 0; x < 16; x++) {
       uint8_t remaining = 0x3F;
@@ -146,10 +155,142 @@ ProtoPtr Pipeline::get_or_create(int cx, int cz) {
   return slot;
 }
 
+namespace {
+thread_local bool in_layer = false;  // this thread runs a ticket's layer: FEATURES runs directly
+}
+
+uint64_t Pipeline::add_ticket(int cx, int cz, int radius) {
+  auto [it, fresh] = pending_at.try_emplace(key(cx, cz), next_ticket);
+  if (fresh) pending.emplace(next_ticket++, Ticket{cx, cz, radius});
+  else if (radius > pending.at(it->second).radius && !pending.at(it->second).running) pending.at(it->second).radius = radius;
+  return it->second;
+}
+
+uint64_t Pipeline::covering(int cx, int cz) {
+  uint64_t best = ~uint64_t(0);
+  for (int dx = -1; dx <= 1; dx++)
+    for (int dz = -1; dz <= 1; dz++)
+      if (auto it = pending_at.find(key(cx + dx, cz + dz)); it != pending_at.end())
+        if (std::max(std::abs(dx), std::abs(dz)) <= pending.at(it->second).radius) best = std::min(best, it->second);
+  return best;
+}
+
+bool Pipeline::terrain_ready(const Ticket& t) {
+  int r = t.radius + 1;  // FEATURES needs TERRAIN in a radius of 1
+  for (int dx = -r; dx <= r; dx++)
+    for (int dz = -r; dz <= r; dz++) {
+      ProtoPtr p = find(t.cx + dx, t.cz + dz);
+      if (!p || p->get_status() < Status::TERRAIN) return false;
+    }
+  return true;
+}
+
+void Pipeline::ticket(int cx, int cz) {
+  std::lock_guard lock(om);
+  add_ticket(cx, cz, 1);
+}
+
+void Pipeline::cancel(int cx, int cz) {
+  std::lock_guard lock(om);
+  auto it = pending_at.find(key(cx, cz));
+  if (it == pending_at.end() || pending.at(it->second).running) return;
+  pending.erase(it->second);
+  pending_at.erase(it);
+}
+
+void Pipeline::run_until(uint64_t seq) {
+  std::unique_lock lock(om);
+  while (!pending.empty() && pending.begin()->first <= seq) {
+    auto& [head, t] = *pending.begin();
+    if (t.running) {
+      ocv.wait(lock);
+      continue;
+    }
+    if (terrain_ready(t)) {  // the layer: FEATURES over the square, x-major (ChunkGenerationTask.scheduleLayer)
+      t.running = true;
+      Ticket c = t;
+      uint64_t s = head;
+      lock.unlock();
+      in_layer = true;
+      try {
+        for (int x = c.cx - c.radius; x <= c.cx + c.radius; x++)
+          for (int z = c.cz - c.radius; z <= c.cz + c.radius; z++) ensure(x, z, Status::FEATURES);
+      } catch (...) {
+        in_layer = false;
+        lock.lock();
+        pending_at.erase(key(c.cx, c.cz)), pending.erase(s);
+        ocv.notify_all();
+        throw;
+      }
+      in_layer = false;
+      lock.lock();
+      pending_at.erase(key(c.cx, c.cz)), pending.erase(s);
+      ocv.notify_all();
+      continue;
+    }
+    // Not ready: generate terrain for the first pending ticket nobody is on yet (parallel with other threads).
+    auto it = pending.begin();
+    while (it != pending.end() && it->first <= seq && (it->second.prefetching || terrain_ready(it->second))) ++it;
+    if (it == pending.end() || it->first > seq) {
+      ocv.wait(lock);
+      continue;
+    }
+    it->second.prefetching = true;
+    Ticket c = it->second;
+    uint64_t s = it->first;
+    lock.unlock();
+    int r = c.radius + 1;
+    try {
+      for (int x = c.cx - r; x <= c.cx + r; x++)
+        for (int z = c.cz - r; z <= c.cz + r; z++) ensure(x, z, Status::TERRAIN);
+    } catch (...) {
+      lock.lock();
+      // No worker will finish this prefetch. Remove its ticket and wake dependent requests.
+      if (auto j = pending.find(s); j != pending.end()) {
+        auto at = pending_at.find(key(c.cx, c.cz));
+        if (at != pending_at.end() && at->second == s) pending_at.erase(at);
+        pending.erase(j);
+      }
+      ocv.notify_all();
+      throw;
+    }
+    lock.lock();
+    if (auto j = pending.find(s); j != pending.end()) j->second.prefetching = false;
+    ocv.notify_all();
+  }
+}
+
 ProtoPtr Pipeline::ensure(int cx, int cz, Status target) {
   ProtoPtr p = get_or_create(cx, cz);
+  if (target >= Status::LIGHT && p->get_status() < Status::LIGHT && !in_layer) {
+    // LIGHT needs the 3x3 decorated: that is a FULL task's layer (ChunkGenerationTask), so run it as one.
+    bool decorated = true;
+    for (int dx = -1; dx <= 1 && decorated; dx++)
+      for (int dz = -1; dz <= 1 && decorated; dz++) {
+        ProtoPtr n = find(cx + dx, cz + dz);
+        decorated = n && n->get_status() >= Status::FEATURES;
+      }
+    if (!decorated) {
+      uint64_t t;
+      {
+        std::lock_guard lock(om);
+        t = add_ticket(cx, cz, 1);
+      }
+      run_until(t);
+    }
+  }
   for (Status s = Status(int(p->get_status()) + 1); s <= target; s = Status(int(s) + 1)) {
     if (p->get_status() >= s) continue;
+    if (s == Status::FEATURES && !in_layer) {  // decorated by a ticket's layer, in queue order
+      uint64_t t;
+      {
+        std::lock_guard lock(om);
+        t = covering(cx, cz);
+        if (t == ~uint64_t(0)) t = add_ticket(cx, cz, 0);
+      }
+      run_until(t);
+      continue;
+    }
     const auto& d = steps[size_t(s)].direct;
     for (int r = 1; r < int(d.size()); r++)
       for (int dz = -r; dz <= r; dz++)
@@ -183,11 +324,14 @@ void Pipeline::run_step(ProtoChunk& c, Status s) {
   for (ProtoChunk* p : locks) held.emplace_back(p->m);
   if (c.get_status() >= s) return;  // another thread did it while we waited
   if (s == Status::BIOMES && !c.chunk) {
-    c.chunk = std::make_unique<Chunk>();
+    c.chunk = std::make_unique<Chunk>(min_y, height);
     c.chunk->cx = c.cx, c.chunk->cz = c.cz;
   }
   auto t0 = std::chrono::steady_clock::now();
+  GenContext saved = gen_context;
+  gen_context = context;
   if (st.fn) st.fn(region);
+  gen_context = saved;
   if (s == Status::TERRAIN) c.prime_heightmaps();
   step_ns[size_t(s)] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
   step_count[size_t(s)]++;
@@ -200,18 +344,25 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     std::lock_guard lock(p->m);
     if (!p->chunk) {  // freed after an earlier take: the World lost the chunk
       static std::once_flag warned;
-      std::call_once(warned, [] { fprintf(stderr, "worldgen: regenerating a dropped chunk without features\n"); });
+      std::call_once(warned, [] { log_warn("worldgen: regenerating a dropped chunk without features"); });
       Region region{*this, Status::TERRAIN, cx, cz, 0, 0, {p.get()}};
-      p->chunk = std::make_unique<Chunk>();
+      p->chunk = std::make_unique<Chunk>(min_y, height);
       p->chunk->cx = cx, p->chunk->cz = cz;
       Status keep = p->get_status();
       p->status.store(Status::STRUCTURE_REFERENCES);
       for (Status s : {Status::BIOMES, Status::TERRAIN})
-        if (steps[size_t(s)].fn) region.step = s, steps[size_t(s)].fn(region);
+        if (steps[size_t(s)].fn) {
+          GenContext saved = gen_context;
+          gen_context = context;
+          region.step = s, steps[size_t(s)].fn(region);
+          gen_context = saved;
+        }
       p->status.store(keep);
     }
     out.sections = p->chunk->sections;
     out.block_entities = p->chunk->block_entities;
+    out.level.post = p->chunk->level.post;  // ProtoChunk.postProcessing -> LevelChunk (src/level/ runs it)
+    out.structure_mobs = std::move(p->chunk->structure_mobs);
     if (on_take) on_take(*p, out);
     p->taken = true;
   }

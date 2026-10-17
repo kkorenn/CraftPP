@@ -6,6 +6,14 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.jar.JarFile;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import com.google.gson.JsonParser;
+import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
+import net.minecraft.resources.Identifier;
+import net.minecraft.tags.TagKey;
+import net.minecraft.tags.TagLoader;
 
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
@@ -53,9 +61,49 @@ public class MobDump {
         public int getMinY() { return -64; }
     }
 
+    // Bootstrap creates registries, but datapack tags are loaded separately by a real server.
+    // Bind vanilla block/fluid tags before querying tag-dependent path and spawn predicates.
+    static <T> List<Holder<T>> resolveTag(String name, Registry<T> registry,
+            Map<String, List<String>> raw, Map<String, List<Holder<T>>> resolved, Set<String> visiting) {
+        if (resolved.containsKey(name)) return resolved.get(name);
+        if (!visiting.add(name)) throw new IllegalStateException("Cyclic tag: " + name);
+        List<Holder<T>> values = new ArrayList<>();
+        for (String id : raw.getOrDefault(name, List.of())) {
+            if (id.startsWith("#")) values.addAll(resolveTag(id.substring(1), registry, raw, resolved, visiting));
+            else registry.get(Identifier.parse(id)).ifPresent(values::add);
+        }
+        visiting.remove(name);
+        values = new ArrayList<>(new LinkedHashSet<>(values));
+        resolved.put(name, values);
+        return values;
+    }
+    static <T> void bindTags(JarFile jar, Registry<T> registry, String directory) throws Exception {
+        Map<String, List<String>> raw = new TreeMap<>();
+        String prefix = "data/minecraft/tags/" + directory + "/";
+        for (var entry : Collections.list(jar.entries())) {
+            String path = entry.getName();
+            if (!path.startsWith(prefix) || !path.endsWith(".json")) continue;
+            List<String> values = new ArrayList<>();
+            try (var reader = new InputStreamReader(jar.getInputStream(entry), StandardCharsets.UTF_8)) {
+                for (var value : JsonParser.parseReader(reader).getAsJsonObject().getAsJsonArray("values"))
+                    values.add(value.isJsonPrimitive() ? value.getAsString() : value.getAsJsonObject().get("id").getAsString());
+            }
+            raw.put("minecraft:" + path.substring(prefix.length(), path.length() - 5), values);
+        }
+        Map<String, List<Holder<T>>> resolved = new HashMap<>();
+        Map<TagKey<T>, List<Holder<T>>> tags = new HashMap<>();
+        for (String name : raw.keySet()) tags.put(TagKey.create(registry.key(), Identifier.parse(name)),
+                resolveTag(name, registry, raw, resolved, new HashSet<>()));
+        registry.prepareTagReload(new TagLoader.LoadResult<>(registry.key(), tags)).apply();
+    }
+
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
+        try (JarFile jar = new JarFile(args[0])) {
+            bindTags(jar, BuiltInRegistries.BLOCK, "block");
+            bindTags(jar, BuiltInRegistries.FLUID, "fluid");
+        }
         out.append("{");
 
         // ---------- block states ----------
@@ -99,7 +147,9 @@ public class MobDump {
             FluidState fs = s.getFluidState();
             int fl = 0;
             if (!fs.isEmpty()) {
-                fl = fs.getAmount() | (fs.is(FluidTags.WATER) ? 16 : fs.is(FluidTags.LAVA) ? 32 : 48);
+                int type = fs.is(FluidTags.WATER) ? 16 : fs.is(FluidTags.LAVA) ? 32 : 0;
+                if (type == 0) throw new IllegalStateException("Unknown fluid: " + fs.getType());
+                fl = fs.getAmount() | type;
                 if (fs.isSource()) fl |= 128;
                 if (fs.getValue(net.minecraft.world.level.material.FlowingFluid.FALLING)) fl |= 64;
             }

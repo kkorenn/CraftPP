@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+#include "log.hpp"
 #include "worldgen/material.hpp"
 #include "worldgen/noise.hpp"
 #include "worldgen/overworld.hpp"
@@ -27,7 +28,7 @@ struct BiomeCtx : material::MaterialContext {
   void sampleDensityVolume(const std::string&, DensityBuffer&, const DensityVolume&) override {}
   int noiseBiome(int qx, int qy, int qz) override {
     ProtoChunk* p = l.region().chunk(qx >> 2, qz >> 2);
-    int y = qy - (MIN_Y >> 2);
+    int y = qy - (l.min_y() >> 2);
     if (p && p->chunk) return p->chunk->get_biome(qx & 3, y, qz & 3);
     // Outside the readable region vanilla would crash; sample the biome source instead.
     auto& t = *l.features().ow.terrain;
@@ -78,33 +79,35 @@ BlockEntity* Level::block_entity(const P& p) {
 
 int Level::height(Heightmap h, int x, int z) const {
   ProtoChunk* c = r.chunk(x >> 4, z >> 4);
-  return c && c->chunk ? c->height(h, x & 15, z & 15) : MIN_Y;
+  return c && c->chunk ? c->height(h, x & 15, z & 15) : min_y();
 }
+int Level::min_y() const { return r.pipeline.min_y; }
+int Level::max_y() const { return r.pipeline.min_y + r.pipeline.height - 1; }
 
 int Level::biome(const P& p) const {
   BiomeCtx ctx(const_cast<Level&>(*this));
-  return f.materials->zoomedBiome(ctx, p.x, p.y, p.z, true);
+  return f->materials->zoomedBiome(ctx, p.x, p.y, p.z, true);
 }
 
 RandomSource& Level::random() {
-  if (!rand) rand = f.regionRandom->at(r.cx * 16, 0, r.cz * 16);
+  if (!rand) rand = f->regionRandom->at(r.cx * 16, 0, r.cz * 16);
   return *rand;
 }
 
-int64_t Level::seed() const { return f.ow.seed; }
+int64_t Level::seed() const { return f->ow.seed; }
 
-float Level::temperature(int biome, const P& p) const { return f.materials->biomeTemperature(biome, p.x, p.y, p.z); }
+float Level::temperature(int biome, const P& p) const { return f->materials->biomeTemperature(biome, p.x, p.y, p.z); }
 
 void Level::mark_post_processing(const P& p) {
   if (outside(p.y)) return;
   ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
-  if (c && c->chunk) c->post_processing.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
+  if (c && c->chunk) c->post_processing.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
 void Level::schedule_leaf_tick(const P& p) {
   if (outside(p.y)) return;
   ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
-  if (c && c->chunk) c->leaf_ticks.push_back((p.y - MIN_Y) << 8 | (p.z & 15) << 4 | (p.x & 15));
+  if (c && c->chunk) c->leaf_ticks.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
 bool Level::should_freeze(int b, const P& p, bool checkNeighbors) const {
@@ -121,7 +124,7 @@ bool Level::should_freeze(int b, const P& p, bool checkNeighbors) const {
 }
 
 bool Level::should_snow(int b, const P& p) const {
-  if (!f.hasPrecipitation[size_t(b)] || temperature(b, p) >= 0.15F) return false;
+  if (!f->hasPrecipitation[size_t(b)] || temperature(b, p) >= 0.15F) return false;
   if (outside(p.y)) return false;
   int s = get(p);
   return (R().is_air(s) || R().is(s, blocks::snow)) && can_survive(const_cast<Level&>(*this), blocks::snow, p);
@@ -712,7 +715,7 @@ const Feature* Loader::feature(const Json& j) {
       bool place(Level&, RandomSource&, const P&) const override { return false; }
     };
     static std::set<std::string> warned;
-    if (warned.insert(t).second) fprintf(stderr, "worldgen: feature type %s not implemented\n", t.c_str());
+    if (warned.insert(t).second) log_warn("worldgen: feature type %s not implemented", t.c_str());
     return make<Missing>();
   }
   return it->second(*this, j);
@@ -904,7 +907,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   std::sort(names.begin(), names.end());
   std::vector<int> sources;
   possibleBiome.assign(names.size(), 0);
-  for (auto& [pt, b] : ow.terrain->biomeSource.values())
+  for (int b : ow.terrain->possibleBiomes())
     if (!possibleBiome[size_t(b)]) possibleBiome[size_t(b)] = 1, sources.push_back(b);
 
   // Feature lists of every biome (placed features parsed on first reference).
@@ -983,19 +986,26 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   }
 }
 
-void Features::finish(Region& r) const {
+void Features::finish(Region& r) const { feat::post_process(r); }
+
+void feat::post_process(Region& r) {
   using namespace feat;
-  Level level(r, *this);
+  Level level(r);
   ProtoChunk& c = r.center();
-  auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + MIN_Y, c.cz * 16 + (v >> 4 & 15)}; };
+  auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + r.pipeline.min_y, c.cz * 16 + (v >> 4 & 15)}; };
   auto writable = [&](const P& p) {
     ProtoChunk* n = r.chunk(p.x >> 4, p.z >> 4);
     return n && n->chunk && !n->taken;
   };
+  // ProtoChunk keeps one list per section: section order, then insertion order.
+  std::stable_sort(c.post_processing.begin(), c.post_processing.end(), [](int32_t a, int32_t b) { return a >> 12 < b >> 12; });
   for (int32_t v : c.post_processing) {
     P p = unpack(v);
     int s = level.get(p);
-    if (R().has_fluid(s)) continue;  // ponytail: fluid ticks (flowing water / lava after generation) not simulated
+    if (R().has_fluid(s)) {  // fluids: LevelChunk.postProcessGeneration ticks them when the chunk ticks (src/level/)
+      c.chunk->level.post.push_back(uint32_t(v));
+      continue;
+    }
     int n = update_from_neighbour_shapes(level, s, p);
     if (n != s && writable(p)) level.set(p, n);
   }
@@ -1047,7 +1057,7 @@ void Features::decorate(Region& r) const {
       for (auto& s : c.sections)
         for (int i = 0; i < 64; i++) present[s.biomes.get(i)] = 1;
     }
-  P origin{ox, MIN_Y, oz};
+  P origin{ox, r.pipeline.min_y, oz};
   int nsteps = std::max(11, int(steps.size()));
   std::vector<int> idx;
   for (int step = 0; step < nsteps; step++) {
