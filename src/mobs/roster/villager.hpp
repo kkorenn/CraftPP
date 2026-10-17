@@ -130,7 +130,7 @@ struct AbstractVillager : AgeableMob {
         return nullptr;
     }
     void stop_trading() {
-        if (Player* p = trading_player(); p && p->g.merchant_eid == id) close_container(*p, true);
+        if (Player* p = trading_player(); p && merchant_menu_of(*p) && merchant_menu_of(*p)->trader == id) close_container(*p, true);
         m.trading_player = -1;
     }
     void set_unhappy() {  // setUnhappy
@@ -143,7 +143,7 @@ struct AbstractVillager : AgeableMob {
         if (u > 0) data.set_int(edata::AbstractVillager::UNHAPPY_COUNTER, u - 1);
         if (is_trading()) {
             Player* p = trading_player();
-            if (!p || p->g.merchant_eid != id || p->g.dead) m.trading_player = -1;
+            if (!p || !merchant_menu_of(*p) || merchant_menu_of(*p)->trader != id || p->g.dead) m.trading_player = -1;
         }
     }
     void die(const DamageSource& s) override { stop_trading(); AgeableMob::die(s); }

@@ -3,21 +3,38 @@
 #include "../protocol.hpp"
 
 #include <array>
+#include <bitset>
 #include <iosfwd>
+#include <memory>
 #include <cerrno>
 #include <sys/socket.h>
 #include <cstdint>
 #include <mutex>
 #include <vector>
 
-// Item stack. Only the damage component is tracked so far (tools wear out); other components are dropped.
+// Data component patch beyond damage (custom name, container contents, enchantments, potion, ...): component id
+// -> value in its network encoding, sorted by id; `removed` lists prototype components the stack removes.
+// Shared and immutable once built (copying a stack copies the pointer). Helpers: containers/components.hpp.
+struct ItemComponents {
+    std::vector<std::pair<int, std::vector<uint8_t>>> set;
+    std::vector<int> removed;
+    bool operator==(const ItemComponents&) const = default;
+};
+using ComponentsPtr = std::shared_ptr<const ItemComponents>;
+
+// Item stack. Damage is a field (tools wear out); other components live in `comp` (null = none).
 struct ItemStack {
     int item = -1, count = 0, damage = 0;
+    ComponentsPtr comp;
+    ItemStack() = default;
+    ItemStack(int i, int c, int d = 0, ComponentsPtr cp = {}) : item(i), count(c), damage(d), comp(std::move(cp)) {}
     bool empty() const { return item < 0 || count <= 0; }
-    bool same(const ItemStack& o) const { return item == o.item && damage == o.damage; }  // isSameItemSameComponents
+    static bool same_comp(const ComponentsPtr& a, const ComponentsPtr& b) { return a == b || (a && b && *a == *b); }
+    bool same(const ItemStack& o) const { return item == o.item && damage == o.damage && same_comp(comp, o.comp); }  // isSameItemSameComponents
     bool operator==(const ItemStack& o) const {
-        return (empty() && o.empty()) || (item == o.item && count == o.count && damage == o.damage);
+        return (empty() && o.empty()) || (item == o.item && count == o.count && damage == o.damage && same_comp(comp, o.comp));
     }
+    ItemStack copy(int n) const { ItemStack r = *this; r.count = n; return r; }  // copyWithCount
 };
 
 // Outgoing bytes: game code appends framed packets; flush() writes as much as the socket takes without
@@ -87,7 +104,8 @@ struct Inbox {
     }
 };
 
-inline constexpr int MENU_SLOTS = 46;  // InventoryMenu and CraftingMenu both have 46 slots
+inline constexpr int MENU_SLOTS = 90;  // largest menu: double chest (54) + player inventory (36)
+struct Menu;  // container menus beyond inventory/crafting table (inventory.hpp)
 
 struct PlayerGame {
     // vitals (LivingEntity / FoodData)
@@ -107,18 +125,17 @@ struct PlayerGame {
     int dly_x = 0, dly_y = 0, dly_z = 0, dly_start = 0, dly_state = 0;
     // using an item (eating)
     int use_ticks = 0, use_hand = 0;
-    // menus: container 0 = inventory menu (always present), else the open crafting table
+    // menus: container 0 = inventory menu (always present), else the open crafting table (menu null) or `menu`
     ItemStack carried, result;
     std::array<ItemStack, 4> craft2;  // inventory 2x2 grid
     std::array<ItemStack, 9> craft3;  // crafting table 3x3 grid
     int container = 0, next_container = 0, state_id = 0;
     int table_x = 0, table_y = 0, table_z = 0;
-    // merchant menu (mobs/merchant_menu.hpp): trader entity id (-1 = not trading), MerchantContainer state
-    int merchant_eid = -1, merchant_active = -1, merchant_hint = 0;
-    std::array<ItemStack, 2> pay;
+    std::shared_ptr<Menu> menu;
     int qc_status = 0, qc_type = 0;  // quick craft (drag)
-    uint64_t qc_slots = 0;
+    std::bitset<MENU_SLOTS> qc_slots;
     std::array<ItemStack, MENU_SLOTS> remote{};  // what the client shows for the open menu
+    std::array<int, 16> remote_data{};             // container data slots the client has
     ItemStack remote_carried;
     bool remote_valid = false;
 };
