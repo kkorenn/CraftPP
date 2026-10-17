@@ -40,6 +40,8 @@ print("pick block reach ok")
 # Duplicate login: the same profile joining again kicks the old connection (PlayerList.disconnectAllPlayersWithProfile).
 DUPE = uuid.UUID("00000000-0000-4000-8000-0000000d0b1e")
 first, _ = login("Dupe", host, port, view=2, uid=DUPE)
+first.send(PLAY_SB["ping_request"], struct.pack(">q", 9))  # answered on the tick thread: registered by then
+wait(first, PLAY_CB["pong_response"])
 second, _ = login("Dupe2", host, port, view=2, uid=DUPE)
 wait(first, PLAY_CB["disconnect"], lambda b: b"multiplayer.disconnect.duplicate_login" in b.d)
 second.send(PLAY_SB["ping_request"], struct.pack(">q", 8))

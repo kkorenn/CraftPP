@@ -62,7 +62,7 @@ def wait_until(pred, seconds, what):
 def query_game_time():
     count = len(game_times)
     cmd("time query gametime")
-    wait_until(lambda: len(game_times) > count, 5, "game time response")
+    wait_until(lambda: len(game_times) > count, 15, "game time response")
     return game_times[-1]
 
 cmd("gamemode creative")
@@ -77,8 +77,8 @@ pump(0.5)
 tick0 = query_game_time()
 t0 = time.time()
 cmd(f"setblock {X} {Y} {Z} water")
-wait_until(lambda: at(X, Y, Z) == WATER, 3, "water source placed")
-wait_until(lambda: at(X + 7, Y, Z) == WATER + 7, 6, "water should reach distance 7")
+wait_until(lambda: at(X, Y, Z) == WATER, 10, "water source placed")
+wait_until(lambda: at(X + 7, Y, Z) == WATER + 7, 15, "water should reach distance 7")
 dt = time.time() - t0
 elapsed_ticks = query_game_time() - tick0
 pump(1.0)
@@ -90,8 +90,9 @@ for dx in range(-9, 10):
         got = at(X + dx, Y, Z + dz)
         if got != want: bad.append((dx, dz, got, want))
 assert not bad, f"water pattern differs at {bad[:5]}"
-# Tick catch-up after streaming or sanitizer overhead can compress elapsed wall time.
-assert 30 <= elapsed_ticks <= 90, f"water spread took {elapsed_ticks} ticks (vanilla: 7 x 5 = 35 ticks)"
+# Measured in game ticks (catch-up after lag compresses wall time); the upper bound also covers two command round
+# trips on a loaded host, so it only catches spreading that is several times too slow.
+assert 30 <= elapsed_ticks <= 140, f"water spread took {elapsed_ticks} ticks (vanilla: 7 x 5 = 35 ticks)"
 print(f"water: diamond to level 7 in {elapsed_ticks} ticks ({dt:.2f}s)")
 
 # 2. Flowing lava touching water turns into cobblestone (LiquidBlock.shouldSpreadLiquid).

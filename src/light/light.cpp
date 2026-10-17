@@ -622,13 +622,13 @@ struct Engine {
     void forget(int cx, int cz) {
         Column* c = col(cx, cz);
         if (!c) return;
-        for (int si = 0; si < SECTIONS; si++)
-            if (c->state[si + 1] & 32) update_section_status(cx, si + (MIN_Y >> 4), cz, true);
+        for (int si = 0; si < sections; si++)
+            if (c->state[size_t(si + 1)] & 32) update_section_status(cx, si + (min_y >> 4), cz, true);
         remove_sections();
         c->status = NEW, c->chunk = nullptr, c->hold.reset();
         c->adopted = c->resolve = c->from_disk = c->light_on = c->resend = false;
         c->queued = 0;
-        std::fill(std::begin(c->sources), std::end(c->sources), int16_t(SRC_MIN_Y));
+        std::fill(std::begin(c->sources), std::end(c->sources), int16_t(src_min_y));
         for (int dx = -1; dx <= 1; dx++)
             for (int dz = -1; dz <= 1; dz++) erase_if_unused(cx + dx, cz + dz);
     }

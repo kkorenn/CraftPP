@@ -678,9 +678,10 @@ inline Writer& write_spawn_info(Writer& w, const Player& p) {
 
 // Moves a player into `to` with a respawn packet (game/dimensions.hpp): ServerPlayer.teleport across levels
 // (keep = 3, all data) and PlayerList.respawn (keep = 0 after death, 1 after the end credits).
-inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep);
-inline void change_dimension(Player& p, World* to, double x, double y, double z, float yaw, float pitch) {
-    move_to_level(p, to, x, y, z, yaw, pitch, 3);
+// `rel`: the teleport's Relative flags (8 Y_ROT, 16 X_ROT: yaw/pitch are deltas; 32..256 DELTA: velocity kept).
+inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep, int rel = 0);
+inline void change_dimension(Player& p, World* to, double x, double y, double z, float yaw, float pitch, int rel = 0) {
+    move_to_level(p, to, x, y, z, yaw, pitch, 3, rel);
 }
 
 inline void teleport(Player& p, double x, double y, double z) {

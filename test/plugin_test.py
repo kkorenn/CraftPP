@@ -7,7 +7,7 @@ import glob, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, ti
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "test"))
-from bot import PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
+from bot import free_port, PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 25598
 BRIDGE = os.path.join(ROOT, "build/java/libs/craftpp-bridge.jar")
@@ -101,9 +101,11 @@ def start_server(d, port, plugins):
     log = open(os.path.join(d, "server.log"), "w")
     proc = subprocess.Popen([os.path.join(ROOT, "build/craftpp"), "test.properties"], cwd=d, stdin=subprocess.PIPE,
                             stdout=log, stderr=subprocess.STDOUT, text=True)
-    for _ in range(300):
+    for _ in range(2400):  # 2 min: the JVM starts slowly on a loaded host
         if "Done (" in open(os.path.join(d, "server.log")).read():
             return proc
+        if proc.poll() is not None:
+            break
         time.sleep(0.05)
     raise AssertionError("server did not start: " + open(os.path.join(d, "server.log")).read()[-2000:])
 
@@ -248,7 +250,7 @@ def main():
 
     # Memory: the same session without plugins (no JVM at all).
     d2 = tempfile.mkdtemp(prefix="craftpp-noplugins-")
-    s = socket.socket(); s.bind(("", 0)); port2 = s.getsockname()[1]; s.close()  # PORT + 1 can be a client's ephemeral port
+    port2 = free_port()
     proc = start_server(d2, port2, [])
     try:
         c, _ = login("Alice", "127.0.0.1", port2, view=2)
