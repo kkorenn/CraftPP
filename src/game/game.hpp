@@ -6,6 +6,7 @@
 #include "../level/glue.hpp"
 #include "portal.hpp"
 #include "../containers/containers.hpp"
+#include "../mobs/roster.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -52,6 +53,7 @@ inline void unregister_player(const PlayerPtr& pp) {
 // Called once from main() after register_core_handlers().
 inline void start_game() {
     game_init();
+    roster_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     containers_init();

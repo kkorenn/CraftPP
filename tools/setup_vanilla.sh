@@ -26,7 +26,12 @@ if [ ! -d data/vanilla/minecraft ]; then
   rm -rf data/vanilla && mv data/vanilla.tmp/data data/vanilla && rm -rf data/vanilla.tmp
 fi
 if [ -n "$REPORTS" ] && [ ! -f data/reports/registries.json ]; then
+  if [ -z "$JAVA" ]; then
+    for j in "${JAVA_HOME:+$JAVA_HOME/bin/java}" /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java java; do
+      [ -n "$j" ] && command -v "$j" >/dev/null 2>&1 && JAVA="$j" && break
+    done
+  fi
   rm -rf vanilla/generated.tmp
-  (cd vanilla && "${JAVA:-java}" -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --server --output generated.tmp > /dev/null)
+  (cd vanilla && "$JAVA" -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --server --output generated.tmp > /dev/null)
   rm -rf data/reports && mv vanilla/generated.tmp/reports data/reports && rm -rf vanilla/generated.tmp
 fi

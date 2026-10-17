@@ -594,7 +594,7 @@ inline void Mob::check_despawn() {  // Mob.checkDespawn
     Entity* nearest = nullptr;
     double best = 1e300;
     for (Entity* p : player_entities()) {
-        if (p->is_spectator()) continue;
+        if (p->is_spectator() || p->level() != cur_level) continue;  // level.getNearestPlayer
         double d = p->dist_sqr(*this);
         if (d < best) best = d, nearest = p;
     }

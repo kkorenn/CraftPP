@@ -43,7 +43,8 @@ def blast(host, port, data, linger=0.2):
     try:
         s.sendall(data)
         s.settimeout(linger)
-        while s.recv(1 << 16): pass
+        end = time.time() + 2  # mobs near spawn keep the stream busy: silence alone may never come
+        while s.recv(1 << 16) and time.time() < end: pass
     except OSError:
         pass
     finally:

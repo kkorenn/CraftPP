@@ -15,7 +15,7 @@ struct State {
     double last_charge = 0;
 };
 inline bool player_close_for_spawning(const Player& p, int cx, int cz) {  // ChunkMap.playerIsCloseEnoughForSpawning
-    if (p.gamemode == 3 || p.level != cur_level) return false;
+    if (p.gamemode == 3 || p.level != cur_level) return false;  // ServerLevel players only
     double dx = cx * 16 + 8 - p.x, dz = cz * 16 + 8 - p.z;
     return dx * dx + dz * dz < 16384.0;
 }
@@ -223,9 +223,7 @@ inline State create_state() {  // NaturalSpawner.createState (over loaded entiti
 // ServerChunkCache.tickChunks spawning part. Runs once per tick after entity ticking.
 inline void tick_natural_spawning() {
     using namespace spawn_detail;
-    bool any = false;
-    for (auto& p : players) any |= p->level == cur_level;
-    if (!any || !rule("spawn_mobs")) return;
+    if (!level_has_players(cur_level) || !rule("spawn_mobs")) return;
     State st = create_state();
     bool persistent = game_time % 400 == 0, enemies = difficulty() != 0;
     std::vector<int> cats;

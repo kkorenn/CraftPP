@@ -79,7 +79,7 @@ def texts(b):
     return "".join(out)
 
 
-def chat_with(c, needle, limit=3000):
+def chat_with(c, needle, limit=20000):
     return texts(wait(c, PLAY_CB["system_chat"], lambda b: needle.encode() in b.d, limit))
 
 
