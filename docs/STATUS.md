@@ -34,7 +34,6 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| dimensions | Core travel/generation integrated; remaining Nether features, lighting and environment attributes |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
 | effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
@@ -42,6 +41,9 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
 | feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
+| dim-light | per-World light engine (nether no skylight, end), light_ensure stall, TSan re-check |
+| nether-end-gen | nether/end feature types, end gateways, nether/end natural spawning |
+| dim-bughunt | end-portal segfault (ASan), portal destinations vs vanilla, pick-block reach, duplicate UUID kick, flaky tests |
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
