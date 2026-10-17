@@ -794,6 +794,7 @@ inline void EnderDragon::ai_step() {
         for (int wing : {WING1, WING2}) {
             AABB kb = part_box(wing).inflate(4.0, 2.0, 4.0).move(0.0, -2.0, 0.0);
             for (auto& pp : players) {
+                if (!here(*pp)) continue;
                 Player& p = *pp;
                 if (!attackable(p) || !player_box(p).intersects(kb)) continue;
                 double xd = p.x - b.x, zd = p.z - b.z, dd = std::max(xd * xd + zd * zd, 0.1);

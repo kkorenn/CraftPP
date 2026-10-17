@@ -1,28 +1,21 @@
 #pragma once
 // Boss fights entry point (included from game/game.hpp; boss::init() runs after the game handlers so it can
-// wrap them). The End fight lives on the level whose dimension is the End.
-// ponytail: until the dimensions branch lands, `debug-end-fight=true` in server.properties runs the fight in
-// the only level (the overworld), which is how the bot tests drive it.
+// wrap them). The dragon fight lives in the End (worlds[DIM_END]); the exit portal, credits and the trip home
+// are game/dimensions.hpp + game/portal.hpp (on_ender_dragon_killed, show_end_credits).
 #include "wither.hpp"
 
 namespace boss {
 
-inline std::set<std::string> seen_credits;  // player uuids (ServerPlayer.seenCredits)
-inline std::set<int> won_game;               // player eids waiting for PERFORM_RESPAWN after the credits
 inline std::map<int, int64_t> last_attack, gateway_cooldown;
 inline std::string saved_state;
 
-// ---------- persistence: level.dat keys ender-dragon-fight, seen-credits (entities: mob framework chunks) ----------
+// ---------- persistence: level.dat key ender-dragon-fight (entities: mob framework chunks) ----------
 inline void save_state() {
-    std::string f = fight ? fight->save() : "";
-    std::string credits;
-    for (auto& u : seen_credits) credits += u + ",";
-    std::string all = f + "|" + credits;
-    if (all == saved_state) return;
-    saved_state = all;
-    std::map<std::string, std::string> kv{{"seen-credits", credits}};
-    if (fight) kv["ender-dragon-fight"] = f;
-    write_level_data(kv);
+    if (!fight) return;
+    std::string f = fight->save();
+    if (f == saved_state) return;
+    saved_state = f;
+    write_level_data({{"ender-dragon-fight", f}});
 }
 
 // ---------- player actions ----------
@@ -71,43 +64,14 @@ inline bool use_end_crystal(Player& p, int hand, int x, int y, int z) {
     c->snap_to(x + 0.5, y + 1, z + 0.5, 0, 0);
     c->set_show_bottom(false);
     add_entity(std::move(c));
-    if (fight) fight->try_respawn();
+    if (fight && p.level == &boss_level()) fight->try_respawn();
     if (p.gamemode != 1 && --s.count <= 0) s = {};
     send_slot(p, hand == 1 ? 40 : p.selected);  // client predicted the use; resync the stack
     return true;
 }
 
-// ServerPlayer.showEndCredits / EndPortalBlock (fromEnd) for players.
-inline void respawn_after_win(Player& p) {  // PlayerList.respawn(player, keepAllPlayerData = true)
-    place_new_player(p);  // ponytail: no beds yet, so always the world spawn
-    p.send(Writer().varint(play_cb::respawn).varint(dimension_types::overworld).str("minecraft:overworld").i64(0)
-               .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63).u8(1));
-    p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
-    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
-               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
-    p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
-    send_health(p);
-    send_experience(p);
-    entities_reset_view(p);
-    player_entity_respawned(p);  // others see the player re-added at its new position
-}
-inline void enter_end_portal(Player& p) {
-    if (won_game.count(p.eid)) return;
-    if (!seen_credits.count(player_uuid(p))) {
-        won_game.insert(p.eid);
-        seen_credits.insert(player_uuid(p));
-        p.send(Writer().varint(play_cb::game_event).u8(4).f32(0.0f));  // WIN_GAME
-        log_info("%s entered the exit portal: credits", p.name.c_str());
-    } else {
-        won_game.insert(p.eid);  // ponytail: portal travel back is the same respawn as after the credits
-        respawn_after_win(p);
-        won_game.erase(p.eid);
-    }
-}
-
 inline void portal_checks(Player& p) {
-    if (!fight || p.g.dead || p.gamemode == 3) return;
+    if (!fight || p.level != &boss_level() || p.g.dead || p.gamemode == 3) return;
     AABB pb = player_box(p);
     int x0 = int(std::floor(pb.x0)), x1 = int(std::floor(pb.x1)), y0 = int(std::floor(pb.y0)), y1 = int(std::floor(pb.y1));
     int z0 = int(std::floor(pb.z0)), z1 = int(std::floor(pb.z1));
@@ -115,8 +79,6 @@ inline void portal_checks(Player& p) {
         for (int y = y0; y <= y1; y++)
             for (int z = z0; z <= z1; z++) {
                 int s = get_block(x, y, z);
-                if (s == blocks::end_portal && pb.intersects({double(x), y + 6 / 16.0, double(z), x + 1.0, y + 12 / 16.0, z + 1.0}))
-                    return enter_end_portal(p);
                 if (s != blocks::end_gateway) continue;
                 if (server_tick - gateway_cooldown[p.eid] < 20) continue;  // ponytail: player portal cooldown, not per-gateway beam timer
                 for (size_t i = 0; i < fight->placed_gateways.size(); i++) {
@@ -140,21 +102,31 @@ inline std::unique_ptr<::Entity> make_wither() { return std::make_unique<WitherB
 inline std::unique_ptr<::Entity> make_wither_skull() { return std::make_unique<WitherSkull>(); }
 
 // ---------- tick ----------
-inline void tick() {  // before the entity tick (on_tick order: game_init's hooks run first, then ours)
-    if (fight) {
-        fight->tick();
-        // EnderDragonFight's DRAGON ticket (radius 9): keep the arena's entity chunks loaded while it has players
-        if (!fight->bar_players.empty() && server_tick % 20 == 0)
-            for (int cx = -8; cx <= 8; cx++)
-                for (int cz = -8; cz <= 8; cz++) ensure_entity_chunk_loaded(cx, cz);
+inline void tick() {  // ServerLevel.tick for the End: EnderDragonFight.tick
+    if (!fight) return;
+    InLevel in_end(&boss_level());
+    // EndSpikeFeature crystals queued by worldgen (worker threads) join the level once their chunk is in memory
+    std::vector<endgen::PendingCrystal> ready;
+    {
+        std::lock_guard lock(endgen::pending_mtx);
+        std::erase_if(endgen::pending_crystals, [&](const endgen::PendingCrystal& c) {
+            if (!chunk_loaded_at(int(std::floor(c.x)), int(std::floor(c.z)))) return false;
+            ready.push_back(c);
+            return true;
+        });
     }
+    for (auto& c : ready) spawn<EndCrystal>(c.x, c.y, c.z, c.yaw);
+    fight->tick();
+    // EnderDragonFight's DRAGON ticket (radius 9): keep the arena's entity chunks loaded while it has players
+    if (!fight->bar_players.empty() && server_tick % 20 == 0)
+        for (int cx = -8; cx <= 8; cx++)
+            for (int cz = -8; cz <= 8; cz++) ensure_entity_chunk_loaded(cx, cz);
     for (auto& p : players) portal_checks(*p);
     if (server_tick % 100 == 0) save_state();
 }
 
 inline void on_leave(Player& p) {
     if (fight) std::erase(fight->bar_players, p.eid);
-    won_game.erase(p.eid);
     last_attack.erase(p.eid), gateway_cooldown.erase(p.eid);
 }
 
@@ -167,23 +139,10 @@ inline void init() {
     register_entity_factory(entity_types::wither_skull, make_wither_skull);
     if (!create_entity(entity_types::area_effect_cloud)) register_entity_factory(entity_types::area_effect_cloud, make_cloud);
     auto kv = read_level_data();
-    if (props.count("debug-end-fight") && props["debug-end-fight"] == "true") {
-        fight = new DragonFight();
-        if (kv.count("ender-dragon-fight")) fight->load(kv["ender-dragon-fight"]);
-        else {  // no End generator yet: a stand-in main island (top y 60) and the pillars (EndSpikeFeature)
-            for (int x = -48; x <= 48; x++)
-                for (int z = -48; z <= 48; z++)
-                    for (int y = 52; y <= 60 && x * x + z * z <= 48 * 48; y++) boss_level().set_block(x, y, z, blocks::end_stone);
-            for (auto& s : endgen::spikes_for_seed(level_seed())) DragonFight::place_spike_with_crystal(s, false, std::nullopt);
-        }
-        fight->init(level_seed());
-    }
-    if (kv.count("seen-credits")) {
-        std::istringstream in(kv["seen-credits"]);
-        for (std::string u; std::getline(in, u, ',');)
-            if (!u.empty()) seen_credits.insert(u);
-    }
-    saved_state = kv["ender-dragon-fight"] + "|" + kv["seen-credits"];  // what is on disk
+    fight = new DragonFight();  // ServerLevel: the End always has its EnderDragonFight
+    if (kv.count("ender-dragon-fight")) fight->load(kv["ender-dragon-fight"]);
+    fight->init(level_seed());
+    saved_state = kv["ender-dragon-fight"];  // what is on disk
     on_tick(tick);
     on_player_leave(on_leave);
 
@@ -210,14 +169,6 @@ inline void init() {
         static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
         if (!wither_check_spawn(x, y, z) && face >= 0 && face < 6)  // the skull went into the clicked or the next cell
             wither_check_spawn(x + off[face][0], y + off[face][1], z + off[face][2]);
-    });
-    on(play_sb::client_command, [prev = chain(play_sb::client_command)](Player& p, Reader& in, int id) {
-        Reader copy = in;
-        if (in.varint() == 0 && won_game.count(p.eid)) {  // PERFORM_RESPAWN after the credits
-            won_game.erase(p.eid);
-            return respawn_after_win(p);
-        }
-        if (prev) prev(p, copy, id);
     });
 }
 

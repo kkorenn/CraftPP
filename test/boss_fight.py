@@ -22,14 +22,16 @@ port = socket.socket(); port.bind(("", 0)); PORT = port.getsockname()[1]; port.c
 shutil.rmtree(RUN, ignore_errors=True)
 os.makedirs(RUN)
 open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name={BUILD}/boss-test/world\nlevel-type=flat\n"
-                                            f"level-seed={SEED}\ndebug-end-fight=true\npause-when-empty-seconds=600\n")
+                                            f"level-seed={SEED}\npause-when-empty-seconds=600\nspawn-protection=0\n")
 open(f"{RUN}/eula.txt", "w").write("eula=true\n")
 open(f"{RUN}/ops.json", "w").write('[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}]\n')
 log = open(f"{RUN}/server.log", "w")
 srv = subprocess.Popen([f"{ROOT}/{BUILD}/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
 def block_at(c, x, y, z):
-    return c.chunks[x >> 4, z >> 4][(y + 64) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)]
+    secs = c.chunks[x >> 4, z >> 4]
+    min_y = -64 if len(secs) == 24 else 0  # overworld -64..319, end 0..255
+    return secs[(y - min_y) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)]
 
 try:
     for _ in range(100):
@@ -77,13 +79,15 @@ try:
                 c.events = getattr(c, "events", []) + [b.u8()]
             elif pid == PLAY_CB["disconnect"]:
                 raise AssertionError(f"disconnected: {b.d[b.i:]!r}")
-            elif pid == PLAY_CB["respawn"]:
+            elif pid == PLAY_CB["respawn"]:  # changed level: the client drops chunks and entities
                 c.respawned = True
+                c.chunks.clear(); types.clear()
             if until(): return True
         raise AssertionError(f"timed out; phases {phases} bar {bar}")
 
     crystals = lambda: sorted(p for t, p in types.values() if t == ENT["end_crystal"])
-    pump(lambda: dragon is not None and len(crystals()) == 10 and 0 in bar, 20)
+    c.send(PLAY_SB["chat_command"], string("execute in minecraft:the_end run tp @s 0.5 100 0.5"))
+    pump(lambda: dragon is not None and len(crystals()) == 10 and 0 in bar, 60)
     want = sorted((x + .5, h + 1.0, z + .5) for x, z, r, h, g in SPIKES)
     assert crystals() == want, (crystals(), want)
     for x, z, r, h, g in SPIKES:
@@ -105,16 +109,20 @@ try:
     gx = math.floor(96 * math.cos(2 * (-math.pi + math.pi / 20 * LAST_GATEWAY)))
     gz = math.floor(96 * math.sin(2 * (-math.pi + math.pi / 20 * LAST_GATEWAY)))
     pump(lambda: dragon not in types and 1 in bar and blocks_seen.get((gx, 75, gz)) == BLK["end_gateway"]
-         and blocks_seen.get((0, 64, 0)) == BLK["dragon_egg"], 10)
-    portals = lambda: [(x, y, z) for x in range(-3, 4) for z in range(-3, 4) for y in range(56, 66) if block_at(c, x, y, z) == BLK["end_portal"]]
+         and any(k[0] == 0 and k[2] == 0 and v == BLK["dragon_egg"] for k, v in blocks_seen.items()), 10)
+    ey = next(k[1] for k, v in blocks_seen.items() if k[0] == 0 and k[2] == 0 and v == BLK["dragon_egg"])
+    py = ey - 4  # egg on the pillar (3 bedrock above the portal layer)
+    portals = lambda: [(x, y, z) for x in range(-3, 4) for z in range(-3, 4) for y in range(py - 2, py + 3) if block_at(c, x, y, z) == BLK["end_portal"]]
     try: pump(lambda: len(portals()) == 20, 10)  # big edits reach the client as section updates or chunk resends
     except AssertionError: pass
     portal = portals()
-    assert len(portal) == 20 and {p[1] for p in portal} == {60}, portal
-    assert block_at(c, 0, 63, 0) == BLK["bedrock"] and block_at(c, 3, 60, 0) == BLK["bedrock"]
-    print(f"kill ok: exit portal (20 blocks at y 60), egg at 0 64 0, gateway at {gx} 75 {gz}")
+    assert len(portal) == 20 and {p[1] for p in portal} == {py}, portal
+    assert block_at(c, 0, py + 3, 0) == BLK["bedrock"] and block_at(c, 3, py, 0) == BLK["bedrock"]
+    print(f"kill ok: exit portal (20 blocks at y {py}), egg at 0 {ey} 0, gateway at {gx} 75 {gz}")
 
-    walk(c, 1.5, 60.0, 0.5)  # <= 4 blocks a tick, like a client
+    c.respawned = False
+    walk(c, 1.5, py + 1.0, 0.5)  # <= 4 blocks a tick, like a client
+    walk(c, 1.5, float(py), 0.5)
     pump(lambda: 4 in getattr(c, "events", []), 5)
     c.send(PLAY_SB["client_command"], varint(0))
     pump(lambda: getattr(c, "respawned", False), 5)
@@ -151,10 +159,10 @@ try:
         old_dragon = dragon
         # stand on the rim bedrock next to each spot: block interaction range
         for i, (x, z, sx, sz) in enumerate([(3, 0, 3.5, 1.5), (-3, 0, -2.5, 1.5), (0, 3, 1.5, 3.5), (0, -3, 1.5, -2.5)]):
-            c.send(PLAY_SB["chat_command"], string(f"tp @s {sx} 61 {sz}"))
+            c.send(PLAY_SB["chat_command"], string(f"execute in minecraft:the_end run tp @s {sx} {py + 1} {sz}"))
             pump(lambda: abs(c.pos[0] - sx) < 0.01 and abs(c.pos[2] - sz) < 0.01, 10)
             c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
-            c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | 60)
+            c.send(PLAY_SB["use_item_on"], varint(0) + struct.pack(">Q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | py)
                    + varint(1) + struct.pack(">fff", .5, 1, .5) + b"\0\0" + varint(i + 1))
         pump(lambda: len(crystals()) == 4, 10)
         t0 = time.time()

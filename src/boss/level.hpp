@@ -11,7 +11,8 @@ namespace boss {
 // Vec3::dist_sqr against loose coordinates
 inline double dsq(const Vec3& v, double x, double y, double z) { return v.dist_sqr(Vec3{x, y, z}); }
 
-inline World& boss_level() { return world; }
+inline bool here(const Player& p) { return p.level == cur_level; }  // a player in the level being ticked
+inline World& boss_level() { return worlds[DIM_END]; }  // the level the dragon fight runs in
 inline int64_t level_seed() {
     static int64_t s = [] {
         auto kv = read_level_data();
@@ -73,7 +74,7 @@ inline const endgen::States& end_states() {
 // fluid. ponytail: blocksMotion approximated by "has collision".
 inline int heightmap(int x, int z, bool no_leaves) {
     if (!chunk_loaded_at(x, z)) return MIN_Y;  // unloaded columns read as barrier
-    for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--) {
+    for (int y = world.max_y() - 1; y >= MIN_Y; y--) {
         int s = get_block(x, y, z);
         if (is_air(s)) continue;
         bool motion = block_of(s).collision || (state_flags()[size_t(s)] & STATE_FLUID);
@@ -90,7 +91,7 @@ inline bool clip_hits(const Vec3& a, const Vec3& b) {
     double x0 = a.x - 1.0E-7 * (b.x - a.x), y0 = a.y - 1.0E-7 * (b.y - a.y), z0 = a.z - 1.0E-7 * (b.z - a.z);
     double x1 = b.x - 1.0E-7 * (a.x - b.x), y1 = b.y - 1.0E-7 * (a.y - b.y), z1 = b.z - 1.0E-7 * (a.z - b.z);
     int bx = int(std::floor(x0)), by = int(std::floor(y0)), bz = int(std::floor(z0));
-    auto solid = [](int x, int y, int z) { return y >= MIN_Y && y < MIN_Y + HEIGHT && block_of(get_block(x, y, z)).collision; };
+    auto solid = [](int x, int y, int z) { return y >= MIN_Y && y < world.max_y() && block_of(get_block(x, y, z)).collision; };
     if (solid(bx, by, bz)) return true;
     double dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
     int sx = dx > 0 ? 1 : dx < 0 ? -1 : 0, sy = dy > 0 ? 1 : dy < 0 ? -1 : 0, sz = dz > 0 ? 1 : dz < 0 ? -1 : 0;
@@ -150,6 +151,7 @@ inline void level_event(int type, int x, int y, int z, int data, bool global = f
     Writer w;
     w.varint(play_cb::level_event).i32(type).i64(pack_pos(x, y, z)).i32(data).boolean(global);
     for (auto& p : players) {
+        if (!here(*p)) continue;
         double dx = p->x - x, dy = p->y - y, dz = p->z - z;
         if (global || dx * dx + dy * dy + dz * dz < 64.0 * 64.0) p->send(w);
     }
@@ -160,6 +162,7 @@ inline void play_sound(const std::string& id, int source, double x, double y, do
     w.varint(play_cb::sound).varint(0).str(id).boolean(false).varint(source).i32(int32_t(x * 8)).i32(int32_t(y * 8))
         .i32(int32_t(z * 8)).f32(vol).f32(pitch).i64(int64_t(game_rng()));
     for (auto& p : players) {
+        if (!here(*p)) continue;
         double dx = p->x - x, dy = p->y - y, dz = p->z - z;
         if (dx * dx + dy * dy + dz * dz < range * range) p->send(w);
     }
@@ -238,7 +241,7 @@ inline void explode(double x, double y, double z, float radius, int interaction,
                 double xp = x, yp = y, zp = z;
                 for (; power > 0.0F; power -= 0.22500001F) {
                     int bx = int(std::floor(xp)), by = int(std::floor(yp)), bz = int(std::floor(zp));
-                    if (by < MIN_Y || by >= MIN_Y + HEIGHT) break;
+                    if (by < MIN_Y || by >= world.max_y()) break;
                     int s = get_block(bx, by, bz);
                     if (!is_air(s)) {
                         float res = block_of(s).resistance;
@@ -254,6 +257,7 @@ inline void explode(double x, double y, double z, float radius, int interaction,
     std::map<int, Vec3> knock;  // ServerExplosion.hurtEntities for players
     float r2 = radius * 2.0F;
     for (auto& pp : players) {
+        if (!here(*pp)) continue;
         Player& p = *pp;
         if (p.gamemode == 3 || p.g.dead || radius < 1.0E-5F) continue;
         double dist = std::sqrt(dsq(Vec3{p.x, p.y, p.z}, x, y, z)) / r2;
@@ -276,7 +280,7 @@ inline void explode(double x, double y, double z, float radius, int interaction,
                 LootContext ctx{s, bx, by, bz, {}, decay ? radius : 0};
                 roll_loot(loot_tables[size_t(block_of(s).loot)], ctx, drops);
             }
-            boss_level().set_block(bx, by, bz, blocks::air);
+            world.set_block(bx, by, bz, blocks::air);
             for (auto& d : drops) pop_resource(bx, by, bz, d);  // ponytail: vanilla merges drops into 16-stacks first
         }
         // one section update per block is simplest; clients batch them fine
@@ -291,6 +295,7 @@ inline void explode(double x, double y, double z, float radius, int interaction,
                      p_poof = particle_id("poof"), p_smoke = particle_id("smoke");
     bool small = radius < 2.0F || !destroy;
     for (auto& p : players) {
+        if (!here(*p)) continue;
         double dx = p->x - x, dy = p->y - y, dz = p->z - z;
         if (dx * dx + dy * dy + dz * dz >= 4096.0) continue;
         Writer w;

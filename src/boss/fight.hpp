@@ -71,8 +71,9 @@ struct DragonFight {
     void update_players() {
         std::vector<int> now;
         for (auto& pp : players) {
+            if (!here(*pp)) continue;
             Player& p = *pp;
-            if (p.g.dead) continue;  // ENTITY_STILL_ALIVE
+            if (p.g.dead || p.level != &boss_level()) continue;  // ENTITY_STILL_ALIVE, in this level
             if (dsq(Vec3{p.x, p.y, p.z}, origin[0], 128 + origin[1], origin[2]) > 192.0 * 192.0) continue;
             now.push_back(p.eid);
             if (std::find(bar_players.begin(), bar_players.end(), p.eid) == bar_players.end()) {
@@ -124,7 +125,7 @@ struct DragonFight {
     bool has_active_exit_portal() {
         for (int x = origin[0] - 3; x <= origin[0] + 3; x++)
             for (int z = origin[2] - 3; z <= origin[2] + 3; z++)
-                for (int y = MIN_Y; y < MIN_Y + HEIGHT; y++)
+                for (int y = MIN_Y; y < world.max_y(); y++)
                     if (get_block(x, y, z) == blocks::end_portal) return true;
         return false;
     }
@@ -197,6 +198,11 @@ struct DragonFight {
             dirty = true;
         }
         auto& e = *exit_portal;
+        if (!::dragon_fight.scanned || ::dragon_fight.px != e[0] || ::dragon_fight.py != e[1] || ::dragon_fight.pz != e[2]) {
+            ::dragon_fight.scanned = true;  // one exit portal: dimensions.hpp reuses our location
+            ::dragon_fight.px = e[0], ::dragon_fight.py = e[1], ::dragon_fight.pz = e[2];
+            ::dragon_fight.save();
+        }
         endgen::place_podium(e[0], e[1], e[2], active, end_states(), get_block, set_block, [](int x, int y, int z) {
             int s = get_block(x, y, z);  // Level.destroyBlock(pos, true): drops + break particles
             std::vector<ItemStack> drops;
@@ -225,6 +231,7 @@ struct DragonFight {
         if (!previously_killed) set_block(origin[0], heightmap(origin[0], origin[2], false), origin[2], blocks::dragon_egg);
         previously_killed = dragon_killed = true;
         dirty = true;
+        ::on_ender_dragon_killed();  // dimensions: the exit portal's state for the credits / portal travel
     }
     void update_dragon(EnderDragon& d) {
         if (!owns(d)) return;
@@ -439,7 +446,7 @@ inline std::array<int, 3> find_tallest_block(int ax, int ay, int az, int dist, b
     for (int xd = -dist; xd <= dist; xd++)
         for (int zd = -dist; zd <= dist; zd++) {
             if (xd == 0 && zd == 0 && !allow_bedrock) continue;
-            for (int y = MIN_Y + HEIGHT - 1; y > (t ? (*t)[1] : MIN_Y); y--) {
+            for (int y = world.max_y() - 1; y > (t ? (*t)[1] : MIN_Y); y--) {
                 int s = get_block(ax + xd, y, az + zd);
                 if (full_block(s) && (allow_bedrock || s != blocks::bedrock)) { t = std::array<int, 3>{ax + xd, y, az + zd}; break; }
             }
@@ -465,7 +472,7 @@ inline std::array<int, 3> gateway_exit(size_t gi) {  // getPortalPosition
         double bd = 0;
         for (int bz = cz * 16; bz < cz * 16 + 16; bz++)  // findValidSpawnInChunk
             for (int bx = cx * 16; bx < cx * 16 + 16; bx++)
-                for (int by = 30; by < MIN_Y + HEIGHT - 2; by++)
+                for (int by = 30; by < world.max_y() - 2; by++)
                     if (get_block(bx, by, bz) == blocks::end_stone && !full_block(get_block(bx, by + 1, bz)) && !full_block(get_block(bx, by + 2, bz))) {
                         double d = (bx + 0.5) * (bx + 0.5) + (by + 0.5) * (by + 0.5) + (bz + 0.5) * (bz + 0.5);
                         if (!best || d < bd) best = std::array<int, 3>{bx, by, bz}, bd = d;

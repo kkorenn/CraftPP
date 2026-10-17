@@ -273,6 +273,7 @@ inline void WitherSkull::tick() {  // AbstractHurtingProjectile.tick + WitherSku
         for (int i = 1; i <= 16; i++)
             if (clip_hits(from, from + vel * (i / 16.0))) { best = (i - 1) / 16.0; break; }
     for (auto& pp : players) {
+        if (!here(*pp)) continue;
         double t;
         if (alive_target(*pp) && segment_hits_box(from, to, player_box(*pp).inflate(0.3), t) && t < best) best = t, hit = pp.get();
     }
@@ -306,7 +307,7 @@ inline bool wither_check_spawn(int x, int y, int z) {
         for (int py = 0; py < 3; py++) {
             auto b = m->at(px, py, 0);
             int st = get_block(b[0], b[1], b[2]);
-            boss_level().set_block(b[0], b[1], b[2], blocks::air);
+            world.set_block(b[0], b[1], b[2], blocks::air);
             broadcast(block_update(b[0], b[1], b[2], blocks::air));
             level_event(2001, b[0], b[1], b[2], st);
         }

@@ -40,7 +40,7 @@ inline Player* player_by_eid(int eid) {
         if (p->eid == eid) return p.get();
     return nullptr;
 }
-inline bool alive_target(const Player& p) { return !p.g.dead && p.gamemode != 3; }
+inline bool alive_target(const Player& p) { return here(p) && !p.g.dead && p.gamemode != 3; }
 inline bool attackable(const Player& p) { return alive_target(p) && p.gamemode != 1; }  // canBeSeenAsEnemy
 
 // Level.getNearestPlayer(TargetingConditions.forCombat() [range], x, y, z): survival/adventure players.
@@ -48,6 +48,7 @@ inline Player* nearest_player(double x, double y, double z, double range = -1, b
     Player* best = nullptr;
     double bd = -1;
     for (auto& pp : players) {
+        if (!here(*pp)) continue;
         Player& p = *pp;
         if (!attackable(p) || (extra && !extra(p))) continue;
         double d = dsq(Vec3{p.x, p.y, p.z}, x, y, z);
@@ -144,6 +145,7 @@ struct AreaEffectCloud : BossEntity {
         if (tick_count % 5 != 0) return;
         std::erase_if(victims, [&](auto& v) { return tick_count >= v.second; });
         for (auto& pp : players) {
+            if (!here(*pp)) continue;
             Player& p = *pp;
             if (!alive_target(p) || victims.count(p.eid) || !player_box(p).intersects(bb)) continue;
             double dx = p.x - pos.x, dz = p.z - pos.z;
@@ -200,6 +202,7 @@ struct DragonFireball : BossEntity {
         c.radius_per_tick = (7.0f - c.radius) / float(c.duration);
         c.amplifier = 1;
         for (auto& pp : players) {
+            if (!here(*pp)) continue;
             Player& p = *pp;
             if (!alive_target(p) || !player_box(p).intersects(bb.inflate(4.0, 2.0, 4.0))) continue;
             if (dsq(Vec3{p.x, p.y, p.z}, pos.x, pos.y, pos.z) < 16.0) {
@@ -220,6 +223,7 @@ struct DragonFireball : BossEntity {
             for (int i = 1; i <= 16; i++)  // ponytail: hit point found by stepping, not exact face intersection
                 if (clip_hits(from, from + vel * (i / 16.0))) { best = (i - 1) / 16.0; break; }
         for (auto& pp : players) {
+            if (!here(*pp)) continue;
             double t;
             if (alive_target(*pp) && segment_hits_box(from, to, player_box(*pp).inflate(0.3), t) && t < best) best = t;
         }

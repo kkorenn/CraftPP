@@ -28,7 +28,7 @@ if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp)
-add_executable(craftpp src/main.cpp src/light/light.cpp ${CRAFTPP_MOB_SOURCES})
+add_executable(craftpp src/main.cpp src/boss/end_worldgen.cpp src/light/light.cpp ${CRAFTPP_MOB_SOURCES})
 # Game code is a Java port: signed int overflow wraps like Java instead of being UB.
 target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).

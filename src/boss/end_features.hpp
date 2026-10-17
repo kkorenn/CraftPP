@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace endgen {
@@ -52,6 +53,11 @@ inline void gateway_pos(int slot, int& x, int& y, int& z) {
     z = Mth::floor(96.0 * std::sin(2.0 * (-M_PI + (M_PI / 20) * slot)));
     y = 75;
 }
+
+// Crystals placed by the end_spike worldgen feature (worker threads); the boss tick adds the entities.
+struct PendingCrystal { double x, y, z; float yaw; };
+inline std::mutex pending_mtx;
+inline std::vector<PendingCrystal> pending_crystals;
 
 // Block states the features place (filled in from the generated tables by the caller; worldgen tests can
 // leave them at 0).
