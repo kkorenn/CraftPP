@@ -39,7 +39,7 @@ def health(c):
     return struct.unpack(">f", wait(c, PLAY_CB["set_health"], limit=5000).take(4))[0]
 
 def give_wait(c, name):
-    want = ids("items")[name]
+    want = rid("item", name)
     cmd(c, "clear @s")
     cmd(c, "give @s " + name)
     wait(c, PLAY_CB["container_set_slot"], lambda b: (b.varint(), b.varint(), b.i16(), b.varint() > 0 and b.varint() == want)[3], 5000)
