@@ -9,8 +9,7 @@
 // libjvm is dlopen'd only when plugins/*.jar exist, so the binary never links against Java.
 #include "plugins.hpp"
 
-#include "../play.hpp"
-#include "../worldgen/json.hpp"
+#include "internal.hpp"
 
 #include <dirent.h>
 #include <dlfcn.h>
@@ -28,7 +27,7 @@
 #endif
 
 namespace plugins {
-namespace {
+namespace detail {
 
 // ---------- text: legacy § codes -> text component ----------
 
@@ -95,7 +94,7 @@ void legacy_component(Writer& w, const std::string& s) {
     w.u8(0x00);
 }
 
-void send_legacy(Player& p, const std::string& text, bool action_bar = false) {
+void send_legacy(Player& p, const std::string& text, bool action_bar) {
     Writer w;
     w.varint(action_bar ? play_cb::set_action_bar_text : play_cb::system_chat);
     legacy_component(w, text);
@@ -132,11 +131,11 @@ std::string num(double v) {
     snprintf(b, sizeof b, "%.17g", v);
     return b;
 }
-std::string text_arg(const Json& a, std::string_view k, const std::string& def = "") {
+std::string text_arg(const Json& a, std::string_view k, const std::string& def) {
     auto* v = a.find(k);
     return v && v->isString() ? v->asString() : def;
 }
-double num_arg(const Json& a, std::string_view k, double def = 0) {
+double num_arg(const Json& a, std::string_view k, double def) {
     auto* v = a.find(k);
     return v && v->isNumber() ? v->asDouble() : def;
 }
@@ -162,7 +161,7 @@ PlayerPtr player_by_uuid(int64_t hi, int64_t lo) {
         if (p->uuid_hi == hi && p->uuid_lo == lo) return p;
     return nullptr;
 }
-PlayerPtr player_arg(const Json& a, std::string_view key = "uuid") {
+PlayerPtr player_arg(const Json& a, std::string_view key) {
     int64_t hi, lo;
     auto* v = a.find(key);
     if (v && v->isString() && parse_uuid(v->asString(), hi, lo)) return player_by_uuid(hi, lo);
@@ -175,32 +174,14 @@ Player& require_player(const Json& a) {
     return *keep;
 }
 
-// ---------- ops.json (vanilla format) ----------
-
-std::mutex ops_mtx;
-std::vector<std::pair<std::string, std::string>> ops;  // (uuid, name)
-
-void load_ops() {
-    std::lock_guard lock(ops_mtx);
-    ops.clear();
-    try {
-        Json j = Json::parseFile("ops.json");
-        for (auto& e : j.arr) ops.emplace_back(text_arg(e, "uuid"), text_arg(e, "name"));
-    } catch (...) {}
-}
-void save_ops() {
-    std::string s = "[\n";
-    for (size_t i = 0; i < ops.size(); i++)
-        s += "  {\"uuid\": " + q(ops[i].first) + ", \"name\": " + q(ops[i].second) + ", \"level\": 4, \"bypassesPlayerLimit\": false}" +
-             (i + 1 < ops.size() ? ",\n" : "\n");
-    std::ofstream("ops.json") << s << "]\n";
-}
-bool is_op(const Player& p) {
-    std::string u = uuid_str(p.uuid_hi, p.uuid_lo);
-    std::lock_guard lock(ops_mtx);
-    for (auto& [id, name] : ops)
-        if (id == u || strcasecmp(name.c_str(), p.name.c_str()) == 0) return true;
-    return false;
+// Operators, whitelist and bans are CraftPP's vanilla lists (commands/state.hpp): /op and Player.setOp agree.
+bool is_op(const Player& p) { return perm_level(p) > 0; }
+UserList* user_list(const std::string& name) {
+    if (name == "ops") return &ops;
+    if (name == "whitelist") return &whitelist;
+    if (name == "bans") return &banned_players;
+    if (name == "ipbans") return &banned_ips;
+    throw std::runtime_error("Unknown user list " + name);
 }
 
 std::string player_json(const Player& p) {
@@ -277,7 +258,7 @@ int encode(const BlockInfo& b, const std::vector<int>& idx) {
     return b.first + r;
 }
 // Default state of `name` with `props` overridden; -1 for an unknown block.
-int resolve_state(const std::string& name, const std::vector<std::pair<std::string, std::string>>& props = {}) {
+int resolve_state(const std::string& name, const std::vector<std::pair<std::string, std::string>>& props) {
     auto it = block_by_name.find(norm_id(name));
     if (it == block_by_name.end()) return -1;
     const BlockInfo& b = block_table[size_t(it->second)];
@@ -291,6 +272,16 @@ int resolve_state(const std::string& name, const std::vector<std::pair<std::stri
                 idx[i] = int(f - vals.begin());
             }
     return encode(b, idx);
+}
+int state_of_text(const std::string& text) {
+    auto br = text.find('[');
+    std::vector<std::pair<std::string, std::string>> props;
+    if (br != std::string::npos && text.back() == ']') {
+        std::istringstream ps(text.substr(br + 1, text.size() - br - 2));
+        for (std::string kv; std::getline(ps, kv, ',');)
+            if (auto eq = kv.find('='); eq != std::string::npos) props.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
+    }
+    return resolve_state(text.substr(0, br), props);
 }
 std::string block_data_json(int state) {
     auto* b = block_of(state);
@@ -316,10 +307,6 @@ int state_from_args(const Json& a) {
     return s;
 }
 
-std::string item_json(const Player::Slot& s) {
-    if (s.item < 0 || s.item >= int(item_names.size())) return "null";
-    return "{\"item\":" + q(item_names[size_t(s.item)]) + ",\"count\":" + std::to_string(s.count) + "}";
-}
 
 // ---------- shared plugin state ----------
 
@@ -576,14 +563,58 @@ std::string api(const std::string& m, const Json& a) {
         return "true";
     }
     if (m == "server.shutdown") { request_shutdown_async(); return "null"; }
-    if (m == "server.ops") {
-        std::lock_guard lock(ops_mtx);
+    if (m == "server.ops" || m == "server.whitelist") {  // names (bridge: getOperators / getWhitelistedPlayers)
+        std::lock_guard lock(cmd_mtx);
         std::string s = "[";
-        for (auto& [u, n] : ops) s += (s.size() > 1 ? "," : "") + q(n);
+        for (auto& r : (m == "server.ops" ? ops : whitelist).rows) s += (s.size() > 1 ? "," : "") + q(r.name);
         return s + "]";
     }
-    if (m == "server.whitelist") return "[]";
-    if (m == "server.hasWhitelist") return "false";
+    if (m == "server.list") {  // full rows of ops / whitelist / bans / ipbans
+        std::lock_guard lock(cmd_mtx);
+        std::string s = "[";
+        for (auto& r : user_list(text_arg(a, "list"))->rows)
+            s += (s.size() > 1 ? "," : "") + std::string("{\"uuid\":") + q(r.uuid) + ",\"name\":" + q(r.name) + ",\"ip\":" + q(r.ip) +
+                 ",\"level\":" + std::to_string(r.level) + ",\"created\":" + q(r.created) + ",\"source\":" + q(r.source) +
+                 ",\"expires\":" + q(r.expires) + ",\"reason\":" + q(r.reason) + "}";
+        return s + "]";
+    }
+    if (m == "server.listAdd" || m == "server.listRemove") {
+        std::string list = text_arg(a, "list"), uuid = text_arg(a, "uuid"), name = text_arg(a, "name"), ip = text_arg(a, "ip");
+        {
+            std::lock_guard lock(cmd_mtx);
+            UserList& l = *user_list(list);
+            std::erase_if(l.rows, [&](const ListEntry& r) {
+                return list == "ipbans" ? r.ip == ip : (!uuid.empty() && r.uuid == uuid) || (!name.empty() && strcasecmp(r.name.c_str(), name.c_str()) == 0);
+            });
+            if (m == "server.listAdd") {
+                ListEntry e;
+                e.uuid = uuid, e.name = name, e.ip = ip;
+                e.level = list == "ops" ? prop_int("op-permission-level", 4) : 0;
+                e.created = text_arg(a, "created", now_date());
+                e.source = text_arg(a, "source", "Server");
+                e.expires = text_arg(a, "expires", "forever");
+                e.reason = text_arg(a, "reason", "Banned by an operator.");
+                l.rows.push_back(e);
+            }
+            save_lists();
+        }
+        if (list == "ops")  // the client's permission level and command tree follow the op list
+            for (auto& p : snapshot())
+                if (p->name == name || uuid_str(p->uuid_hi, p->uuid_lo) == uuid) send_commands(*p);
+        return "null";
+    }
+    if (m == "server.listReload") {
+        std::lock_guard lock(cmd_mtx);
+        user_list(text_arg(a, "list"))->load();
+        return "null";
+    }
+    if (m == "server.hasWhitelist") return prop_bool("white-list", false) ? "true" : "false";
+    if (m == "server.setWhitelist" || m == "server.setWhitelistEnforced") {
+        std::lock_guard lock(cmd_mtx);
+        props[m == "server.setWhitelist" ? "white-list" : "enforce-whitelist"] = bool_arg(a, "value") ? "true" : "false";
+        return "null";
+    }
+    if (m == "server.whitelistEnforced") return prop_bool("enforce-whitelist", false) ? "true" : "false";
     if (m == "server.defaultGameMode") return std::to_string(std::max(0, gamemode_id(props["gamemode"])));
     if (m == "server.registries") return "null";  // the bridge uses its bundled 26.3 registry report
 
@@ -616,12 +647,8 @@ std::string api(const std::string& m, const Json& a) {
         auto p = player_arg(a);
         std::string name = p ? p->name : text_arg(a, "name");
         std::string uuid = p ? uuid_str(p->uuid_hi, p->uuid_lo) : text_arg(a, "uuid");
-        bool op = a["op"].asBool();
-        std::lock_guard lock(ops_mtx);
-        std::erase_if(ops, [&](auto& o) { return o.first == uuid || strcasecmp(o.second.c_str(), name.c_str()) == 0; });
-        if (op) ops.emplace_back(uuid, name);
-        save_ops();
-        return "null";
+        Json args = Json::parse("{\"list\":\"ops\",\"uuid\":" + q(uuid) + ",\"name\":" + q(name) + "}");
+        return api(bool_arg(a, "op") ? "server.listAdd" : "server.listRemove", args);
     }
     if (m == "player.sendBlockChange") {
         int s = resolve_state(text_arg(a, "block", "minecraft:air"));
@@ -640,7 +667,7 @@ std::string api(const std::string& m, const Json& a) {
         std::string s = "{\"heldSlot\":" + std::to_string(p.selected) + ",\"window\":null,\"items\":[";
         for (int slot = 0; slot < 46; slot++) {
             int i = menu_to_inv(slot);
-            s += (slot ? "," : "") + (i < 0 ? std::string("null") : item_json(p.inv[size_t(i)]));
+            s += (slot ? "," : "") + (i < 0 ? std::string("null") : item_to_json(p.inv[size_t(i)]));
         }
         return s + "]}";
     }
@@ -649,10 +676,7 @@ std::string api(const std::string& m, const Json& a) {
         int i = menu_to_inv(int(num_arg(a, "slot", -1)));
         if (i < 0) throw std::runtime_error("Invalid inventory slot");
         Player::Slot slot;
-        if (auto* it = a.find("item"); it && it->isObject()) {
-            auto f = item_by_name.find(norm_id(text_arg(*it, "item")));
-            if (f != item_by_name.end() && f->second > 0) slot = {f->second, std::max(1, int(num_arg(*it, "count", 1)))};
-        }  // ponytail: item meta (name/lore/enchants) is dropped; CraftPP slots hold item + count only
+        if (auto* it = a.find("item")) slot = item_from_json(*it);
         set_inv(p, i, slot);  // synced to the client at the end of the tick
         return "null";
     }
@@ -726,16 +750,22 @@ std::string api(const std::string& m, const Json& a) {
         return "true";
     }
     if (m == "world.blockDataOf") {  // "minecraft:oak_stairs[facing=north]"
-        std::string text = text_arg(a, "text", "minecraft:air");
-        auto br = text.find('[');
-        std::vector<std::pair<std::string, std::string>> props;
-        if (br != std::string::npos && text.back() == ']') {
-            std::istringstream ps(text.substr(br + 1, text.size() - br - 2));
-            for (std::string kv; std::getline(ps, kv, ',');)
-                if (auto eq = kv.find('='); eq != std::string::npos) props.emplace_back(kv.substr(0, eq), kv.substr(eq + 1));
-        }
-        int s = resolve_state(text.substr(0, br), props);
+        int s = state_of_text(text_arg(a, "text", "minecraft:air"));
         return s < 0 ? "null" : block_data_json(s);
+    }
+    if (m == "world.biome" || m == "world.setBiome") {  // 4x4x4 biome cells, like World.getBiome / setBiome
+        int cy = std::clamp(y, MIN_Y, MIN_Y + HEIGHT - 1) - MIN_Y;
+        ChunkPtr c = world.get_ptr(x >> 4, z >> 4);
+        std::lock_guard lock(c->m);
+        if (m == "world.biome") return q(biomes::NAMES[c->get_biome((x & 15) >> 2, cy >> 2, (z & 15) >> 2)]);
+        std::string want = norm_id(text_arg(a, "biome"));
+        for (size_t b = 0; b < std::size(biomes::NAMES); b++)
+            if (want == biomes::NAMES[b] || want == std::string("minecraft:") + biomes::NAMES[b]) {
+                c->set_biome((x & 15) >> 2, cy >> 2, (z & 15) >> 2, uint16_t(b));
+                c->dirty = true;  // clients see it after the chunk is resent (World.refreshChunk), as on Paper
+                return "null";
+            }
+        throw std::runtime_error("Unknown biome " + want);
     }
     if (m == "world.highestY") {
         for (int yy = MIN_Y + HEIGHT - 1; yy >= MIN_Y; yy--)
@@ -836,7 +866,8 @@ std::string api(const std::string& m, const Json& a) {
         if (id == "limited_crafting") broadcast(game_event(12, value ? 1.f : 0.f));
         return "true";
     }
-    if (m == "entity.list") return "[]";  // CraftPP has no non-player entities yet
+    for (auto* more : {api_display, api_entity})
+        if (auto r = more(m, a)) return *r;
     throw std::runtime_error("CraftPP does not implement plugin API call " + m + " yet");
 }
 
@@ -1336,7 +1367,8 @@ void install_handlers() {
     });
 }
 
-}  // namespace
+}  // namespace detail
+using namespace detail;
 
 // ---------- public hooks ----------
 
@@ -1346,7 +1378,6 @@ void start() {
 #if CRAFTPP_JNI
     with_big_stack([] {
         try {
-            load_ops();
             running = boot_jvm();
         } catch (const std::exception& e) {
             log_line("ERROR", "", std::string("Could not start plugins: ") + e.what());

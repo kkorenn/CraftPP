@@ -329,19 +329,11 @@ public final class ServerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     }
 
     public java.util.Set<OfflinePlayer> getOperators() {
-        java.util.Set<OfflinePlayer> ops = new java.util.HashSet<>();
-        for (JsonElement element : Main.rpc.api("server.ops").getAsJsonArray()) {
-            ops.add(getOfflinePlayer(element.getAsString()));
-        }
-        return ops;
+        return UserLists.players("ops");
     }
 
     public java.util.Set<OfflinePlayer> getWhitelistedPlayers() {
-        java.util.Set<OfflinePlayer> names = new java.util.HashSet<>();
-        for (JsonElement element : Main.rpc.api("server.whitelist").getAsJsonArray()) {
-            names.add(getOfflinePlayer(element.getAsString()));
-        }
-        return names;
+        return UserLists.players("whitelist");
     }
 
     public boolean hasWhitelist() {
@@ -353,10 +345,51 @@ public final class ServerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     }
 
     public boolean isWhitelistEnforced() {
-        return false;
+        return Main.rpc.api("server.whitelistEnforced").getAsBoolean();
+    }
+
+    public void setWhitelistEnforced(boolean value) {
+        Main.rpc.api("server.setWhitelistEnforced", "value", value);
     }
 
     public void reloadWhitelist() {
+        Main.rpc.api("server.listReload", "list", "whitelist");
+    }
+
+    public java.util.Set<OfflinePlayer> getBannedPlayers() {
+        return UserLists.players("bans");
+    }
+
+    public java.util.Set<String> getIPBans() {
+        java.util.Set<String> ips = new java.util.LinkedHashSet<>();
+        for (JsonElement row : UserLists.rows("ipbans")) ips.add(row.getAsJsonObject().get("ip").getAsString());
+        return ips;
+    }
+
+    public void banIP(String address) {
+        UserLists.banList(true).addBan(address, null, (java.util.Date) null, null);
+    }
+
+    public void banIP(java.net.InetAddress address) {
+        banIP(address.getHostAddress());
+    }
+
+    public void unbanIP(String address) {
+        UserLists.banList(true).pardon(address);
+    }
+
+    public void unbanIP(java.net.InetAddress address) {
+        unbanIP(address.getHostAddress());
+    }
+
+    @SuppressWarnings("unchecked")
+    public <T extends org.bukkit.BanList<?>> T getBanList(org.bukkit.BanList.Type type) {
+        return (T) UserLists.banList(type == org.bukkit.BanList.Type.IP);
+    }
+
+    @SuppressWarnings("unchecked")
+    public <B extends org.bukkit.BanList<E>, E> B getBanList(io.papermc.paper.ban.BanListType<B> type) {
+        return (B) UserLists.banList(type == io.papermc.paper.ban.BanListType.IP);
     }
 
     // ----- managers -----

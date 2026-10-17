@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.UUID;
 
 /** Backing for the single overworld {@link World} proxy. */
-public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvider {
+public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvider, ProxyBase.Overloads {
     private final String name;
     private final long seed;
     private final UUID uid;
@@ -507,26 +507,6 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
         return true;
     }
 
-    public void playSound(Location location, org.bukkit.Sound sound, float volume, float pitch) {
-        for (Player player : getPlayers()) {
-            player.playSound(location, sound, volume, pitch);
-        }
-    }
-
-    public void playSound(Location location, String sound, float volume, float pitch) {
-        for (Player player : getPlayers()) {
-            player.playSound(location, sound, volume, pitch);
-        }
-    }
-
-    public void playSound(Location location, org.bukkit.Sound sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
-    public void playSound(Location location, String sound, org.bukkit.SoundCategory category, float volume, float pitch) {
-        playSound(location, sound, volume, pitch);
-    }
-
     public Entity getEntity(UUID uuid) {
         for (Entity entity : getEntities()) {
             if (entity.getUniqueId().equals(uuid)) {
@@ -662,5 +642,10 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     @Override
     public String toString() {
         return "CraftWorld{name=" + name + "}";
+    }
+
+    @Override
+    public Object overload(java.lang.reflect.Method method, Object[] args) {
+        return Effects.overload(method, args, null);
     }
 }

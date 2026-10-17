@@ -191,6 +191,103 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
                         sender.sendMessage("rulesapi ok");
                     }, 3);
                 }
+                if (sender instanceof Player p && args.length > 0 && args[0].equals("entityapi")) {
+                    org.bukkit.World world = p.getWorld();
+                    Location at = new Location(world, 3.5, -60, 3.5, 90, 0);
+                    org.bukkit.entity.Entity spawned = world.spawnEntity(at, org.bukkit.entity.EntityType.COW);
+                    check(spawned instanceof org.bukkit.entity.Cow cow && cow.getType() == org.bukkit.entity.EntityType.COW, "spawned a Cow proxy");
+                    org.bukkit.entity.Cow cow = (org.bukkit.entity.Cow) spawned;
+                    check(cow.isValid() && !cow.isDead() && cow.getMaxHealth() == 10 && cow.getHealth() == 10, "cow vitals: " + cow.getHealth());
+                    check(Math.abs(cow.getLocation().getX() - 3.5) < 1e-9 && cow.getWidth() == 0.9f && cow.hasAI(), "cow position, size, AI");
+                    check(world.getEntities().contains(cow) && world.getLivingEntities().contains(cow), "world lists the cow");
+                    cow.setCustomName("§6Bessie");
+                    cow.setCustomNameVisible(true);
+                    check("§6Bessie".equals(cow.getCustomName()) && cow.isCustomNameVisible(), "custom name round trip");
+                    cow.setHealth(4);
+                    check(cow.getHealth() == 4, "setHealth");
+                    rejects(() -> cow.setHealth(11));
+                    cow.setMaxHealth(30);
+                    cow.setHealth(25);
+                    check(cow.getMaxHealth() == 30 && cow.getHealth() == 25, "max health attribute");
+                    cow.setSilent(true);
+                    cow.setGlowing(true);
+                    cow.setGravity(false);
+                    cow.setInvulnerable(true);
+                    cow.setAI(false);
+                    check(cow.isSilent() && cow.isGlowing() && !cow.hasGravity() && cow.isInvulnerable() && !cow.hasAI(), "entity flags");
+                    check(cow.addScoreboardTag("milk") && cow.getScoreboardTags().contains("milk") && !cow.addScoreboardTag("milk"), "scoreboard tags");
+                    cow.setVelocity(new org.bukkit.util.Vector(0, 0.5, 0));
+                    check(Math.abs(cow.getVelocity().getY() - 0.5) < 1e-9, "velocity");
+                    check(cow.teleport(new Location(world, 6.5, -60, 6.5, 180, 0)) && Math.abs(cow.getZ() - 6.5) < 1e-9
+                            && cow.getYaw() == 180, "entity teleport");
+                    cow.setInvulnerable(false);
+                    cow.damage(5);
+                    check(cow.getHealth() == 20, "damage: " + cow.getHealth());
+
+                    org.bukkit.entity.Zombie zombie = world.spawn(new Location(world, 0.5, -60, 8.5), org.bukkit.entity.Zombie.class);
+                    org.bukkit.inventory.ItemStack helmet = new org.bukkit.inventory.ItemStack(Material.DIAMOND_HELMET);
+                    zombie.getEquipment().setHelmet(helmet);
+                    check(zombie.getEquipment().getHelmet().getType() == Material.DIAMOND_HELMET, "zombie equipment");
+                    zombie.setTarget(cow);
+                    check(cow.equals(zombie.getTarget()), "mob target");
+                    zombie.remove();
+                    check(!zombie.isValid() && !world.getEntities().contains(zombie), "remove");
+
+                    org.bukkit.inventory.ItemStack sword = new org.bukkit.inventory.ItemStack(Material.DIAMOND_SWORD);
+                    org.bukkit.inventory.meta.ItemMeta meta = sword.getItemMeta();
+                    meta.setDisplayName("§bExcalibur");
+                    meta.setLore(List.of("§7Line one", "Line two"));
+                    meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS, 5, true);
+                    meta.setUnbreakable(true);
+                    meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS);
+                    sword.setItemMeta(meta);
+                    p.getInventory().setItem(4, sword);
+                    org.bukkit.inventory.ItemStack back = p.getInventory().getItem(4);
+                    org.bukkit.inventory.meta.ItemMeta got = back.getItemMeta();
+                    check(back.getType() == Material.DIAMOND_SWORD && "§bExcalibur".equals(got.getDisplayName()), "item name survives the server: " + got.getDisplayName());
+                    check(List.of("§7Line one", "Line two").equals(got.getLore()), "lore survives: " + got.getLore());
+                    check(got.getEnchantLevel(org.bukkit.enchantments.Enchantment.SHARPNESS) == 5 && got.isUnbreakable()
+                            && got.hasItemFlag(org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS), "enchants, unbreakable, flags survive");
+                    org.bukkit.entity.Item dropped = world.dropItem(new Location(world, 1.5, -59, 1.5), sword);
+                    check("§bExcalibur".equals(dropped.getItemStack().getItemMeta().getDisplayName()), "dropped item keeps meta");
+                    dropped.remove();
+
+                    check(world.getBiome(0, -60, 0) == org.bukkit.block.Biome.PLAINS, "flat world biome");
+                    world.setBiome(0, -60, 0, org.bukkit.block.Biome.DESERT);
+                    check(world.getBiome(1, -59, 2) == org.bukkit.block.Biome.DESERT && world.getBiome(4, -60, 0) == org.bukkit.block.Biome.PLAINS,
+                            "setBiome changes one 4x4x4 cell");
+
+                    org.bukkit.OfflinePlayer ghost = Bukkit.getOfflinePlayer("Ghost");
+                    ghost.setWhitelisted(true);
+                    check(ghost.isWhitelisted() && Bukkit.getWhitelistedPlayers().contains(ghost), "whitelist");
+                    ghost.setWhitelisted(false);
+                    org.bukkit.ban.ProfileBanList bans = Bukkit.getBanList(org.bukkit.BanList.Type.PROFILE);
+                    bans.addBan(Bukkit.createProfile(ghost.getUniqueId(), "Ghost"), "griefing", (java.util.Date) null, "CraftTest");
+                    check(ghost.isBanned() && bans.getBanEntry(Bukkit.createProfile(ghost.getUniqueId(), "Ghost")).getReason().equals("griefing"), "ban");
+                    bans.pardon(Bukkit.createProfile(ghost.getUniqueId(), "Ghost"));
+                    check(!ghost.isBanned(), "pardon");
+                    Bukkit.banIP("10.1.2.3");
+                    check(Bukkit.getIPBans().contains("10.1.2.3"), "ip ban");
+                    Bukkit.unbanIP("10.1.2.3");
+                    check(!Bukkit.getIPBans().contains("10.1.2.3"), "ip pardon");
+
+                    org.bukkit.scoreboard.Scoreboard board = Bukkit.getScoreboardManager().getNewScoreboard();
+                    org.bukkit.scoreboard.Objective side = board.registerNewObjective("crafttest", org.bukkit.scoreboard.Criteria.DUMMY, "§aCraft");
+                    side.setDisplaySlot(org.bukkit.scoreboard.DisplaySlot.SIDEBAR);
+                    side.getScore("apples").setScore(42);
+                    board.registerNewTeam("red").setPrefix("§c[R] ");
+                    p.setScoreboard(board);
+                    org.bukkit.boss.BossBar bar = Bukkit.createBossBar("§eBoss", org.bukkit.boss.BarColor.RED, org.bukkit.boss.BarStyle.SEGMENTED_10);
+                    bar.setProgress(0.25);
+                    bar.addPlayer(p);
+                    p.playSound(p.getLocation(), org.bukkit.Sound.BLOCK_ANVIL_LAND, org.bukkit.SoundCategory.BLOCKS, 0.5f, 1.5f);
+                    p.playSound(cow, org.bukkit.Sound.ENTITY_COW_AMBIENT, 1f, 1f);
+                    p.spawnParticle(org.bukkit.Particle.DUST, p.getLocation(), 7, new org.bukkit.Particle.DustOptions(org.bukkit.Color.RED, 2f));
+                    p.spawnParticle(org.bukkit.Particle.BLOCK, p.getLocation(), 3, Material.STONE.createBlockData());
+                    rejects(() -> p.spawnParticle(org.bukkit.Particle.DUST, p.getLocation(), 1));
+                    cow.remove();
+                    sender.sendMessage("entityapi ok");
+                }
                 if (args.length > 0 && args[0].equals("worldverify")) {
                     org.bukkit.World world = Bukkit.getWorlds().getFirst();
                     Location spawn = world.getSpawnLocation();

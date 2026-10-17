@@ -200,6 +200,33 @@ def main():
         assert chat_with(a, "rulesapi ok") == "rulesapi ok"
         print("59 typed game rules, defaults, legacy conversions, validation, events and client sync ok")
 
+        a.send(PLAY_SB["chat_command"], string("crafttest entityapi"))
+        obj = wait(a, PLAY_CB["set_objective"])
+        assert obj.str() == "crafttest" and obj.u8() == 0 and texts(obj) == "Craft", texts(obj)
+        score = wait(a, PLAY_CB["set_score"])
+        assert score.str() == "apples" and score.str() == "crafttest" and score.varint() == 42
+        disp = wait(a, PLAY_CB["set_display_objective"])
+        assert disp.varint() == 1 and disp.str() == "crafttest"
+        team = wait(a, PLAY_CB["set_player_team"])
+        assert team.str() == "red" and team.u8() == 0
+        boss = wait(a, PLAY_CB["boss_event"])
+        boss.take(16)
+        assert boss.varint() == 0 and texts(boss) == "Boss"
+        sound = wait(a, PLAY_CB["sound"], lambda q: b"anvil.land" in q.d)
+        sound.varint(); assert sound.str() == "minecraft:block.anvil.land"; sound.take(1)
+        assert sound.varint() == 4  # SoundCategory.BLOCKS -> SoundSource.BLOCKS
+        sound.take(12)
+        assert struct.unpack(">ff", sound.take(8)) == (0.5, 1.5)
+        wait(a, PLAY_CB["sound_entity"], lambda q: b"cow.ambient" in q.d)
+        dust = wait(a, PLAY_CB["level_particles"])
+        particles = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:particle_type"]["entries"]
+        assert dust.varint() == particles["minecraft:dust"]["protocol_id"]
+        assert struct.unpack(">if", dust.take(8)) == (0xFF0000, 2.0)
+        wait(a, PLAY_CB["level_particles"])
+        assert chat_with(a, "entityapi ok", 20000) == "entityapi ok"
+        print("entities (spawn, vitals, flags, tags, equipment, target, teleport, remove), item meta round trip, biomes,"
+              " whitelist/bans, scoreboards, boss bars, sounds, particles ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))

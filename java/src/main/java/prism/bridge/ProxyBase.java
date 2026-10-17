@@ -80,6 +80,10 @@ public final class ProxyBase implements InvocationHandler {
                 throw e.getCause();
             }
         }
+        if (target instanceof Overloads overloads) {
+            Object handled = overloads.overload(method, args == null ? new Object[0] : args);
+            if (handled != UNHANDLED) return handled;
+        }
         if (method.isDefault()) {
             return proxy instanceof CraftClasses.Generated ? CraftClasses.invokeDefault(proxy, method, args)
                     : InvocationHandler.invokeDefault(proxy, method, args);
@@ -116,6 +120,17 @@ public final class ProxyBase implements InvocationHandler {
                     + (prism.bridge.nms.Nms.enabled() ? "" : "; no plugin in plugins/ referenced net.minecraft.* at startup"));
         }
         return handle;
+    }
+
+    /** Returned by {@link Overloads#overload} for methods it does not handle. */
+    public static final Object UNHANDLED = new Object();
+
+    /**
+     * Backing objects that implement a whole overload family (spawnParticle, playSound, ...) in one place by
+     * looking at the argument types; called for interface methods without an exact backing method.
+     */
+    public interface Overloads {
+        Object overload(Method method, Object[] args) throws Throwable;
     }
 
     /** Backing objects with an NMS counterpart. */
