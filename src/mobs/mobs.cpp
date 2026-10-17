@@ -370,3 +370,27 @@ void mobs_init() {
         };
     }
 }
+
+void player_set_sleeping(Player& p, bool sleeping, int bed_x, int bed_y, int bed_z) {
+    if (PlayerEntity* pe = player_entity(p)) {
+        if (sleeping) {
+            pe->set_pose(Pose::SLEEPING);
+            Writer w;
+            w.boolean(true);
+            w.i64(int64_t(pack_pos(bed_x, bed_y, bed_z)));
+            pe->data.set_raw(edata::LivingEntity::SLEEPING_POS, edser::OPTIONAL_BLOCK_POS, w.b);
+        } else {
+            pe->set_pose(Pose::STANDING);
+            Writer w;
+            w.boolean(false);
+            pe->data.set_raw(edata::LivingEntity::SLEEPING_POS, edser::OPTIONAL_BLOCK_POS, w.b);
+        }
+    }
+}
+
+void mob_finalize_raid(Entity* e) {
+    if (auto* m = dynamic_cast<Mob*>(e)) {
+        m->finalize_spawn(SpawnReason::EVENT, nullptr);
+        m->set_persistence_required();
+    }
+}

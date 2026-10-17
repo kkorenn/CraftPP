@@ -308,6 +308,20 @@ inline NumberFormat number_format_from(const Nbt* n) {
 
 inline Nbt bossbars_nbt();                 // bossbar.hpp
 inline void bossbars_from(const Nbt& l);
+
+struct RaidInfo {
+    int groups_spawned = 0;
+    int raid_omen_level = 1;
+    int raiders_alive = 0;
+    float health_living = 0.0f;
+    float total_health = 0.0f;
+};
+inline bool (*cmd_raid_start)(Player& p, int omen_lvl) = nullptr;
+inline bool (*cmd_raid_stop)(Player& p) = nullptr;
+inline std::optional<RaidInfo> (*cmd_raid_check)(Player& p) = nullptr;
+inline bool (*bad_omen_village_check)(Player& p, int amp) = nullptr;
+inline void (*raid_omen_expire)(Player& p, int amp) = nullptr;
+
 inline Nbt level_to_nbt() {
     Nbt r = Nbt::compound();
     r.set("game_time", Nbt::num(Nbt::Long, game_time));

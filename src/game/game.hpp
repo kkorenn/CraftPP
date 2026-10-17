@@ -11,6 +11,7 @@
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
 #include "../boss/boss.hpp"
+#include "../environment/environment.hpp"
 
 #include <unistd.h>
 
@@ -62,6 +63,7 @@ inline void start_game() {
     portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     boss::init();  // after the game handlers: it wraps some of them
+    env::init();
     progress::init();  // advancements, recipe book, statistics (src/progress/)
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     start_tick_thread();

@@ -87,7 +87,8 @@ try:
 
     crystals = lambda: sorted(p for t, p in types.values() if t == ENT["end_crystal"])
     c.send(PLAY_SB["chat_command"], string("execute in minecraft:the_end run tp @s 0.5 100 0.5"))
-    pump(lambda: dragon is not None and len(crystals()) == 10 and 0 in bar, 60)
+    pump(lambda: dragon is not None and len(crystals()) == 10 and 0 in bar
+         and all((x >> 4, z >> 4) in c.chunks for x, z, r, h, g in SPIKES), 60)
     want = sorted((x + .5, h + 1.0, z + .5) for x, z, r, h, g in SPIKES)
     assert crystals() == want, (crystals(), want)
     for x, z, r, h, g in SPIKES:

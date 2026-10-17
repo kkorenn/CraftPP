@@ -71,7 +71,9 @@ struct MerchantMenu : Menu {
             s->last_traded_uh = p.uuid_hi, s->last_traded_ul = p.uuid_lo, s->traded = true;
             if (Entity* ve = entity_by_id(trader)) progress::villager_trade(p, *ve, o.result);
             if (levelled) {
-                s->update_special_prices(s->gossips.reputation(p.uuid_hi, p.uuid_lo));
+                int hero_amp = -1;
+                for (auto& eff : p.g.effects) if (eff.id == eff::hero_of_the_village) { hero_amp = eff.amp; break; }
+                s->update_special_prices(s->gossips.reputation(p.uuid_hi, p.uuid_lo), hero_amp);
                 send_merchant_offers(p, *s);
             }
         }
@@ -142,7 +144,9 @@ struct MerchantMenu : Menu {
 
 // Villager.startTrading / Merchant.openTradingScreen. `title_key`: entity.minecraft.villager.<profession> etc.
 inline void open_merchant(Player& p, int eid, MerchantState& m, const std::string& title_key) {
-    m.update_special_prices(m.gossips.reputation(p.uuid_hi, p.uuid_lo));
+    int hero_amp = -1;
+    for (auto& eff : p.g.effects) if (eff.id == eff::hero_of_the_village) { hero_amp = eff.amp; break; }
+    m.update_special_prices(m.gossips.reputation(p.uuid_hi, p.uuid_lo), hero_amp);
     Writer t;
     t.u8(0x0A).u8(0x08).u8(0).u8(9).bytes("translate", 9);  // {translate: title_key}
     t.u8(uint8_t(title_key.size() >> 8)).u8(uint8_t(title_key.size())).bytes(title_key.data(), title_key.size()).u8(0);

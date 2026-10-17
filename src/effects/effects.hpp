@@ -9,14 +9,6 @@
 // update/remove_mob_effect packets go to the player itself (ServerPlayer.onEffectAdded/Updated/Removed).
 
 // ---------- registry ----------
-namespace eff {
-inline int speed = -1, slowness = -1, haste = -1, mining_fatigue = -1, strength = -1, instant_health = -1,
-           instant_damage = -1, nausea = -1, regeneration = -1, resistance = -1, water_breathing = -1,
-           invisibility = -1, blindness = -1, night_vision = -1, hunger = -1, weakness = -1, poison = -1, wither = -1,
-           health_boost = -1, absorption = -1, saturation = -1, glowing = -1, luck = -1, unluck = -1, conduit_power = -1,
-           bad_omen = -1, hero_of_the_village = -1, darkness = -1, trial_omen = -1, raid_omen = -1, wind_charged = -1,
-           weaving = -1, oozing = -1, infested = -1, breath_of_the_nautilus = -1;
-}
 enum EffectCategory : uint8_t { EC_BENEFICIAL, EC_HARMFUL, EC_NEUTRAL };
 struct EffectModifier { int attr; std::string id; double amount; uint8_t op; };  // AttributeTemplate
 struct MobEffectDef {
@@ -195,7 +187,9 @@ inline bool should_apply_tick(int id, int tick, int amp) {
     if (mob_effects[size_t(id)].instant) return tick >= 1;
     return false;
 }
+
 inline void heal_living(LivingEntity& e, float a);  // below
+
 // applyEffectTick: false removes the effect
 inline bool apply_effect_tick(LivingEntity& e, int id, int amp) {
     if (id == eff::regeneration) {
@@ -216,8 +210,16 @@ inline bool apply_effect_tick(LivingEntity& e, int id, int amp) {
     } else if (id == eff::instant_health || id == eff::instant_damage) {
         if ((id == eff::instant_damage) == inverted_heal_and_harm(e)) heal_living(e, float(std::max(4 << amp, 0)));
         else e.hurt_server(DamageSource::of("magic"), float(6 << amp));
+    } else if (id == eff::bad_omen) {
+        if (Player* p = e.as_player()) {
+            if (bad_omen_village_check && bad_omen_village_check(*p, amp)) return false;
+        }
+    } else if (id == eff::raid_omen) {
+        if (Player* p = e.as_player()) {
+            if (raid_omen_expire) raid_omen_expire(*p, amp);
+        }
+        return false;
     }
-    // ponytail: bad_omen -> raid_omen and raid_omen -> raid start need raids (not implemented); they just tick down.
     return true;
 }
 // MobEffect.applyInstantaneousEffect (HealOrHarm scales by distance; others = applyEffectTick)

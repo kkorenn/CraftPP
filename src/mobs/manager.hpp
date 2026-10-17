@@ -18,6 +18,7 @@
 #include "../storage/region.hpp"
 
 using EntityFactory = std::unique_ptr<Entity> (*)();
+template <class T> inline std::unique_ptr<Entity> make_entity() { return std::make_unique<T>(); }
 
 namespace ent_detail {
 struct ChunkEnts { std::vector<Entity*> list; bool ticking = false; };

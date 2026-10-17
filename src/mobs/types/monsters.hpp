@@ -346,6 +346,10 @@ struct Creeper : Monster {
     bool powered() const { return data.get(edata::Creeper::IS_POWERED, 0); }
     bool ignited() const { return data.get(edata::Creeper::IS_IGNITED, 0); }
     void ignite() { data.set_bool(edata::Creeper::IS_IGNITED, true); }
+    void thunder_hit(Entity* lightning) override {
+        Entity::thunder_hit(lightning);
+        data.set_bool(edata::Creeper::IS_POWERED, true);
+    }
     void init() override { Monster::init(); data.set_int(edata::Creeper::SWELL_DIR, -1); }
     std::string hurt_sound(const DamageSource&) const override { return "minecraft:entity.creeper.hurt"; }
     std::string death_sound() const override { return "minecraft:entity.creeper.death"; }

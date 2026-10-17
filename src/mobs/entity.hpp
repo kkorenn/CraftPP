@@ -392,6 +392,7 @@ enum InteractionResult { IR_PASS, IR_SUCCESS, IR_CONSUME, IR_FAIL };
 
 struct LivingEntity;
 struct Mob;
+struct Monster;
 struct Player;
 inline void entity_moved_chunk(Entity& e, int ocx, int ocz);  // manager.hpp
 inline void entity_queue_free(Entity* e);                      // manager.hpp
@@ -446,6 +447,7 @@ struct Entity {
     // ---- type queries ----
     virtual LivingEntity* as_living() { return nullptr; }
     virtual Mob* as_mob() { return nullptr; }
+    virtual Monster* as_monster() { return nullptr; }
     virtual Player* as_player() { return nullptr; }  // PlayerEntity proxies only
     bool is_type(int t) const { return type == t; }
     bool in_tag(const std::string& tag) const { return entity_in_tag(type, tag); }
@@ -466,6 +468,8 @@ struct Entity {
         if (added) entity_queue_free(this);
     }
     virtual bool is_alive() const { return !removed; }
+    virtual float health() const { return 0.0f; }
+    virtual float max_health() const { return 0.0f; }
 
     // ---- physics properties ----
     virtual double default_gravity() const { return 0.0; }  // getDefaultGravity
@@ -498,6 +502,11 @@ struct Entity {
     }
     virtual void lava_hurt();
     virtual void ignite_for_ticks(int t) { if (fire_ticks < t) fire_ticks = t; }
+    virtual void ignite_for_seconds(int s) { ignite_for_ticks(s * 20); }
+    virtual void thunder_hit(Entity* lightning) {
+        ignite_for_seconds(8);
+        hurt_server(DamageSource::of("lightning_bolt", lightning), 5.0f);
+    }
     bool is_on_fire() const { return !fire_immune() && (fire_ticks > 0 || shared_flag(0)); }
     void clear_fire() { fire_ticks = std::min(0, fire_ticks); }
 

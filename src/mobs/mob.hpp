@@ -487,6 +487,7 @@ struct Animal : AgeableMob {
 
 // Monster
 struct Monster : PathfinderMob {
+    Monster* as_monster() override { return this; }
     void init() override { PathfinderMob::init(); xp_reward = 5; }
     int sound_source() const override { return SRC_HOSTILE; }
     void ai_step() override {
@@ -560,5 +561,4 @@ inline bool check_spawn_rules_for(int type, SpawnReason r, int x, int y, int z) 
 }
 
 // ---------- registration ----------
-template <class T> inline std::unique_ptr<Entity> make_entity() { return std::make_unique<T>(); }
 // create_entity(type) (manager.hpp) constructs a registered type and runs init(); add_entity() puts it in the world.

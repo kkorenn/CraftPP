@@ -1479,4 +1479,53 @@ inline void register_vanilla_commands() {
         else c.success(tr(k + "multiple", {changed, dim, cp(ax, az), cp(bx, bz)}), true);
         return changed;
     });
+
+    add_command_root("raid", 2);
+    reg("raid", [](Cmd& c) {
+        std::string args = c.has("args") ? c.str("args") : "";
+        auto parts = split_args(args, false);
+        if (parts.empty()) throw err("Unknown or incomplete command");
+        std::string sub = parts[0];
+        if (sub == "start") {
+            int level = 1;
+            if (parts.size() > 1) {
+                try { level = std::stoi(parts[1]); } catch (...) {}
+            }
+            if (!c.src.sender) throw err("Command must be run by a player");
+            if (cmd_raid_start && cmd_raid_start(*c.src.sender, level)) {
+                c.success(lit("Created a raid in your local village"), false);
+                return 1;
+            } else {
+                c.send(lit("Failed to create a raid in your local village"));
+                return -1;
+            }
+        } else if (sub == "stop") {
+            if (!c.src.sender) throw err("Command must be run by a player");
+            if (cmd_raid_stop && cmd_raid_stop(*c.src.sender)) {
+                c.success(lit("Stopped raid"), false);
+                return 1;
+            } else {
+                c.send(lit("No raid here"));
+                return -1;
+            }
+        } else if (sub == "check") {
+            if (!c.src.sender) throw err("Command must be run by a player");
+            if (cmd_raid_check) {
+                auto info = cmd_raid_check(*c.src.sender);
+                if (info) {
+                    c.success(lit("Found a started raid!"), false);
+                    std::string status = "Num groups spawned: " + std::to_string(info->groups_spawned) +
+                                         " Raid omen level: " + std::to_string(info->raid_omen_level) +
+                                         " Num mobs: " + std::to_string(info->raiders_alive) +
+                                         " Raid health: " + std::to_string(int(info->health_living)) +
+                                         " / " + std::to_string(int(info->total_health));
+                    c.success(lit(status), false);
+                    return 1;
+                }
+            }
+            c.send(lit("Found no started raids"));
+            return 0;
+        }
+        throw err("Unknown subcommand for /raid");
+    });
 }

@@ -3,6 +3,16 @@
 #include <cstdint>
 #include <memory>
 
+namespace eff {
+inline int speed = -1, slowness = -1, haste = -1, mining_fatigue = -1, strength = -1, instant_health = -1,
+           instant_damage = -1, jump_boost = -1, nausea = -1, regeneration = -1, resistance = -1, fire_resistance = -1,
+           water_breathing = -1, invisibility = -1, blindness = -1, night_vision = -1, hunger = -1, weakness = -1,
+           poison = -1, wither = -1, health_boost = -1, absorption = -1, saturation = -1, glowing = -1, levitation = -1,
+           luck = -1, unluck = -1, slow_falling = -1, conduit_power = -1, dolphins_grace = -1,
+           bad_omen = -1, hero_of_the_village = -1, darkness = -1, trial_omen = -1, raid_omen = -1, wind_charged = -1,
+           weaving = -1, oozing = -1, infested = -1, breath_of_the_nautilus = -1;
+}
+
 struct EffectInstance {
     int id = 0;          // minecraft:mob_effect registry id
     int duration = 0;    // ticks, -1 = infinite

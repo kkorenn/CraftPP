@@ -259,6 +259,8 @@ inline void placed_by(int s, const Pos& p) {
 
 // BlockItem.updateCustomBlockEntityTag: block entity data from the placed item (src/containers).
 inline void (*block_item_placed_hook)(Player& p, int x, int y, int z, const ItemStack& item) = nullptr;
+inline bool (*use_bed_hook)(Player& pl, const Pos& p, int s) = nullptr;
+inline bool (*use_anchor_hook)(Player& pl, const Pos& p, int s, ItemStack& slot) = nullptr;
 // BlockItem.place. Returns true when a block was placed.
 inline bool place_block_item(PlaceCtx& c, int standing) {
     int hit_state = get(c.hit);
@@ -321,6 +323,7 @@ inline bool use_without_item(Player& pl, const Pos& p, int s) {
             level_event(getb(ns, "open") ? 1008 : 1014, p, 0);
             return true;
         }
+        case K_BED: return use_bed_hook ? use_bed_hook(pl, p, s) : false;
         default: return rs_use(pl, p, s);
     }
 }
@@ -397,6 +400,9 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
     int s = get(hit);
     if (!suppress) {
         if (int result = use_cauldron_bucket(pl, hit, s, slot)) return result;
+        if (use_anchor_hook && block_of(s).name.find("respawn_anchor") != std::string::npos) {
+            if (use_anchor_hook(pl, hit, s, slot)) return 1;
+        }
         if (hand == 0 && use_without_item(pl, hit, s)) return 1;
     }
     if (slot.empty() || pl.gamemode == 2) return false;  // ponytail: adventure can_place_on not checked

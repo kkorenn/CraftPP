@@ -60,11 +60,13 @@ def main(host, port):
     # ---- summon every roster type: add_entity + entity data must parse ----
     want = {ENTITY[n]: n for n in ROSTER}
     seen = set()
+    roster_eids = set()
     for i, n in enumerate(ROSTER):
         cmd(c, f"summon minecraft:{n} {sx + 6 + (i % 10) * 3} {sy} {sz + 6 + (i // 10) * 3} {{NoAI:1b}}")
     def on_add(pid, b):
         if pid == PLAY_CB["add_entity"]:
-            t = add_entity(b)[1]
+            eid, t = add_entity(b)[:2]
+            roster_eids.add(eid)
             if t in want: seen.add(t)
         elif pid == PLAY_CB["set_entity_data"]:  # walk every entry: unknown serializers would desync the parse
             b.varint()
@@ -119,11 +121,12 @@ def main(host, port):
     cmd(c, "kill @e[type=!player,tag=!persist]")
 
     # ---- villager claims a composter, becomes a farmer, trades ----
+    cmd(c, "time set 6000")
     vx, vz = int(sx) + 3, int(sz)
     cmd(c, f"setblock {vx + 1} {int(sy)} {vz} minecraft:composter")
     hold(c, ("emerald", 64), ("wheat", 64), ("potato", 64), ("carrot", 64), ("beetroot", 64))
     cmd(c, f"summon villager {vx + 0.5} {sy} {vz + 0.5}")
-    v = spawned(c, "villager")
+    v = spawned(c, "villager", exclude=roster_eids)
     screen = {}
     deadline = time.time() + 15
     while "offers" not in screen and time.time() < deadline:

@@ -119,7 +119,6 @@ struct LivingEntity;
 struct PlayerEntity;
 struct DamageSource;
 // src/effects/effects.hpp
-namespace eff { inline int levitation = -1, slow_falling = -1, dolphins_grace = -1, fire_resistance = -1, jump_boost = -1; }
 inline float damage_after_magic_absorb(LivingEntity& e, const DamageSource& s, float dmg);
 inline void tick_effects(LivingEntity& e);
 inline void trigger_on_death_effects(LivingEntity& e);
@@ -237,9 +236,9 @@ struct LivingEntity : Entity {
     const ItemStack& main_hand() const { return item_in_slot(ES_MAINHAND); }
 
     // ---- health ----
-    virtual float health() const { return data.get_float(edata::LivingEntity::HEALTH, 1.0f); }
+    float health() const override { return data.get_float(edata::LivingEntity::HEALTH, 1.0f); }
     virtual void set_health(float h) { data.set_float(edata::LivingEntity::HEALTH, std::clamp(h, 0.0f, max_health())); }
-    float max_health() const { return float(attr(attr::max_health)); }
+    float max_health() const override { return float(attr(attr::max_health)); }
     void heal(float a) { float h = health(); if (h > 0) set_health(h + a); }
     bool is_dead_or_dying() const { return health() <= 0.0f || dead; }
     bool is_alive() const override { return !removed && health() > 0.0f; }

@@ -157,6 +157,14 @@ struct PlayerGame {
     int keepalive_timer = 0;
     std::array<ItemStack, 27> ender;  // PlayerEnderChestContainer (kept across respawn)
     int enchant_seed = 0;             // Player.enchantmentSeed (kept across respawn)
+    // sleeping & respawn
+    bool sleeping = false;
+    int sleep_ticks = 0;
+    int bed_x = 0, bed_y = 0, bed_z = 0;
+    bool has_respawn = false;
+    int respawn_x = 0, respawn_y = 0, respawn_z = 0;
+    std::string respawn_dim = "minecraft:overworld";
+    float respawn_angle = 0.0f;
 };
 
 // Connection bookkeeping (ServerCommonPacketListenerImpl / ServerGamePacketListenerImpl), game/netplay.hpp.

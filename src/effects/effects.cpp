@@ -409,3 +409,10 @@ static MobRegistration effects_registration([] {
         return true;
     };
 });
+
+bool player_add_effect(Player& p, int effect_id, int duration, int amp) {
+    if (PlayerEntity* pe = player_entity(p)) {
+        return add_effect(*pe, EffectInstance(effect_id, duration, amp));
+    }
+    return false;
+}

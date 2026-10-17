@@ -68,7 +68,8 @@ def main(host, port):
     wait(c, PLAY_CB["system_chat"], lambda b: b"commands.kill.success" in b.d)
     print("selectors ok: @e[type=cow] found and killed")
 
-    # ---- a player kills a cow: death animation, loot, xp ----
+    cmd(c, "clear Sam")
+    c.send(PLAY_SB["set_carried_item"], struct.pack(">h", 0))
     cmd(c, "give Sam minecraft:diamond_sword")
     cmd(c, f"summon cow {sx + 2} {sy} {sz} {{NoAI:1b}}")
     target = {}

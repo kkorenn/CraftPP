@@ -96,7 +96,23 @@ struct Pig : FarmAnimal {
         goal_selector.add(7, std::make_unique<LookAtPlayerGoal>(*this, 6.0f));
         goal_selector.add(8, std::make_unique<RandomLookAroundGoal>(*this));
     }
-    // ponytail: saddles / riding / boost and lightning conversion to zombified piglins are not ported yet
+    void thunder_hit(Entity* lightning) override {
+        if (difficulty() == 0) return;
+        auto e = create_entity(entity_types::zombified_piglin);
+        if (e) {
+            e->snap_to(pos.x, pos.y, pos.z, yaw, pitch);
+            if (auto* m = dynamic_cast<Mob*>(e.get())) {
+                m->finalize_spawn(SpawnReason::CONVERSION, nullptr);
+            }
+            if (auto* a = dynamic_cast<AgeableMob*>(e.get())) {
+                if (is_baby()) a->set_baby(true);
+            }
+            remove(Removal::DISCARDED);
+            add_entity(std::move(e));
+        } else {
+            Entity::thunder_hit(lightning);
+        }
+    }
 };
 struct Chicken : FarmAnimal {
     int egg_time = 0;

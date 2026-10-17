@@ -7,6 +7,7 @@
 #include "inventory.hpp"
 #include "loot.hpp"
 #include "../mobs/api.hpp"
+#include "../level/data.hpp"
 
 #include <unistd.h>
 
@@ -226,22 +227,76 @@ inline void kill(Player& p, const DamageSource& s) {
     send_health(p);
 }
 
-// PlayerList.respawn at the world spawn (no beds/anchors yet).
+// PlayerList.respawn (handles beds, respawn anchors, and world spawn).
 inline void respawn(Player& p) {
     if (!p.g.dead) return;
+    bool has_resp = p.g.has_respawn;
+    int rx = p.g.respawn_x, ry = p.g.respawn_y, rz = p.g.respawn_z;
+    std::string rdim = p.g.respawn_dim;
+    float rangle = p.g.respawn_angle;
+
     p.g = [&] {
         PlayerGame g;
         g.next_container = p.g.next_container;
         g.ender = std::move(p.g.ender), g.enchant_seed = p.g.enchant_seed;
         g.loaded = true;
         g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
+        g.has_respawn = has_resp;
+        g.respawn_x = rx; g.respawn_y = ry; g.respawn_z = rz;
+        g.respawn_dim = rdim; g.respawn_angle = rangle;
         return g;
     }();
+
+    World* target_level = &worlds[DIM_OVERWORLD];
+    bool spawn_valid = false;
+    double spawn_x = 0, spawn_y = 0, spawn_z = 0;
+    float target_yaw = spawn_yaw;
+
+    if (has_resp) {
+        if (rdim == "minecraft:the_nether") {
+            target_level = &worlds[DIM_NETHER];
+            int s = target_level->get_block(rx, ry, rz);
+            if (block_of(s).name.find("respawn_anchor") != std::string::npos) {
+                int charges = lvl::has(s, "charges") ? lvl::geti(s, "charges") : 0;
+                if (charges > 0) {
+                    spawn_valid = true;
+                    spawn_x = rx + 0.5; spawn_y = ry + 1.0; spawn_z = rz + 0.5;
+                    target_yaw = rangle;
+                    int next_s = lvl::with(s, "charges", charges - 1);
+                    target_level->set_block(rx, ry, rz, next_s);
+                    broadcast(block_update(rx, ry, rz, next_s));
+                }
+            }
+        } else if (rdim == "minecraft:overworld") {
+            target_level = &worlds[DIM_OVERWORLD];
+            int s = target_level->get_block(rx, ry, rz);
+            if (s > 0 && lvl::is(s, lvl::tag("beds"))) {
+                spawn_valid = true;
+                spawn_x = rx + 0.5; spawn_y = ry + 0.6; spawn_z = rz + 0.5;
+                target_yaw = rangle;
+            }
+        }
+        if (!spawn_valid) {
+            p.g.has_respawn = false;
+            Writer w;
+            w.varint(play_cb::set_action_bar_text);
+            std::string key = "block.minecraft.spawn.not_valid";
+            w.u8(0x0A).u8(0x08).u8(0).u8(9).bytes("translate", 9);
+            w.u8(uint8_t(key.size() >> 8)).u8(uint8_t(key.size())).bytes(key.data(), key.size()).u8(0);
+            p.send(w);
+        }
+    }
+
     World* died_in = p.level;
-    place_new_player(p);  // overworld spawn
-    World* spawn = p.level;
-    p.level = died_in;
-    move_to_level(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch, 0);  // TeleportTransition.createDefault
+    if (spawn_valid) {
+        p.level = died_in;
+        move_to_level(p, target_level, spawn_x, spawn_y, spawn_z, target_yaw, 0, 0);
+    } else {
+        place_new_player(p);  // overworld spawn
+        World* spawn = p.level;
+        p.level = died_in;
+        move_to_level(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch, 0);  // TeleportTransition.createDefault
+    }
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -632,6 +687,13 @@ inline void save_player_extra(const Player& p, Nbt& t) {
     t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
     save_player_effects(p, t);  // active_effects (src/effects)
     if (save_player_containers) save_player_containers(p, t);  // EnderItems, XpSeed
+    if (g.has_respawn) {
+        t.set("SpawnX", Nbt::num(Nbt::Int, g.respawn_x));
+        t.set("SpawnY", Nbt::num(Nbt::Int, g.respawn_y));
+        t.set("SpawnZ", Nbt::num(Nbt::Int, g.respawn_z));
+        t.set("SpawnDimension", Nbt::str(g.respawn_dim));
+        t.set("SpawnAngle", Nbt::real(Nbt::Float, g.respawn_angle));
+    }
     progress::save_player(p, t);
 }
 inline void load_player_extra(Player& p, const Nbt& t) {
@@ -641,6 +703,15 @@ inline void load_player_extra(Player& p, const Nbt& t) {
     g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
     g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
     g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+    if (t.get("SpawnX") && t.get("SpawnY") && t.get("SpawnZ")) {
+        g.has_respawn = true;
+        g.respawn_x = int(D("SpawnX", 0));
+        g.respawn_y = int(D("SpawnY", 0));
+        g.respawn_z = int(D("SpawnZ", 0));
+        if (const Nbt* dim = t.get("SpawnDimension"); dim && dim->t == Nbt::String) g.respawn_dim = dim->s;
+        else g.respawn_dim = "minecraft:overworld";
+        g.respawn_angle = float(D("SpawnAngle", 0));
+    }
     load_player_effects(p, t);
     if (load_player_containers) load_player_containers(p, t);
     progress::load_player(p, t);

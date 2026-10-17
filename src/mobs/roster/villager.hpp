@@ -311,7 +311,9 @@ struct Villager : AbstractVillager {
         bool none = offers().empty();
         if (hand == 0 && none) set_unhappy();
         if (none) return IR_CONSUME;
-        m.update_special_prices(m.gossips.reputation(p.uuid_hi, p.uuid_lo));
+        int hero_amp = -1;
+        for (auto& eff : p.g.effects) if (eff.id == eff::hero_of_the_village) { hero_amp = eff.amp; break; }
+        m.update_special_prices(m.gossips.reputation(p.uuid_hi, p.uuid_lo), hero_amp);
         open_merchant(p, id, m, "entity.minecraft.villager." + professions[size_t(m.profession)].name);
         return IR_SUCCESS;
     }
@@ -319,10 +321,30 @@ struct Villager : AbstractVillager {
         if (!AbstractVillager::hurt_server(s, dmg)) return false;
         if (s.causing && s.causing->as_player()) {  // ReputationEventType.VILLAGER_HURT
             m.gossips.add(s.causing->uuid_hi, s.causing->uuid_lo, GossipType::minor_negative, 25);
-            if (Player* tp = trading_player(); tp && tp->uuid_hi == s.causing->uuid_hi && tp->uuid_lo == s.causing->uuid_lo)
-                m.update_special_prices(m.gossips.reputation(tp->uuid_hi, tp->uuid_lo)), send_merchant_offers(*tp, m);
+            if (Player* tp = trading_player(); tp && tp->uuid_hi == s.causing->uuid_hi && tp->uuid_lo == s.causing->uuid_lo) {
+                int hero_amp = -1;
+                for (auto& eff : tp->g.effects) if (eff.id == eff::hero_of_the_village) { hero_amp = eff.amp; break; }
+                m.update_special_prices(m.gossips.reputation(tp->uuid_hi, tp->uuid_lo), hero_amp), send_merchant_offers(*tp, m);
+            }
         }
         return true;
+    }
+    void thunder_hit(Entity* lightning) override {
+        if (difficulty() == 0) return;
+        release_job();
+        stop_trading();
+        auto e = create_entity(entity_types::witch);
+        if (e) {
+            e->snap_to(pos.x, pos.y, pos.z, yaw, pitch);
+            if (auto* m = dynamic_cast<Mob*>(e.get())) {
+                m->finalize_spawn(SpawnReason::CONVERSION, nullptr);
+                m->set_persistence_required();
+            }
+            remove(Removal::DISCARDED);
+            add_entity(std::move(e));
+        } else {
+            Entity::thunder_hit(lightning);
+        }
     }
     void die(const DamageSource& s) override;  // zombie conversion (roster.cpp)
     void remove(Removal r) override {
