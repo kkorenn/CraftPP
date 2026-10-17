@@ -122,5 +122,6 @@ if [ -n "$TEST" ]; then
   PLUGIN_PORT=$(python3 -c "$FREE_PORT")
   [ -n "$SAN" ] || python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   python3 -u test/boss_fight.py  # own server: debug-end-fight
+  python3 -u test/netsec_test.py  # online-mode auth, AES-128/CFB8, signed chat, GS4 query, RCON
   echo "all tests passed"
 fi

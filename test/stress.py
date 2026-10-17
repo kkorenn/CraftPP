@@ -61,12 +61,20 @@ def online(host, port):
     s = socket.create_connection((host, port), timeout=10)
     s.sendall(handshake(port, 1) + pkt(0))
     data = b""
-    while not data.endswith(b"}}"):
+    import json
+    while True:
         d = s.recv(4096)
         if not d: break
         data += d
+        idx = data.find(b"{")
+        if idx >= 0:
+            try:
+                res = json.loads(data[idx:])
+                s.close()
+                return res["players"]["online"]
+            except Exception:
+                pass
     s.close()
-    import json, re
     return json.loads(data[data.index(b"{"):])["players"]["online"]
 
 def all_left(host, port):

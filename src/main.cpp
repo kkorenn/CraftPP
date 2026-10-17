@@ -1,4 +1,5 @@
 #include "paper.hpp"
+#include "net/netsec.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -16,12 +17,15 @@ static std::string status_json(int protocol) {
         std::lock_guard lock(cmd_mtx);
         motd = props["motd"];
     }
+    std::string icon = netsec::load_status_icon();
     // Echo a matching protocol so the list shows the MOTD; mismatched clients see the required version.
     return "{\"version\":{\"name\":\"CraftPP " + std::string(GAME_VERSION) + "\",\"protocol\":" +
            std::to_string(protocol == PROTOCOL_VERSION ? protocol : PROTOCOL_VERSION) +
            "},\"players\":{\"max\":" + std::to_string(std::stoi(props["max-players"])) +
            ",\"online\":" + std::to_string(snapshot().size()) +
-           "},\"description\":{\"text\":\"" + json_escape(motd) + "\"}}";
+           "},\"description\":{\"text\":\"" + json_escape(motd) + "\"}" +
+           (icon.empty() ? "" : ",\"favicon\":\"" + json_escape(icon) + "\"") +
+           ",\"enforcesSecureChat\":" + (netsec::enforces_secure_chat() ? "true" : "false") + "}";
 }
 
 // "/ip:port" like Java's InetSocketAddress (or vanilla's placeholder when log-ips=false).
@@ -54,6 +58,10 @@ static Reader wait_for(int fd, std::vector<uint8_t>& pkt, int id, std::vector<ui
 }
 
 static void handle(int fd) {
+    conn_compressed = false;
+    conn_rbuf = {};
+    conn_dec.reset();
+    conn_enc.reset();
     std::vector<uint8_t> pkt;
     PlayerPtr player;
     try {
@@ -81,11 +89,16 @@ static void handle(int fd) {
         if (next != 2 && next != 3) return;
         if (protocol != PROTOCOL_VERSION) return disconnect_login(fd, std::string("CraftPP needs Minecraft ") + GAME_VERSION);
 
-        // Login (offline mode: trust the client's name + uuid, no encryption).
+        // Login (offline mode or online-mode RSA/AES-CFB8 + Mojang hasJoined).
         Reader hello = wait_for(fd, pkt, login_sb::hello);
         std::string name = hello.str(16);
         if (!valid_player_name(name)) throw std::runtime_error("Invalid characters in username");
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
+        std::vector<ProfileProperty> profile_props;
+        if (!netsec::authenticate_login(fd, pkt, name, uuid_hi, uuid_lo, profile_props,
+                                        [](int f, std::vector<uint8_t>& p, int id) { return wait_for(f, p, id); },
+                                        [](int f, const std::string& m, const std::string& n) { disconnect_login(f, m, n); }))
+            return;
         if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
         // PlayerList.disconnectAllPlayersWithProfile, then WAITING_FOR_DUPE_DISCONNECT (600 ticks) until they are
         // saved and gone. Offline uuids come from the client, so the same name counts as the same profile too.
@@ -101,10 +114,14 @@ static void handle(int fd) {
         }
         if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!", name);
         start_compression(fd, login_cb::login_compression);  // net.hpp, network-compression-threshold
-        send_packet(fd, Writer()
-                            .varint(login_cb::login_finished)
-                            .i64(uuid_hi).i64(uuid_lo).str(name).varint(0)  // profile, no properties
-                            .i64(0).i64(0));                                 // session id
+        Writer lf;
+        lf.varint(login_cb::login_finished).i64(uuid_hi).i64(uuid_lo).str(name).varint(int32_t(profile_props.size()));
+        for (const auto& pr : profile_props) {
+            lf.str(pr.name).str(pr.value).boolean(!pr.sig.empty());
+            if (!pr.sig.empty()) lf.str(pr.sig);
+        }
+        lf.i64(0).i64(0);  // session id
+        send_packet(fd, lf);
         wait_for(fd, pkt, login_sb::login_acknowledged);
 
         // Configuration.
@@ -117,6 +134,7 @@ static void handle(int fd) {
         wait_for(fd, pkt, config_sb::select_known_packs, &client_info);
         auto cfg = reframe(config_packets, conn_compressed);
         send_raw(fd, cfg.data(), cfg.size());
+        if (!netsec::negotiate_resource_pack(fd, pkt, client_info, name)) return;
         send_packet(fd, Writer().varint(config_cb::finish_configuration));
         wait_for(fd, pkt, config_sb::finish_configuration, &client_info);
 
@@ -125,6 +143,8 @@ static void handle(int fd) {
         player->name = name;
         player->uuid_hi = uuid_hi;
         player->uuid_lo = uuid_lo;
+        player->properties = std::move(profile_props);
+        player->out.enc = conn_enc;
         player->eid = next_entity_id++;
         {
             std::lock_guard lock(cmd_mtx);  // /defaultgamemode rewrites props["gamemode"] on the tick thread
@@ -204,11 +224,13 @@ int main(int argc, char** argv) {
         logging::close();
         return 1;
     }
-    log_warn("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
-    log_warn("The server will make no attempt to authenticate usernames. Beware.");
-    log_warn("While this makes the game possible to play without internet access, it also opens up the ability for "
-             "hackers to connect with any username they choose.");
-    log_warn("CraftPP does not implement online-mode authentication, so this applies regardless of server.properties.");
+    if (props["online-mode"] != "true") {
+        log_warn("**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
+        log_warn("The server will make no attempt to authenticate usernames. Beware.");
+        log_warn("While this makes the game possible to play without internet access, it also opens up the ability for "
+                 "hackers to connect with any username they choose.");
+        log_warn("To change this, set \"online-mode\" to \"true\" in the server.properties file.");
+    }
 
     log_info("Preparing level \"%s\"", props["level-name"].c_str());
     auto level_start = std::chrono::steady_clock::now();
@@ -220,11 +242,14 @@ int main(int argc, char** argv) {
     log_info("Done preparing level \"%s\" (%.3fs)", props["level-name"].c_str(), secs(level_start));
     build_commands_packet();
     register_core_handlers();
+    netsec::register_netsec_handlers();
     register_command_handlers();
     register_paper_commands();
     on_tick(advance_time);  // world clocks, weather, border (commands/system.hpp)
     on_tick(broadcast_light);  // light_update for block edits (src/light)
     start_game();  // tick thread (game/tick.hpp)
+    netsec::start_query_thread();
+    netsec::start_rcon_thread();
     log_info("Running delayed init tasks");
     log_info("Done (%.3fs)! For help, type \"help\"", secs(boot));
 

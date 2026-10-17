@@ -193,14 +193,15 @@ struct Source {
     PlayerPtr sender;  // who receives feedback; null = server console
     PlayerPtr entity;  // executing entity (@s); null = none
     Entity* mob = nullptr;  // executing non-player entity (execute as @e[type=...]); entity is null then
+    std::string* rcon_out = nullptr;  // RconConsoleSource buffer when executing an RCON command
     double x = 0, y = 0, z = 0;
     float yaw = 0, pitch = 0;
     bool eyes = false;  // anchor
     int level = 4;
     bool silent = false;
     std::string dimension = "minecraft:overworld";
-    std::string name() const { return mob ? entity_name_string(mob) : entity ? entity->name : sender ? sender->name : "Server"; }
-    Text display() const { return mob ? entity_display_name(mob) : entity ? player_name(*entity) : sender ? player_name(*sender) : lit("Server"); }
+    std::string name() const { return mob ? entity_name_string(mob) : entity ? entity->name : sender ? sender->name : rcon_out ? "Rcon" : "Server"; }
+    Text display() const { return mob ? entity_display_name(mob) : entity ? player_name(*entity) : sender ? player_name(*sender) : lit(rcon_out ? "Rcon" : "Server"); }
 };
 inline Source source_for(const PlayerPtr& p) {
     Source s;

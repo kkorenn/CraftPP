@@ -1,15 +1,23 @@
 #pragma once
 // Socket I/O: length-prefixed packets, optional zlib compression (vanilla network-compression-threshold),
-// no encryption (offline mode).
+// and AES-128/CFB8 connection encryption (online mode).
 #include "protocol.hpp"
+#include "net/crypto.hpp"
 
 #include <sys/socket.h>
 #include <zlib.h>
 
 #include <cstring>
+#include <optional>
 
 inline int compression_threshold = -1;            // network-compression-threshold; -1 = off (set at startup)
 inline thread_local bool conn_compressed = false;  // network thread: our connection has sent set_compression
+inline thread_local std::optional<crypto::Cfb8> conn_dec, conn_enc;  // AES-128/CFB8 after ServerboundKeyPacket
+
+inline void start_encryption(const uint8_t key[16]) {
+    conn_dec.emplace(key);
+    conn_enc.emplace(key);
+}
 
 inline void put_varint(std::vector<uint8_t>& o, uint32_t v) {
     do {
@@ -74,11 +82,13 @@ inline bool read_exact(int fd, uint8_t* buf, size_t n) {
             if (n >= sizeof rb.b) {  // big body: straight into the destination
                 ssize_t r = recv(fd, buf, n, 0);
                 if (r <= 0) return false;
+                if (conn_dec) conn_dec->decrypt(buf, size_t(r));
                 buf += r, n -= size_t(r);
                 continue;
             }
             ssize_t r = recv(fd, rb.b, sizeof rb.b, 0);
             if (r <= 0) return false;
+            if (conn_dec) conn_dec->decrypt(rb.b, size_t(r));
             rb.i = 0, rb.n = size_t(r);
         }
         size_t k = std::min(n, rb.n - rb.i);
@@ -122,6 +132,12 @@ inline bool read_packet(int fd, std::vector<uint8_t>& out) {
 }
 
 inline void send_raw(int fd, const uint8_t* p, size_t n) {
+    std::vector<uint8_t> enc_buf;
+    if (conn_enc && n) {
+        enc_buf.assign(p, p + n);
+        conn_enc->encrypt(enc_buf.data(), n);
+        p = enc_buf.data();
+    }
     while (n) {
         ssize_t r = send(fd, p, n, 0);
         if (r <= 0) throw std::runtime_error("send failed");

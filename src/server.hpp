@@ -74,10 +74,15 @@ inline int64_t parse_seed(std::string s) {
 
 // ---------- players ----------
 
+struct ProfileProperty {
+    std::string name, value, sig;
+};
+
 struct Player {
     int fd;
     std::string name;
     int64_t uuid_hi, uuid_lo;
+    std::vector<ProfileProperty> properties;
     int eid;
     int gamemode;
     double x = 0.5, y = -60, z = 0.5;
@@ -104,7 +109,11 @@ struct Player {
     // Queues a packet; it goes out at the end of the tick (or on the next flush()). Never blocks on the socket.
     void send(const Writer& body) {  // framed straight into the outbox (net.hpp)
         std::lock_guard lock(out.m);
-        if (!out.closed) frame_packet(out.buf, body.b.data(), body.b.size(), compression_threshold >= 0);
+        if (!out.closed) {
+            size_t from = out.buf.size();
+            frame_packet(out.buf, body.b.data(), body.b.size(), compression_threshold >= 0);
+            out.encrypt_tail(from);
+        }
     }
     void send_raw_bytes(const std::vector<uint8_t>& b) { out.push_framed(reframe(b, compression_threshold >= 0)); }
     void message(const std::string& text, const std::string& color = "") {
@@ -365,9 +374,14 @@ inline uint8_t angle(float deg) { return uint8_t(Mth::floor(deg * 256.0f / 360.0
 inline Writer info_add(const std::vector<PlayerPtr>& list) {
     Writer w;
     w.varint(play_cb::player_info_update).u8(0x01 | 0x04 | 0x08 | 0x10 | 0x80).varint(int32_t(list.size()));
-    for (auto& p : list)
-        w.i64(p->uuid_hi).i64(p->uuid_lo).str(p->name).varint(0).varint(p->gamemode).boolean(true)
-            .varint(p->net.latency).boolean(p->net.skin_parts & 0x40);
+    for (auto& p : list) {
+        w.i64(p->uuid_hi).i64(p->uuid_lo).str(p->name).varint(int32_t(p->properties.size()));
+        for (const auto& pr : p->properties) {
+            w.str(pr.name).str(pr.value).boolean(!pr.sig.empty());
+            if (!pr.sig.empty()) w.str(pr.sig);
+        }
+        w.varint(p->gamemode).boolean(true).varint(p->net.latency).boolean(p->net.skin_parts & 0x40);
+    }
     return w;
 }
 

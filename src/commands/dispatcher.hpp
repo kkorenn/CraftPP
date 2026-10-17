@@ -216,6 +216,7 @@ struct Cmd {
     void send(const Text& t) const {  // CommandSource.sendSystemMessage
         if (src.silent) return;
         if (src.sender) send_text(*src.sender, t);
+        else if (src.rcon_out) *src.rcon_out += plain(t);
         else log_info("%s", plain(t, true).c_str());
     }
     // CommandSourceStack.sendSuccess
@@ -223,12 +224,12 @@ struct Cmd {
         if (src.silent) return;
         bool accepts = !src.sender || rule("send_command_feedback");
         if (accepts) send(t);
-        if (!broadcast_admins) return;
+        if (!broadcast_admins || (src.rcon_out && props["broadcast-rcon-to-ops"] == "false")) return;
         Text b = styled(tr("chat.type.admin", {src.display(), t}), "gray", true);
         if (rule("send_command_feedback"))
             for (auto& p : snapshot())
                 if (p != src.sender && ops.find(player_uuid(*p), p->name)) send_text(*p, b);
-        if (src.sender && rule("log_admin_commands")) log_info("%s", plain(b, true).c_str());
+        if ((src.sender || src.rcon_out) && rule("log_admin_commands")) log_info("%s", plain(b, true).c_str());
     }
 };
 inline Text not_supported(const std::string& cmd) { return lit("/" + cmd + " is not supported yet"); }
@@ -244,6 +245,7 @@ inline void send_failure(const Source& src, const Text& t) {
     Text red = styled(lit(""), "red");
     append(red, t);
     if (src.sender) send_text(*src.sender, red);
+    else if (src.rcon_out) *src.rcon_out += plain(red);
     else log_info("%s", plain(red, true).c_str());
 }
 inline void send_error(const Source& src, const CmdError& e, const std::string& shown_line) {
@@ -264,6 +266,7 @@ inline void send_error(const Source& src, const CmdError& e, const std::string& 
     }
     append(ctx, styled(tr("command.context.here"), "red", true));
     if (src.sender) send_text(*src.sender, ctx);
+    else if (src.rcon_out) *src.rcon_out += plain(ctx);
     else log_info("%s", plain(ctx, true).c_str());
 }
 

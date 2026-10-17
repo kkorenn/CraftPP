@@ -46,6 +46,12 @@ struct Reader {
         i += len;
         return s;
     }
+    std::vector<uint8_t> bytes(size_t len) {
+        if (i + len > n) throw std::runtime_error("read past end");
+        std::vector<uint8_t> out(p + i, p + i + len);
+        i += len;
+        return out;
+    }
 };
 
 struct Writer {

@@ -31,8 +31,8 @@ inline void join(const PlayerPtr& pp) {
         .boolean(!rule("immediate_respawn"))  // show death screen
         .boolean(rule("limited_crafting"));
     write_spawn_info(login, p);
-    p.send(login.boolean(false)    // online mode
-               .boolean(false));  // enforces secure chat
+    p.send(login.boolean(props["online-mode"] == "true")                                           // online mode
+               .boolean(props["online-mode"] == "true" && props["enforce-secure-profile"] != "false"));  // enforces secure chat
     commands_on_join(p);  // commands tree, op level, border, time, spawn, difficulty, weather, scoreboard
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));  // level chunks load start
     update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);

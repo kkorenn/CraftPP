@@ -2,6 +2,7 @@
 // Per-player game state and network queues (embedded in Player, see server.hpp). Threading: see game/tick.hpp.
 #include "../protocol.hpp"
 #include "../effects/instance.hpp"
+#include "../net/crypto.hpp"
 
 #include <array>
 #include <bitset>
@@ -11,6 +12,7 @@
 #include <sys/socket.h>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 // Data component patch beyond damage (custom name, container contents, enchantments, potion, ...): component id
@@ -46,7 +48,11 @@ struct Outbox {
     size_t off = 0;  // bytes of buf already sent
     bool closed = false;
     int fd = -1;  // set when play starts (tick.hpp run_play_connection)
+    std::optional<crypto::Cfb8> enc;
 
+    void encrypt_tail(size_t from) {
+        if (enc && from < buf.size()) enc->encrypt(buf.data() + from, buf.size() - from);
+    }
     void push(const std::vector<uint8_t>& body) {
         uint8_t len[5];
         int n = 0;
@@ -56,12 +62,18 @@ struct Outbox {
         }
         std::lock_guard lock(m);
         if (closed) return;
+        size_t from = buf.size();
         buf.insert(buf.end(), len, len + n);
         buf.insert(buf.end(), body.begin(), body.end());
+        encrypt_tail(from);
     }
     void push_framed(const std::vector<uint8_t>& b) {
         std::lock_guard lock(m);
-        if (!closed) buf.insert(buf.end(), b.begin(), b.end());
+        if (!closed) {
+            size_t from = buf.size();
+            buf.insert(buf.end(), b.begin(), b.end());
+            encrypt_tail(from);
+        }
     }
     size_t pending() {
         std::lock_guard lock(m);
@@ -149,6 +161,10 @@ struct PlayerGame {
 
 // Connection bookkeeping (ServerCommonPacketListenerImpl / ServerGamePacketListenerImpl), game/netplay.hpp.
 // Lives outside PlayerGame because respawn resets that, and the connection outlives a respawn.
+struct LastSeenTracked {
+    bool present = false, pending = false;
+    std::array<uint8_t, 256> sig{};
+};
 struct NetState {
     int64_t keepalive_time = 0, keepalive_challenge = 0;  // ms
     bool keepalive_pending = false;
@@ -169,6 +185,16 @@ struct NetState {
     bool was_dead = false;
     int last_dig_state = -1;  // ServerPlayerGameMode.lastSentState
     int chat_index = 0;       // nextChatIndex: the client disconnects on a gap
+    // RemoteChatSession & SignedMessageChain
+    bool has_chat_session = false, chat_chain_broken = false;
+    int64_t chat_session_hi = 0, chat_session_lo = 0;
+    int64_t chat_key_expires_ms = 0, last_chat_timestamp_ms = 0;
+    int chat_link_index = 0;
+    crypto::RsaPublic chat_key;
+    std::vector<uint8_t> chat_key_der, chat_key_sig;
+    std::vector<LastSeenTracked> last_seen_tracked{20};
+    std::optional<std::array<uint8_t, 256>> last_pending_sig;
+    std::vector<std::array<uint8_t, 256>> sig_cache;  // MessageSignatureCache (up to 128)
 };
 
 struct Player;

@@ -194,6 +194,7 @@ inline void record_usercache(const std::string& name, const std::string& uuid) {
 // ---------- /version /plugins /tps /mspt ----------
 inline void reply_legacy(const Source& src, const std::string& s) {
     if (src.sender) send_text(*src.sender, lit(s));  // the client renders § codes in literal text
+    else if (src.rcon_out) *src.rcon_out += s;
     else log_info("%s", s.c_str());
 }
 
