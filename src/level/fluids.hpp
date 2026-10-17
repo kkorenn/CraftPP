@@ -21,7 +21,7 @@ inline bool same_kind(int a, int b) {  // Fluid.isSame
     return a != EMPTY && b != EMPTY && ((a <= WATER) == (b <= WATER));
 }
 
-// Dimension attribute minecraft:gameplay/fast_lava (true only in the nether). The overworld is the only level here.
+// Dimension attribute minecraft:gameplay/fast_lava (true only in the nether), switched with cur_level.
 inline bool fast_lava = false;
 
 inline int tick_delay(int type) { return type <= WATER ? 5 : fast_lava ? 10 : 30; }        // getTickDelay

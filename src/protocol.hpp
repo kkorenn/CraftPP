@@ -11,6 +11,7 @@ struct Reader {
     const uint8_t* p;
     size_t n, i = 0;
     Reader(const std::vector<uint8_t>& v) : p(v.data()), n(v.size()) {}
+    Reader(const uint8_t* d, size_t len) : p(d), n(len) {}
 
     uint8_t u8() {
         if (i >= n) throw std::runtime_error("read past end");

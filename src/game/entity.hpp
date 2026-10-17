@@ -183,7 +183,7 @@ inline void player_drop(const Player& p, const ItemStack& s, bool randomly) {
 inline void entity_player_touches() {
     for (auto& pp : players) {
         Player& p = *pp;
-        if (p.g.dead || p.gamemode == 3) continue;
+        if (p.g.dead || p.gamemode == 3 || p.level != cur_level) continue;
         AABB box = AABB::at_feet(p.x, p.y, p.z, 0.6, 1.8).inflate(1.0, 0.5, 1.0);
         for_each_entity_in(box, [&](Entity& e) { e.player_touch(p); }, false);
     }

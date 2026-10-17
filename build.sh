@@ -29,6 +29,11 @@ if [ -n "$TEST" ]; then
     fail "no '$1' in $LOG"
   }
 
+  ./$B/pipeline_test --failure-recovery
+
+  # Structures: template loading, persistence round trip, /locate of 8 structure types (asserts inside).
+  ./$B/structure_test > $B/structure_test.log 2>&1 || { tail -5 $B/structure_test.log; echo "FAIL: structure_test"; exit 1; }
+
   # EULA gate: a fresh directory gets eula.txt (eula=false) and a full server.properties, then refuses to start.
   rm -rf $B/eula-test && mkdir -p $B/eula-test
   printf 'server-port=%s\nlevel-name=%s/eula-test/world\n' "$PORT" $B > $B/eula-test/server.properties
@@ -57,9 +62,11 @@ if [ -n "$TEST" ]; then
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/level_test.py 127.0.0.1 $PORT
   python3 -u test/placement_test.py 127.0.0.1 $PORT
+  python3 -u test/cauldron_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT
+  python3 -u test/dimensions_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
   python3 -u test/effects_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"
@@ -82,6 +89,7 @@ if [ -n "$TEST" ]; then
     grep -qF "$l" $LOG || fail "shutdown line: $l"
   done
   grep -q '\[Server thread/INFO\]: Done (' $B/logs/latest.log || fail "logs/latest.log format"
+  python3 test/storage_test.py $B/test-world  # vanilla Anvil layout of what was just saved
   exec 3>&-
 
   # Restart; this time stdin closing (EOF) stops the server.

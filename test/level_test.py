@@ -23,6 +23,7 @@ host, port = sys.argv[1], int(sys.argv[2])
 c, _ = login("Alice", host, port, decode=True, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Alice"))
 c.s.settimeout(10)
 c.entities = {}
+game_times = []
 
 def at(x, y, z):
     secs = c.chunks.get((x >> 4, z >> 4))
@@ -43,6 +44,10 @@ def pump(seconds):
                 set_block(c, sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15), e >> 12)
         elif pid == PLAY_CB["add_entity"]:
             eid = b.varint(); b.take(16); c.entities[eid] = b.varint()
+        elif pid == PLAY_CB["system_chat"] and b"commands.time.query.gametime" in b.d:
+            marker = b"\x08\x00\x04text"
+            value = Buf(b.d[b.d.index(marker) + len(marker):])
+            game_times.append(int(value.take(value.u16()).decode()))
 
 def cmd(s):
     c.send(PLAY_SB["chat_command"], string(s))
@@ -54,6 +59,12 @@ def wait_until(pred, seconds, what):
         pump(0.05)
     raise AssertionError(what)
 
+def query_game_time():
+    count = len(game_times)
+    cmd("time query gametime")
+    wait_until(lambda: len(game_times) > count, 5, "game time response")
+    return game_times[-1]
+
 cmd("gamemode creative")
 pump(1.0)
 
@@ -63,11 +74,13 @@ cmd(f"tp Alice {X} {Y + 3} {Z - 12}")
 need = [((X + dx) >> 4, (Z + dz) >> 4) for dx in (-9, 9) for dz in (-9, 9)]
 wait_until(lambda: all(k in c.chunks for k in need), 10, f"chunks around the water test: missing {[k for k in need if k not in c.chunks]}, at {getattr(c, 'pos', None)}")
 pump(0.5)
+tick0 = query_game_time()
 t0 = time.time()
 cmd(f"setblock {X} {Y} {Z} water")
 wait_until(lambda: at(X, Y, Z) == WATER, 3, "water source placed")
 wait_until(lambda: at(X + 7, Y, Z) == WATER + 7, 6, "water should reach distance 7")
 dt = time.time() - t0
+elapsed_ticks = query_game_time() - tick0
 pump(1.0)
 bad = []
 for dx in range(-9, 10):
@@ -77,8 +90,9 @@ for dx in range(-9, 10):
         got = at(X + dx, Y, Z + dz)
         if got != want: bad.append((dx, dz, got, want))
 assert not bad, f"water pattern differs at {bad[:5]}"
-assert 1.5 < dt < 4.5, f"spread to distance 7 took {dt:.2f}s (vanilla: 7 steps x 5 ticks = 1.75 s)"
-print(f"water: diamond to level 7 in {dt:.2f}s")
+# Tick catch-up after streaming or sanitizer overhead can compress elapsed wall time.
+assert 30 <= elapsed_ticks <= 90, f"water spread took {elapsed_ticks} ticks (vanilla: 7 x 5 = 35 ticks)"
+print(f"water: diamond to level 7 in {elapsed_ticks} ticks ({dt:.2f}s)")
 
 # 2. Flowing lava touching water turns into cobblestone (LiquidBlock.shouldSpreadLiquid).
 LX, LZ = 30, 300

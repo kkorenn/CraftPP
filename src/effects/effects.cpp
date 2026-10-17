@@ -171,6 +171,8 @@ float player_destroy_speed(Player& p, float speed, bool eye_in_water) {  // Play
 }
 
 // ---------- per-player effect sync ----------
+static std::unordered_map<const Player*, float> loaded_absorption;  // applied to the PlayerEntity on its first tick
+static std::unordered_map<const Player*, float> left_absorption;    // the PlayerEntity is gone when a leaving player saves
 struct PlayerEffectSync {
     bool joined = false;
     std::vector<uint8_t> particles{0};
@@ -200,6 +202,7 @@ static void player_effects_tick(Player& p) {
             p.send(update_effect_packet(p.eid, e, false));
         }
         pe->effects_dirty = true;
+        if (auto it = loaded_absorption.find(&p); it != loaded_absorption.end()) pe->absorption = it->second, loaded_absorption.erase(it);
     }
     if (!p.g.dead) tick_effects(*pe);
     else update_dirty_effects(*pe);
@@ -212,7 +215,30 @@ static void player_effects_tick(Player& p) {
         p.send(player_effect_data(p, st));  // the player itself (the tracker only sends to watchers)
     }
 }
-static void player_effects_leave(Player& p) { sync_state.erase(&p); }
+static void player_effects_leave(Player& p) {  // runs before the mobs module drops the PlayerEntity
+    sync_state.erase(&p);
+    loaded_absorption.erase(&p);
+    if (PlayerEntity* pe = player_entity(p)) left_absorption[&p] = pe->absorption;
+}
+
+void save_player_effects(const Player& p, Nbt& t) {
+    if (PlayerEntity* pe = player_entity(p)) t.set("AbsorptionAmount", Nbt::real(Nbt::Float, pe->absorption));
+    else if (auto it = left_absorption.find(&p); it != left_absorption.end())
+        t.set("AbsorptionAmount", Nbt::real(Nbt::Float, it->second)), left_absorption.erase(it);
+    if (p.g.effects.empty()) return;
+    Nbt l = Nbt::make_list();
+    for (auto& x : p.g.effects) l.list.push_back(effect_to_nbt(x));
+    t.set("active_effects", l);
+}
+void load_player_effects(Player& p, const Nbt& t) {
+    p.g.effects.clear();
+    if (const Nbt* l = t.get("active_effects"); l && l->t == Nbt::List)
+        for (auto& c : l->list) {
+            EffectInstance x;
+            if (effect_from_nbt(c, x)) p.g.effects.push_back(std::move(x));
+        }
+    loaded_absorption[&p] = float(nbt_num(t, "AbsorptionAmount", 0));
+}
 
 // Respawn (a new ServerPlayer): the old effects' attribute modifiers and absorption go away.
 void effects_player_respawned(Player& p) {

@@ -72,7 +72,14 @@ def main(host, port):
     cmd(c, "give Sam minecraft:diamond_sword")
     cmd(c, f"summon cow {sx + 2} {sy} {sz} {{NoAI:1b}}")
     target = {}
-    pump(c, 5, lambda pid, b: pid == PLAY_CB["add_entity"] and (lambda e: e[1] == ENTITY["cow"] and target.update(id=e[0]) is None)(add_entity(b)))
+    def find_target(pid, b):
+        if pid != PLAY_CB["add_entity"]: return False
+        e = add_entity(b)
+        # Other cow spawn packets can still be queued from the rebuilt entity view.
+        if e[1] != ENTITY["cow"] or any(abs(a - v) > .01 for a, v in zip(e[2:], (sx + 2, sy, sz))): return False
+        target["id"] = e[0]
+        return True
+    pump(c, 5, find_target)
     assert "id" in target, "NoAI cow not spawned"
     time.sleep(0.4)  # full attack strength
     seen = {"death": False, "items": 0, "orbs": 0}

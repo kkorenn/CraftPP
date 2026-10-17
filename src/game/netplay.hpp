@@ -93,7 +93,7 @@ inline bool no_blocks_around(const Player& p) {
     for (int x = x0; x <= x1; x++)
         for (int y = y0; y <= y1; y++)
             for (int z = z0; z <= z1; z++) {
-                int b = y < MIN_Y || y >= MIN_Y + HEIGHT ? blocks::void_air : world.get_block(x, y, z);
+                int b = y < world.min_y() || y >= world.max_y() ? blocks::void_air : world.get_block(x, y, z);
                 if (b != blocks::air && b != blocks::cave_air && b != blocks::void_air) return false;
             }
     return true;

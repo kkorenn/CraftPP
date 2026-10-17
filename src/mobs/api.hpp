@@ -18,6 +18,7 @@ void spawn_xp_orbs(double x, double y, double z, int amount);  // ExperienceOrb.
 float player_damage_after_armor(Player& p, const DamageSource& s, float amount);
 void player_knockback_from(Player& p, const DamageSource& s);  // LivingEntity.dealDefaultKnockback for players
 void mobs_save_all();
+void player_entity_hidden(Player& p);     // end credits: every watcher drops the player entity
 void player_entity_respawned(Player& p);  // respawn: watchers drop and re-add the player entity  // save every loaded entity chunk (server stop)
 
 // Mob effects / enchantments on players (src/effects/effects.cpp).
@@ -29,5 +30,7 @@ bool player_effect_blocks_damage(Player& p, const DamageSource& s);  // fire res
 float player_damage_after_effects(Player& p, const DamageSource& s, float amount);
 void player_hurt_effects(Player& p, const DamageSource& s, float amount);  // MobEffect.onMobHurt (infested)
 float player_destroy_speed(Player& p, float tool_speed, bool eye_in_water);  // Player.getDestroySpeed after the tool
+void save_player_effects(const Player& p, Nbt& tag);  // "active_effects" in the player file
+void load_player_effects(Player& p, const Nbt& tag);
 void effects_player_respawned(Player& p);  // drop the old effects' modifiers and absorption
 void player_consume_effects(Player& p, int item, const ItemStack& stack);  // Consumable.onConsume effects (food, potions, milk)

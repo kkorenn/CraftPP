@@ -76,7 +76,8 @@ inline int ceil_i(double v) { return Mth::d2i(std::ceil(v)); }                  
 // WorldGenLevel over the FEATURES region (WorldGenRegion).
 class Level {
  public:
-  Level(Region& r, const Features& f) : r(r), f(f) {}
+  Level(Region& r, const Features& f) : r(r), f(&f) {}
+  explicit Level(Region& r) : r(r), f(nullptr) {}  // block access only (no biome/seed/random queries)
   uint16_t get(const P& p) const;
   uint16_t get(int x, int y, int z) const { return get(P{x, y, z}); }
   bool set(const P& p, int state);  // WorldGenRegion.setBlock (+ block entity bookkeeping)
@@ -84,14 +85,14 @@ class Level {
   int height(Heightmap h, int x, int z) const;  // getHeight (first free y)
   int biome(const P& p) const;                  // getBiome (BiomeManager zoom over stored noise biomes)
   bool empty(const P& p) const { return bs::R().is_air(get(p)); }  // isEmptyBlock
-  bool outside(int y) const { return y < MIN_Y || y >= MIN_Y + HEIGHT; }
+  bool outside(int y) const { return y < min_y() || y > max_y(); }
   bool water_at(const P& p) const { return bs::R().is_water(get(p)); }  // isWaterAt (FluidTags.WATER)
   RandomSource& random();                 // WorldGenRegion.getRandom()
   BlockEntity* block_entity(const P& p);  // the block entity at p, if the block has one
   int64_t seed() const;
   int sea_level() const { return GEN_SEA_LEVEL; }
-  int min_y() const { return MIN_Y; }
-  int max_y() const { return MIN_Y + HEIGHT - 1; }
+  int min_y() const;
+  int max_y() const;
   float temperature(int biome, const P& p) const;  // Biome.getTemperature(pos, seaLevel)
   bool should_freeze(int biome, const P& p, bool checkNeighbors) const;  // Biome.shouldFreeze
   bool should_snow(int biome, const P& p) const;                         // Biome.shouldSnow
@@ -106,11 +107,11 @@ class Level {
     }
   }
   Region& region() { return r; }
-  const Features& features() const { return f; }
+  const Features& features() const { return *f; }
 
  private:
   Region& r;
-  const Features& f;
+  const Features* f;
   std::unique_ptr<RandomSource> rand;
 };
 
@@ -191,6 +192,12 @@ long multiface_spread_all(Level& l, const Spreader& sp, int state, const P& p, b
 // other blocks are returned unchanged. update_from_neighbour_shapes = Block.updateFromNeighbourShapes.
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& neighbourPos, int neighbour);
 int update_from_neighbour_shapes(Level& l, int state, const P& p);
+// StructureTemplate.updateShapeAtEdge(level, flags, shape, min) over the box min + [0,sx)x[0,sy)x[0,sz) where
+// full(x, y, z) is the voxel shape; includes LeavesBlock.updateShape's scheduled leaf ticks.
+void update_shape_at_edge(Level& l, const P& min, int sx, int sy, int sz, const std::function<bool(int, int, int)>& full);
+// LevelChunk.postProcessGeneration for the region's center chunk plus the leaf ticks worldgen scheduled
+// (the FULL step; Features::finish). Needs no Features (structures-only stage runs it too).
+void post_process(Region& r);
 
 // Parses worldgen JSON into owned objects; registry ids are memoized.
 class Loader {

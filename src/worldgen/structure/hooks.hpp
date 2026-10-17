@@ -16,7 +16,7 @@ namespace structure {
 
 class StructureWorld {
  public:
-  StructureWorld(worldgen::Overworld& ow, bool place);
+  StructureWorld(worldgen::Overworld& ow, bool place, int dimension = 0, const std::string& folder = "");
   ~StructureWorld();
   StructureManager& manager();
 
