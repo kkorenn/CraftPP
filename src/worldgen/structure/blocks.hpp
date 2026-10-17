@@ -1,6 +1,6 @@
 // Block states for structure generation: BlockState.rotate/mirror and per-state flags extracted from the
 // vanilla jar at build time (data/block_states.bin, tools/gen_block_dump.py) on top of bs::Registry, plus
-// biome tags/ids read from vanilla/src/data/minecraft.
+// biome tags/ids read from data/vanilla/minecraft.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -79,7 +79,7 @@ const std::vector<std::string>& biomeNames();
 std::vector<uint8_t> biomeSet(const Json& j);
 
 std::string fullId(std::string_view id);  // adds "minecraft:" when no namespace
-std::string dataRoot();                   // "vanilla/src/data"
+std::string dataRoot();                   // "data/vanilla"
 void setDataRoot(const std::string& root);
 
 }  // namespace structure

@@ -9,7 +9,7 @@
 #include "worldgen/terrain.hpp"
 
 int main() {
-  worldgen::TerrainGenerator gen(12345, "vanilla/src/data", false);  // noise stage only
+  worldgen::TerrainGenerator gen(12345, "data/vanilla", false);  // noise stage only
   // Interval / domain sanity on known functions.
   auto cont = gen.dfs.function("minecraft:overworld/continents");
   assert(df::DensityFunctions::domainAxes(cont) == 5);
@@ -64,7 +64,7 @@ int main() {
   // Nether + end (dimension layout 0..255): default blocks, lava sea, biomes from their sources.
   for (const char* dim : {"nether", "end"}) {
     t0 = std::chrono::steady_clock::now();
-    worldgen::TerrainGenerator g(12345, "vanilla/src/data", true, dim, 0, 256);
+    worldgen::TerrainGenerator g(12345, "data/vanilla", true, dim, 0, 256);
     double init = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     t0 = std::chrono::steady_clock::now();
     int solid = 0, lava = 0;

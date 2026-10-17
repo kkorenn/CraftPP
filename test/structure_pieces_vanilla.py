@@ -99,7 +99,7 @@ for ch in st["Children"]:
 if a.blocks_out:  # cx0 cz0 n miny height, then n*n chunks x height x 16 x 16 states (y, z, x order) as uint16
     import json
     ids = {}
-    for name, blk in json.load(open(f"{ROOT}/vanilla/generated/reports/blocks.json")).items():
+    for name, blk in json.load(open(f"{ROOT}/data/reports/blocks.json")).items():
         for s_ in blk["states"]:
             ids[(name, tuple(sorted((s_.get("properties") or {}).items())))] = s_["id"]
             if s_.get("default"): ids[(name, ())] = s_["id"]  # bare name: default state

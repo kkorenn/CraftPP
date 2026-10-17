@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+ITEMS = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:item"]["entries"]
 STONE_ITEM = ITEMS["minecraft:stone"]["protocol_id"]
 STONE, AIR = int(re.search(r"int stone = (\d+);", HDR).group(1)), 0
 UID = uuid.uuid3(uuid.NAMESPACE_DNS, "Steve")

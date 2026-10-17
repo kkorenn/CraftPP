@@ -240,7 +240,7 @@ inline void setup_dimensions(int64_t seed) {
         int dim = d.dim;
         auto init = [=] {
             std::call_once(*once, [&] {
-                *gen = std::make_unique<worldgen::Overworld>(seed, stages, "vanilla/src/data", pack, settings, 0, 256);
+                *gen = std::make_unique<worldgen::Overworld>(seed, stages, "data/vanilla", pack, settings, 0, 256);
                 (*gen)->pipeline.dimension = dim;
                 (*gen)->pipeline.persist = true;
                 if (structures) std::atomic_store(&structure_worlds[dim], std::make_shared<structure::StructureWorld>(**gen, true, dim, folder));
@@ -287,7 +287,7 @@ inline void setup_world() {
     hashed_seed = material::MaterialSystem::obfuscateSeed(seed);
     setup_dimensions(seed);
     if (flat_world) return;
-    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "vanilla/src/data", props["worldgen-datapack"]);
+    auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "data/vanilla", props["worldgen-datapack"]);
     const std::string& stages = props["worldgen-stages"];
     if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))
     {

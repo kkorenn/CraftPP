@@ -6,8 +6,8 @@ import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPORT = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/blocks.json")))
-ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+REPORT = json.load(open(os.path.join(ROOT, "data/reports/blocks.json")))
+ITEMS = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:item"]["entries"]
 
 def state(name, **props):
     for s in REPORT["minecraft:" + name]["states"]:

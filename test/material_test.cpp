@@ -39,7 +39,7 @@ int main() {
   assert(MaterialSystem::obfuscateSeed(123456789) == -5458710421630621949LL);
 
   RandomState rs(12345, false);
-  MaterialSystem ms(rs, "minecraft:overworld", "vanilla/src/data", true);
+  MaterialSystem ms(rs, "minecraft:overworld", "data/vanilla", true);
   assert(ms.biomeId("plains") == biomes::plains && ms.biomeId("eroded_badlands") == biomes::eroded_badlands);
   assert(ms.stateId("grass_block") == blocks::grass_block && ms.stateId("nope") == -1);
 
@@ -55,7 +55,7 @@ int main() {
   // Every rule / condition file parses (nether/end included).
   int files = 0;
   for (const char* folder : {"material_rule", "material_condition"}) {
-    std::string base = std::string("vanilla/src/data/minecraft/worldgen/") + folder;
+    std::string base = std::string("data/vanilla/minecraft/worldgen/") + folder;
     for (auto& e : std::filesystem::recursive_directory_iterator(base)) {
       if (e.path().extension() != ".json") continue;
       std::string rel = std::filesystem::relative(e.path(), base).replace_extension().generic_string();

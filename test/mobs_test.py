@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
 ENTITY = ids("entity_types")
-REG_ITEMS = __import__("json").load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+REG_ITEMS = __import__("json").load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/reports/registries.json")))["minecraft:item"]["entries"]
 HOSTILE = {ENTITY[n] for n in ("zombie", "skeleton", "creeper", "spider")}
 
 def cmd(c, line): c.send(PLAY_SB["chat_command"], string(line))
