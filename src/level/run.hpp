@@ -34,6 +34,7 @@ inline void switch_level(World* from, World* to) {
     swap_parked(parked[dim_of(from)]);
     swap_parked(parked[dim_of(to)]);
     last_key = INT64_MIN, last_chunk = nullptr;
+    fast_lava = to == &worlds[DIM_NETHER];
 }
 inline int rand_value = int(std::random_device{}());
 

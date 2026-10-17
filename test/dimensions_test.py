@@ -97,6 +97,35 @@ print("portal collapse ok")
 cmd(c, "execute in minecraft:the_nether run tp @s ~ 70 ~")
 arrive(c, "minecraft:the_nether")
 assert abs(c.pos[0] - 11.5 / 8) < 2 and c.pos[1] == 70, c.pos
+# Per-dimension ticks: lava reaches level 7 in the Nether (drop-off 1, ten ticks per step),
+# while an Overworld client watching the same chunk coordinates receives no block changes.
+observer, _ = login("DimensionWatch", host, port, view=2, decode=True)
+until(observer, lambda: (0, 0) in observer.chunks)
+cmd(c, "tp @s 8.5 248 8.5")
+while play_step(c) != PLAY_CB["player_position"]: pass
+until(c, lambda: all(k in c.chunks for k in ((0, 0), (1, 0), (0, 1))))
+cmd(c, "fill 0 244 0 16 247 16 air")
+cmd(c, "fill 0 244 0 16 244 16 stone")
+sync(c)
+cmd(c, "time query gametime")
+until(c, lambda: b"commands.time.query.gametime" in c.last.d)
+tick0 = int(text_of(c.last))
+cmd(c, "setblock 8 245 8 lava")
+until(c, lambda: block(c, 15, 245, 8) == state("lava", level="7"))
+cmd(c, "time query gametime")
+until(c, lambda: b"commands.time.query.gametime" in c.last.d)
+elapsed = int(text_of(c.last)) - tick0
+assert 60 <= elapsed <= 110, elapsed
+observer.send(PLAY_SB["ping_request"], struct.pack(">q", 0x44494d))
+while play_step(observer) != PLAY_CB["pong_response"]: pass
+assert block(observer, 8, 245, 8) == state("air"), "Nether updates leaked into the Overworld"
+observer.s.close()
+print(f"Nether lava + dimension isolation ok: level 7 in {elapsed} ticks")
+cmd(c, "locate structure minecraft:fortress")
+reply = wait(c, PLAY_CB["system_chat"], lambda b: b"commands.locate.structure." in b.d)
+assert b"commands.locate.structure.success" in reply.d and b"minecraft:fortress" in reply.d, reply.d
+print("Nether structure manager locate ok")
+
 cmd(c, "execute in minecraft:overworld run tp @s 0.5 -60 0.5")
 arrive(c, "minecraft:overworld")
 print("execute in + cross-dimension tp ok")

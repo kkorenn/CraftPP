@@ -7,6 +7,12 @@
 
 namespace lvl {
 
+// place_rules.hpp (walls, chests, wire, rails, banners, skulls, coral, vines, ...).
+inline bool can_survive_more(int s, const Pos& p);
+inline int update_shape_more(int s, const Pos& p, int dir, int ns);
+inline void rail_on_place(int state, const Pos& p, int old, bool piston);
+inline bool veg_may_place_on_more(int plant, int below, int* r);
+
 enum Kind : uint8_t {
     K_NONE, K_LIQUID, K_BUBBLE_COLUMN, K_FALLING, K_CONCRETE_POWDER, K_ANVIL,
     K_VEGETATION, K_CROP, K_STEM, K_ATTACHED_STEM, K_SAPLING, K_MUSHROOM, K_NETHER_WART, K_BERRY_BUSH, K_LILY_PAD,
@@ -212,6 +218,7 @@ inline void fire_tick(int state, const Pos& p) {
 
 // ---------- plants ----------
 inline bool veg_may_place_on(int plant, int below, const Pos& bp) {  // VegetationBlock.mayPlaceOn + overrides
+    if (int r; veg_may_place_on_more(plant, below, &r)) return r;
     switch (kind(plant)) {
         case K_CROP: return is(below, tag("supports_crops"));
         case K_STEM:
@@ -444,7 +451,7 @@ inline bool can_survive(int state, Pos pos) {
         case K_FARMLAND: return !is_solid(get(pos.above())) || is(get(pos.above()), tag("maintains_farmland"));
         case K_GROWING_HEAD: case K_GROWING_BODY: return growing_can_survive(state, pos);
         case K_BAMBOO: case K_BAMBOO_SAPLING: return is(get(pos.below()), tag("supports_bamboo"));
-        default: return true;
+        default: return can_survive_more(state, pos);
     }
 }
 
@@ -591,6 +598,7 @@ inline int update_shape(int state, Pos pos, int dir, Pos npos, int nstate) {
             if (!can_survive(state, pos)) return air();
             return dir == UP && block(nstate) == ID.bamboo ? def(ID.bamboo) : state;
         default:
+            if (int r = update_shape_more(state, pos, dir, nstate); r >= 0) return r;
             schedule_waterlogged(state, pos);
             return state;
     }
@@ -638,6 +646,7 @@ inline void on_place(int state, Pos pos, int old, bool piston) {
         case K_SPONGE:
             if (block(old) != block(state) && block(state) == ID.sponge) sponge_try_absorb(pos);
             break;
+        case K_RAIL: rail_on_place(state, pos, old, piston); break;
         default: break;
     }
 }

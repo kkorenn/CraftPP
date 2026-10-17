@@ -4,7 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../level/glue.hpp"
-#include "portal.hpp"  // after src/level: hooks its fire / portal shape rules
+#include "portal.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"

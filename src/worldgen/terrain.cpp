@@ -258,7 +258,8 @@ TerrainGenerator::TerrainGenerator(int64_t seed, const std::string& dataRoot, bo
   endBiomes = settings == "end";
   if (!endBiomes) {
     auto make = [&] { return std::make_unique<BiomeSource>(settings == "nether" ? BiomeSource::nether() : BiomeSource()); };
-    biomeSource = make(), neighbourBiomeSource = make();
+    biomeSource = make();
+    neighbourBiomeSource = std::make_unique<BiomeSource>(*biomeSource);
   }
   const Json& r = s["noise_router"];
   temperature = dfs.parse(r["temperature"]), vegetation = dfs.parse(r["vegetation"]);
@@ -467,12 +468,12 @@ void TerrainGenerator::buildTerrain(Chunk& c, const std::function<int(int, int, 
       int s = nc->aquifer->computeSubstance(bx + x, y, bz + z, 0.0);
       if (s < 0) continue;
       c.set(x, y, z, (uint16_t)s);
-      if (nc->aquifer->shouldScheduleFluidUpdate && R.has_fluid(s)) c.level.post.push_back(uint32_t(x | z << 4 | (y - MIN_Y) << 8));
+      if (nc->aquifer->shouldScheduleFluidUpdate && R.has_fluid(s)) c.level.post.push_back(uint32_t(x | z << 4 | (y - c.min_y) << 8));
       if (hasGrass && c.get(x, y - 1, z) == blocks::dirt) {
         int tm = materials->topMaterial(c, ctx, bx + x, y - 1, bz + z, R.has_fluid(s));
         if (tm >= 0) {
           c.set(x, y - 1, z, (uint16_t)tm);
-          if (R.has_fluid(tm)) c.level.post.push_back(uint32_t(x | z << 4 | (y - 1 - MIN_Y) << 8));
+          if (R.has_fluid(tm)) c.level.post.push_back(uint32_t(x | z << 4 | (y - 1 - c.min_y) << 8));
         }
       }
     }

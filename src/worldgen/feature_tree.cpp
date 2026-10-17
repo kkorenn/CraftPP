@@ -553,56 +553,8 @@ struct Tree : Feature {
         if (nd < 7) toCheck[nd].insert(n), smallest = std::min(smallest, nd);
       }
     }
-    // StructureTemplate.updateShapeAtEdge(level, 3, shape, min): DiscreteVoxelShape.forAllFaces order.
-    auto full = [&](int x, int y, int z) { return x >= 0 && y >= 0 && z >= 0 && x < sx && y < sy && z < sz && cell(x, y, z); };
-    static const bs::Tag& leavesTag = R().tag("minecraft:leaves");
-    auto distAt = [&](int st) { return R().in(st, noDecay) ? 0 : R().has(st, "distance") ? R().int_value(st, "distance") : 7; };
-    auto leafTick = [&](const P& p, int st, int neighbour) {  // LeavesBlock.updateShape
-      if (!R().in(st, leavesTag) || !R().has(st, "distance")) return;
-      int d = distAt(neighbour) + 1;
-      if (d != 1 || R().int_value(st, "distance") != d) l.schedule_leaf_tick(p);
-    };
-    auto face = [&](bs::Dir d, int x, int y, int z) {
-      P p = mn.offset(x, y, z), n = p.rel(d);
-      int s = l.get(p), ns = l.get(n);
-      leafTick(p, s, ns);
-      int s2 = update_shape(l, s, p, d, n, ns);
-      if (s2 != s) l.set(p, s2);
-      leafTick(n, ns, s2);
-      int n2 = update_shape(l, ns, n, bs::opposite(d), p, s2);
-      if (n2 != ns) l.set(n, n2);
-    };
-    // pass 1: z faces (a=x, b=y, c=z); pass 2: y faces (a=z, b=x, c=y); pass 3: x faces (a=y, b=z, c=x)
-    for (int a = 0; a < sx; a++)
-      for (int b = 0; b < sy; b++) {
-        bool last = false;
-        for (int k = 0; k <= sz; k++) {
-          bool f = k != sz && full(a, b, k);
-          if (!last && f) face(bs::NORTH, a, b, k);
-          if (last && !f) face(bs::SOUTH, a, b, k - 1);
-          last = f;
-        }
-      }
-    for (int a = 0; a < sz; a++)
-      for (int b = 0; b < sx; b++) {
-        bool last = false;
-        for (int k = 0; k <= sy; k++) {
-          bool f = k != sy && full(b, k, a);
-          if (!last && f) face(bs::DOWN, b, k, a);
-          if (last && !f) face(bs::UP, b, k - 1, a);
-          last = f;
-        }
-      }
-    for (int a = 0; a < sy; a++)
-      for (int b = 0; b < sz; b++) {
-        bool last = false;
-        for (int k = 0; k <= sx; k++) {
-          bool f = k != sx && full(k, a, b);
-          if (!last && f) face(bs::WEST, k, a, b);
-          if (last && !f) face(bs::EAST, k - 1, a, b);
-          last = f;
-        }
-      }
+    // StructureTemplate.updateShapeAtEdge(level, 3, shape, min)
+    update_shape_at_edge(l, mn, sx, sy, sz, [&](int x, int y, int z) { return cell(x, y, z) != 0; });
     return true;
   }
 };

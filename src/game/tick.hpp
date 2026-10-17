@@ -190,7 +190,7 @@ inline void start_tick_thread() {
     // Commands and packet handlers run here; 8 MiB like a Linux main thread, so recursive parsers
     // (SNBT up to Tag.MAX_DEPTH) have room on every platform.
     start_thread(8u << 20, [] {
-        is_tick_thread = true;  // world.hpp InLevel: per-level entity state switches with cur_level
+        is_tick_thread = true;
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::milliseconds(50);
         auto next = clock::now();
@@ -230,8 +230,8 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
     pp->out.fd = pp->fd;
     pp->out.flush();  // start on the login + chunks queued by join(); the tick thread sends the rest
     run_on_tick([pp, on_register] {
-        on_register(pp);
         InLevel in_level(pp->level);
+        on_register(pp);
         for (auto f : tick_detail::join_hooks) f(*pp);
     });
     std::vector<uint8_t> pkt;
@@ -253,10 +253,10 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
     }
     std::promise<void> done;
     run_on_tick([&] {
+        InLevel in_level(pp->level);
         if (!error.empty() && pp->quit_reason.empty()) pp->quit_reason = "Internal Exception: " + error;
         try {
             if (std::find(players.begin(), players.end(), pp) != players.end()) {
-                InLevel in_level(pp->level);
                 for (auto f : tick_detail::leave_hooks) f(*pp);
                 on_unregister(pp);
             }

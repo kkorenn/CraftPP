@@ -285,7 +285,7 @@ inline void destroy_block_progress(const Player& p, int x, int y, int z, int sta
 
 namespace lvl {
 inline bool player_destroy(Player& p, int x, int y, int z, int state);  // level/glue.hpp: playerWillDestroy + removeBlock
-inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
+inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
 inline bool use_bucket(Player& pl, ItemStack& slot);
 }
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
@@ -358,7 +358,7 @@ inline void dig_action(Player& p, int action, int x, int y, int z) {
         return;
     }
     int state = world.get_block(x, y, z);
-    if (y > MIN_Y + HEIGHT - 1) return p.send(block_update(x, y, z, state));
+    if (y > world.max_y() - 1) return p.send(block_update(x, y, z, state));
     if (action == 0) {  // START_DESTROY_BLOCK
         if (under_spawn_protection(p, x, z)) return overlay_message(p, tr("build.spawn_protection", {short_pos(x, y, z)}));
         if (p.gamemode == 1) return destroy_and_ack(p, x, y, z);
@@ -552,7 +552,7 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
         return 1;
     }
     if (p.gamemode == 2) return 0;  // !mayBuild; ponytail: can_place_on (adventure predicates) not supported
-    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz) ? 1 : 0;  // block use, item useOn, BlockItem.place
+    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);  // block use, item useOn, BlockItem.place
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
@@ -649,9 +649,9 @@ inline void register_game_handlers() {
                      fmt_double(z + double(cz)).c_str(), x, y, z);
             return;
         }
-        const int max_y = MIN_Y + HEIGHT - 1;
+        const int max_y = world.max_y() - 1;
         if (y > max_y) return overlay_message(p, tr("build.tooHigh", {max_y}));
-        if (y < MIN_Y) return overlay_message(p, tr("build.tooLow", {MIN_Y}));
+        if (y < world.min_y()) return overlay_message(p, tr("build.tooLow", {world.min_y()}));
         static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
         int f = face >= 0 && face <= 5 ? face : 1;
         if (under_spawn_protection(p, x, z)) {
@@ -660,8 +660,8 @@ inline void register_game_handlers() {
             const ItemStack& used = p.inv[hand == 1 ? 40u : size_t(p.selected)];
             bool placing = !used.empty() && ITEM_TO_BLOCK[used.item] >= 0;  // wasBlockPlacementAttempt
             int result = use_item_on(p, hand, x, y, z, face, cx, cy, cz);
-            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= MIN_Y)))
-                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {MIN_Y}));
+            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= world.min_y())))
+                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {world.min_y()}));
             else if (result == 1) swing(p, hand, false);
         } else {
             overlay_message(p, tr("build.tooHigh", {max_y}));

@@ -29,6 +29,11 @@ if [ -n "$TEST" ]; then
     fail "no '$1' in $LOG"
   }
 
+  ./$B/pipeline_test --failure-recovery
+
+  # Structures: template loading, persistence round trip, /locate of 8 structure types (asserts inside).
+  ./$B/structure_test > $B/structure_test.log 2>&1 || { tail -5 $B/structure_test.log; echo "FAIL: structure_test"; exit 1; }
+
   # EULA gate: a fresh directory gets eula.txt (eula=false) and a full server.properties, then refuses to start.
   rm -rf $B/eula-test && mkdir -p $B/eula-test
   printf 'server-port=%s\nlevel-name=%s/eula-test/world\n' "$PORT" $B > $B/eula-test/server.properties
@@ -56,6 +61,8 @@ if [ -n "$TEST" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/level_test.py 127.0.0.1 $PORT
+  python3 -u test/placement_test.py 127.0.0.1 $PORT
+  python3 -u test/cauldron_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
   python3 -u test/light_test.py 127.0.0.1 $PORT
   python3 -u test/commands_test.py 127.0.0.1 $PORT

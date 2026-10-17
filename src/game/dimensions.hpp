@@ -21,7 +21,7 @@ inline void move_to_level(Player& p, World* to, double x, double y, double z, fl
     write_spawn_info(w, p);
     p.send(w.u8(keep));
     p.send(difficulty_packet());
-    p.send(pkt(play_cb::entity_event).i32(p.eid).u8(uint8_t(24 + perm_level(p))));  // sendPlayerPermissionLevel
+    send_commands(p);  // Restores client selector permissions after every respawn/dimension transfer.
     p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
                .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
     // PlayerList.sendLevelInfo

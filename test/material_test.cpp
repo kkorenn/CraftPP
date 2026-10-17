@@ -39,7 +39,7 @@ int main() {
   assert(MaterialSystem::obfuscateSeed(123456789) == -5458710421630621949LL);
 
   RandomState rs(12345, false);
-  MaterialSystem ms(rs, "minecraft:overworld", "vanilla/src/data", "vanilla/generated/reports/blocks.json", true);
+  MaterialSystem ms(rs, "minecraft:overworld", "vanilla/src/data", true);
   assert(ms.biomeId("plains") == biomes::plains && ms.biomeId("eroded_badlands") == biomes::eroded_badlands);
   assert(ms.stateId("grass_block") == blocks::grass_block && ms.stateId("nope") == -1);
 

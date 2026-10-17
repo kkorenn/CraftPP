@@ -21,7 +21,7 @@ struct ChunkEnts { std::vector<Entity*> list; bool ticking = false; };
 struct PlayerView { int cx = INT32_MIN, cz = INT32_MIN; std::vector<Entity*> seen; };
 inline std::unordered_map<int, std::unique_ptr<Entity>> by_id;
 // Per-level state (by_chunk, ticking_keys, ticking_dirty, loaded) is that of cur_level: switch_level swaps the
-// other levels' copies in and out (world.hpp on_level_switch), so the code below indexes one level at a time.
+// other levels' copies in and out (world.hpp level_switch_hooks), so the code below indexes one level at a time.
 inline std::unordered_map<int64_t, ChunkEnts> by_chunk;
 inline std::vector<int64_t> ticking_keys;
 inline bool ticking_dirty = true;

@@ -69,6 +69,7 @@ inline BlockHit clip_blocks(const Vec3& from, const Vec3& to) {
 // highest motion-blocking block, else 0, no block light). Every caller goes through these two functions.
 inline int surface_y_cached(int x, int z);
 inline int sky_light_at(int x, int y, int z) {
+    if (!cur_level->skylight) return 0;
     int l = light::get(x, y, z, true);
     return l >= 0 ? l : y >= surface_y_cached(x, z) ? 15 : 0;
 }
@@ -101,11 +102,11 @@ inline int surface_y_scan(int x, int z) {
     return world.min_y();
 }
 inline int surface_y_cached(int x, int z) {
-    struct E { int64_t key = INT64_MIN; int y = 0; int64_t tick = -100; };
+    struct E { int64_t key = INT64_MIN; int y = 0; int64_t tick = -100; World* level = nullptr; };
     static std::array<E, 4096> cache;
     int64_t key = (int64_t(x) << 32) ^ uint32_t(z);
     E& e = cache[size_t(uint32_t(x * 73856093 ^ z * 19349663) & 4095)];
-    if (e.key != key || server_tick - e.tick > 20) e = {key, surface_y_scan(x, z), server_tick};
+    if (e.level != cur_level || e.key != key || server_tick - e.tick > 20) e = {key, surface_y_scan(x, z), server_tick, cur_level};
     return e.y;
 }
 

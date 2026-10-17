@@ -434,8 +434,8 @@ inline const std::vector<uint8_t>& commands_packet_for(int level) {
 inline void send_commands(Player& p) {
     int level = perm_level(p);
     std::lock_guard lock(cmd_mtx);
+    p.send(pkt(play_cb::entity_event).i32(p.eid).u8(uint8_t(24 + level)));  // PlayerList sends permissions before the tree
     p.send_raw_bytes(commands_packet_for(level));
-    p.send(pkt(play_cb::entity_event).i32(p.eid).u8(uint8_t(24 + level)));  // op permission level status
 }
 inline void resend_all_commands() {
     std::lock_guard lock(cmd_mtx);

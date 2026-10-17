@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+#include "log.hpp"
 #include "worldgen/material.hpp"
 #include "worldgen/noise.hpp"
 #include "worldgen/overworld.hpp"
@@ -85,17 +86,17 @@ int Level::max_y() const { return r.pipeline.min_y + r.pipeline.height - 1; }
 
 int Level::biome(const P& p) const {
   BiomeCtx ctx(const_cast<Level&>(*this));
-  return f.materials->zoomedBiome(ctx, p.x, p.y, p.z, true);
+  return f->materials->zoomedBiome(ctx, p.x, p.y, p.z, true);
 }
 
 RandomSource& Level::random() {
-  if (!rand) rand = f.regionRandom->at(r.cx * 16, 0, r.cz * 16);
+  if (!rand) rand = f->regionRandom->at(r.cx * 16, 0, r.cz * 16);
   return *rand;
 }
 
-int64_t Level::seed() const { return f.ow.seed; }
+int64_t Level::seed() const { return f->ow.seed; }
 
-float Level::temperature(int biome, const P& p) const { return f.materials->biomeTemperature(biome, p.x, p.y, p.z); }
+float Level::temperature(int biome, const P& p) const { return f->materials->biomeTemperature(biome, p.x, p.y, p.z); }
 
 void Level::mark_post_processing(const P& p) {
   if (outside(p.y)) return;
@@ -123,7 +124,7 @@ bool Level::should_freeze(int b, const P& p, bool checkNeighbors) const {
 }
 
 bool Level::should_snow(int b, const P& p) const {
-  if (!f.hasPrecipitation[size_t(b)] || temperature(b, p) >= 0.15F) return false;
+  if (!f->hasPrecipitation[size_t(b)] || temperature(b, p) >= 0.15F) return false;
   if (outside(p.y)) return false;
   int s = get(p);
   return (R().is_air(s) || R().is(s, blocks::snow)) && can_survive(const_cast<Level&>(*this), blocks::snow, p);
@@ -714,7 +715,7 @@ const Feature* Loader::feature(const Json& j) {
       bool place(Level&, RandomSource&, const P&) const override { return false; }
     };
     static std::set<std::string> warned;
-    if (warned.insert(t).second) fprintf(stderr, "worldgen: feature type %s not implemented\n", t.c_str());
+    if (warned.insert(t).second) log_warn("worldgen: feature type %s not implemented", t.c_str());
     return make<Missing>();
   }
   return it->second(*this, j);
@@ -985,15 +986,19 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   }
 }
 
-void Features::finish(Region& r) const {
+void Features::finish(Region& r) const { feat::post_process(r); }
+
+void feat::post_process(Region& r) {
   using namespace feat;
-  Level level(r, *this);
+  Level level(r);
   ProtoChunk& c = r.center();
   auto unpack = [&](int32_t v) { return P{c.cx * 16 + (v & 15), (v >> 8) + r.pipeline.min_y, c.cz * 16 + (v >> 4 & 15)}; };
   auto writable = [&](const P& p) {
     ProtoChunk* n = r.chunk(p.x >> 4, p.z >> 4);
     return n && n->chunk && !n->taken;
   };
+  // ProtoChunk keeps one list per section: section order, then insertion order.
+  std::stable_sort(c.post_processing.begin(), c.post_processing.end(), [](int32_t a, int32_t b) { return a >> 12 < b >> 12; });
   for (int32_t v : c.post_processing) {
     P p = unpack(v);
     int s = level.get(p);

@@ -36,6 +36,7 @@
 
 // Overworld dimension: y -64..319, 24 sections of 16x16x16. Other dimensions: Chunk::min_y / sections.size().
 inline constexpr int MIN_Y = -64, HEIGHT = 384, SECTIONS = HEIGHT / 16;
+enum Dim { DIM_OVERWORLD, DIM_NETHER, DIM_END, DIM_COUNT };
 
 // Vanilla PalettedContainer: one value (bits 0), a palette of up to 2^MAX_BITS ids packed MIN_BITS..MAX_BITS
 // per entry, or raw global ids (GLOBAL_BITS). Entries never span longs, so the in-memory longs ARE the
@@ -155,12 +156,17 @@ struct BlockEntity {
 
 struct Chunk {
     int cx = 0, cz = 0;
+    int dimension = DIM_OVERWORLD;
     int min_y;                // dimension type min_y
     bool skylight = true;     // dimension type has_skylight
     bool fullbright = false;  // not lit by the light engine (nether, end): full light sent, none saved
     ChunkLevelData level;
     uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::vector<Section> sections;
+    // Mobs structure pieces spawned during generation (witch huts, monuments, mansions, ...), spawned by the tick thread
+    // when the chunk first loads (mobs/spawn.hpp). Not saved: consumed before the chunk can be saved.
+    struct StructureMob { int type; double x, y, z; bool persistent, heal, finalize; };
+    std::vector<StructureMob> structure_mobs;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
     std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
@@ -421,8 +427,8 @@ inline std::string chunk_path(const std::string& dir, int cx, int cz) {
 inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
 
 // Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
-inline std::function<void(const Chunk&, Writer&)> chunk_save_extra;
-inline std::function<void(Chunk&, Reader&)> chunk_load_extra;
+inline std::array<std::function<void(const Chunk&, Writer&)>, DIM_COUNT> chunk_save_extra;
+inline std::array<std::function<void(Chunk&, Reader&)>, DIM_COUNT> chunk_load_extra;
 
 inline bool load_chunk(const std::string& dir, Chunk& c) {
     std::ifstream f(chunk_path(dir, c.cx, c.cz), std::ios::binary);
@@ -465,7 +471,7 @@ inline bool load_chunk(const std::string& dir, Chunk& c) {
         c.level.ticks.resize(size_t(r.varint()));
         for (auto& b : c.level.ticks) b = r.u8();
     }
-    if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
+    if (r.i < out.size() && chunk_load_extra[c.dimension]) chunk_load_extra[c.dimension](c, r);  // structures (starts + references)
     return c.on_disk = true;
 }
 
@@ -488,7 +494,7 @@ inline void save_chunk(const std::string& dir, Chunk& c) {
         for (uint32_t v : c.level.post) w.i32(int32_t(v));
         w.varint(int32_t(c.level.ticks.size()));
         w.bytes(c.level.ticks.data(), c.level.ticks.size());
-        if (chunk_save_extra) chunk_save_extra(c, w);
+        if (chunk_save_extra[c.dimension]) chunk_save_extra[c.dimension](c, w);
         c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
     std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
@@ -521,16 +527,9 @@ struct World {
     bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
-    std::string id = "minecraft:overworld";  // level key
-    int type = 0;                            // dimension_type registry id (dimension_types::)
-    int min_y = MIN_Y, height = HEIGHT, sea_level = 63, logical_height = HEIGHT;
-    double coordinate_scale = 1;
-    bool skylight = true, ceiling = false;
-    bool fullbright = false;                 // no light engine for this level (Chunk::fullbright)
-    std::string dir = "world";               // save folder (chunks/, portals.txt)
-    // Nether portal blocks (vanilla PoiManager NETHER_PORTAL records), kept by set_block (under m), saved with chunks.
-    std::set<std::tuple<int, int, int>> portals;
-    bool portals_dirty = false;
+    // Worldgen decoration order (worldgen::Pipeline::ticket / cancel), set with the generator: update_view
+    // queues tickets in vanilla ticket-level order; a job cancelled before it ran drops its ticket.
+    std::function<void(int cx, int cz, bool add)> ticket;
     std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
 
     // The chunk if loaded, else null (never loads or generates).
@@ -543,10 +542,23 @@ struct World {
         std::lock_guard lock(m);
         return viewed({cx, cz});
     }
+    std::function<void()> initialize_generator;  // lazy dimension initialization, before loading or generating
+    int dimension = DIM_OVERWORLD;
+    std::string id = "minecraft:overworld";  // level key
+    int type = 0;                            // dimension_type registry id (dimension_types::)
+    int min_y = MIN_Y, height = HEIGHT, sea_level = 63, logical_height = HEIGHT;
+    double coordinate_scale = 1;
+    bool skylight = true, ceiling = false;
+    bool fullbright = false;                 // no light engine for this level (Chunk::fullbright)
+    std::string dir = "world";               // save folder (chunks/, portals.txt)
+    // Nether portal blocks (vanilla PoiManager NETHER_PORTAL records), kept by set_block (under m), saved with chunks.
+    std::set<std::tuple<int, int, int>> portals;
+    bool portals_dirty = false;
 
     void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }  // once, for all Worlds
     int max_y() const { return min_y + height; }  // exclusive
-    void open(std::string level_id, int dim_type, int miny, int h, std::string folder) {
+    void open(std::string level_id, int dim_type, int miny, int h, std::string folder, int index = DIM_OVERWORLD) {
+        dimension = index;
         id = std::move(level_id), type = dim_type, min_y = miny, height = h, dir = std::move(folder);
         std::ifstream f(dir + "/portals.txt");
         for (int x, y, z; f >> x >> y >> z;) portals.insert({x, y, z});
@@ -623,13 +635,14 @@ struct World {
         note_block(x, y, z, old, state);
         return true;
     }
-    // Every block write (set_block, src/level's set) reports here: keeps the nether portal index.
+    // Shared by World::set_block and the level tick block writer.
     void note_block(int x, int y, int z, uint16_t old, uint16_t state) {
-        if (is_nether_portal(old) == is_nether_portal(state)) return;
-        std::lock_guard pl(m);
-        if (is_nether_portal(state)) portals.insert({x, y, z});
-        else portals.erase({x, y, z});
-        portals_dirty = true;
+        if (is_nether_portal(old) != is_nether_portal(state)) {
+            std::lock_guard pl(m);
+            if (is_nether_portal(state)) portals.insert({x, y, z});
+            else portals.erase({x, y, z});
+            portals_dirty = true;
+        }
     }
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
@@ -695,6 +708,7 @@ private:
             if (viewed({cx, cz})) return false;
             inflight.erase({cx, cz});
         }
+        if (ticket) ticket(cx, cz, false);
         job.set_exception(std::make_exception_ptr(ChunkCancelled()));
         return true;
     }
@@ -729,7 +743,6 @@ struct ViewTicket {
 // One World per vanilla level. Game code reaches the level it acts in through `world` (below): the tick thread
 // points cur_level at the acting player's / command source's / ticking entity's level (InLevel), other threads
 // default to the overworld. Code that knows its level explicitly (chunk streaming, spawn search) uses the World.
-enum Dim { DIM_OVERWORLD, DIM_NETHER, DIM_END, DIM_COUNT };
 inline World worlds[DIM_COUNT];
 inline thread_local World* cur_level = &worlds[DIM_OVERWORLD];
 inline World* level_by_id(const std::string& id) {
@@ -738,14 +751,12 @@ inline World* level_by_id(const std::string& id) {
     return nullptr;
 }
 inline int dim_of(const World* w) { return int(w - worlds); }
-// Tick thread: per-level state of other subsystems (entity manager, level ticks) follows cur_level: each hook
-// parks the old level's state and takes the new one's.
+// Tick thread: per-level state of other subsystems (the entity manager) follows cur_level through this hook.
 inline std::vector<void (*)(World* from, World* to)> level_switch_hooks;
 inline thread_local bool is_tick_thread = false;
 inline void set_level(World* w) {
     if (w == cur_level) return;
-    if (is_tick_thread)
-        for (auto f : level_switch_hooks) f(cur_level, w);
+    if (is_tick_thread) for (auto f : level_switch_hooks) f(cur_level, w);
     cur_level = w;
 }
 struct InLevel {  // RAII: run a block of game code in level `w`
@@ -789,15 +800,18 @@ inline void generate_flat(Chunk& c) {
 
 inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool encode) {
     try {
+        if (initialize_generator) initialize_generator();
         auto c = std::make_shared<Chunk>(min_y, height);
-        c->cx = cx, c->cz = cz, c->skylight = skylight, c->fullbright = fullbright;
+        c->cx = cx, c->cz = cz, c->dimension = dimension, c->skylight = skylight, c->fullbright = fullbright;
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
             c->level.post_processed = false;
             generator(*c);
+            // Pipeline::on_take has already exposed this chunk to lighting readers.
+            std::lock_guard light_lock(light::mutex());
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
-        if (!fullbright) light::produced(*this, *c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
+        if (!fullbright) light::produced(*this, *c, loaded, encode);
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
