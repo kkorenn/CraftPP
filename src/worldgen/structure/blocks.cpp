@@ -10,7 +10,7 @@
 
 namespace structure {
 
-static std::string g_root = "vanilla/src/data";
+static std::string g_root = "data/vanilla";
 std::string dataRoot() { return g_root; }
 void setDataRoot(const std::string& root) { g_root = root; }
 

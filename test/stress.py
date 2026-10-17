@@ -365,7 +365,7 @@ def random_command(tree, r):
 
 def cmdfuzz(host, port, n, seed, op):
     import json
-    tree = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/commands.json")))
+    tree = json.load(open(os.path.join(ROOT, "data/reports/commands.json")))
     r = random.Random(seed)
     sent = 0
     while sent < n:

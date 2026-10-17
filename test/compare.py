@@ -172,7 +172,7 @@ def run_craftpp(center):
 
 # Block state id -> "name[props]" from the vanilla report (ids are global and shared by both servers).
 NAMES = {}
-for name, blk in json.load(open(f"{ROOT}/vanilla/generated/reports/blocks.json")).items():
+for name, blk in json.load(open(f"{ROOT}/data/reports/blocks.json")).items():
     for s in blk["states"]:
         pr = s.get("properties")
         NAMES[s["id"]] = name + ("[" + ",".join(f"{k}={v}" for k, v in pr.items()) + "]" if pr else "")

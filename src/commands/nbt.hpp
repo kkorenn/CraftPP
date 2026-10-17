@@ -17,31 +17,41 @@ struct Nbt {
     std::vector<std::pair<std::string, Nbt>> comp;     // Compound (insertion order)
     std::vector<int64_t> arr;                          // Byte/Int/LongArray
 
-    static Nbt str(std::string v) { Nbt n; n.t = String; n.s = std::move(v); return n; }
-    static Nbt num(Type t, int64_t v) { Nbt n; n.t = t; n.i = v; return n; }
-    static Nbt real(Type t, double v) { Nbt n; n.t = t; n.d = v; return n; }
-    static Nbt compound() { Nbt n; n.t = Compound; return n; }
-    static Nbt make_list() { Nbt n; n.t = List; return n; }
+    static Nbt str(std::string v);
+    static Nbt num(Type t, int64_t v);
+    static Nbt real(Type t, double v);
+    static Nbt compound();
+    static Nbt make_list();
 
     bool is_num() const { return t >= Byte && t <= Double; }
     double as_double() const { return t == Float || t == Double ? d : double(i); }
-    const Nbt* get(const std::string& k) const {
-        for (auto& [key, v] : comp) if (key == k) return &v;
-        return nullptr;
-    }
-    Nbt* get(const std::string& k) {
-        for (auto& [key, v] : comp) if (key == k) return &v;
-        return nullptr;
-    }
-    Nbt& set(const std::string& k, Nbt v) {
-        if (Nbt* e = get(k)) return *e = std::move(v);
-        comp.emplace_back(k, std::move(v));
-        return comp.back().second;
-    }
-    bool operator==(const Nbt& o) const {
-        return t == o.t && i == o.i && d == o.d && s == o.s && list == o.list && comp == o.comp && arr == o.arr;
-    }
+    const Nbt* get(const std::string& k) const;
+    Nbt* get(const std::string& k);
+    Nbt& set(const std::string& k, Nbt v);
+    bool operator==(const Nbt& o) const;
 };
+// Defined after the struct: libstdc++ rejects instantiating pair<string, Nbt> while Nbt is incomplete.
+inline Nbt Nbt::str(std::string v) { Nbt n; n.t = String; n.s = std::move(v); return n; }
+inline Nbt Nbt::num(Type t, int64_t v) { Nbt n; n.t = t; n.i = v; return n; }
+inline Nbt Nbt::real(Type t, double v) { Nbt n; n.t = t; n.d = v; return n; }
+inline Nbt Nbt::compound() { Nbt n; n.t = Compound; return n; }
+inline Nbt Nbt::make_list() { Nbt n; n.t = List; return n; }
+inline const Nbt* Nbt::get(const std::string& k) const {
+    for (auto& [key, v] : comp) if (key == k) return &v;
+    return nullptr;
+}
+inline Nbt* Nbt::get(const std::string& k) {
+    for (auto& [key, v] : comp) if (key == k) return &v;
+    return nullptr;
+}
+inline Nbt& Nbt::set(const std::string& k, Nbt v) {
+    if (Nbt* e = get(k)) return *e = std::move(v);
+    comp.emplace_back(k, std::move(v));
+    return comp.back().second;
+}
+inline bool Nbt::operator==(const Nbt& o) const {
+    return t == o.t && i == o.i && d == o.d && s == o.s && list == o.list && comp == o.comp && arr == o.arr;
+}
 
 // ---- network (unnamed root) ----
 inline void nbt_string(Writer& w, const std::string& s) {

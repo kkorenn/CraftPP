@@ -1,7 +1,7 @@
 // Biome decoration (26.3 ChunkGenerator.applyBiomeDecoration) and the feature system it runs:
 //  - placed features (levelgen/placement: PlacedFeature, FeaturePlacer's depth-first modifier stack, every
 //    placement modifier), configured features (levelgen/feature/*), block predicates, block state providers,
-//    rule tests, value providers, parsed from vanilla/src/data/minecraft/worldgen/{placed_feature,feature,
+//    rule tests, value providers, parsed from data/vanilla/minecraft/worldgen/{placed_feature,feature,
 //    block_state_provider,biome}.
 //  - FeatureSorter.buildFeaturesPerStep over the biome source's possible biomes (global index per step),
 //    WorldgenRandom(Xoroshiro).setDecorationSeed(seed, minX, minZ) and setFeatureSeed(decorationSeed, index,

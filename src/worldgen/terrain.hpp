@@ -75,7 +75,7 @@ class TerrainGenerator {
 
   // surface=false stops after the noise stage (no material rules: bedrock, ore veins, surface blocks).
   // settings: noise_settings name (overworld, nether, end); chunkMinY/chunkHeight: the dimension type's layout.
-  explicit TerrainGenerator(int64_t seed, const std::string& dataRoot = "vanilla/src/data", bool surface = true,
+  explicit TerrainGenerator(int64_t seed, const std::string& dataRoot = "data/vanilla", bool surface = true,
                             const std::string& settings = "overworld", int chunkMinY = -64, int chunkHeight = 384);
   ~TerrainGenerator();
   void generate(Chunk& c);  // biomes, noise fill, material rules (standalone, neighbour biomes computed on demand)

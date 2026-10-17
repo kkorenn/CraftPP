@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   std::string settings = argc > 7 ? argv[7] : "overworld";
   int minY = settings == "overworld" ? MIN_Y : 0, height = settings == "overworld" ? HEIGHT : 256;
   auto t0 = std::chrono::steady_clock::now();
-  worldgen::Overworld ow(seed, stages, "vanilla/src/data", argc > 6 ? argv[6] : "", settings, minY, height);
+  worldgen::Overworld ow(seed, stages, "data/vanilla", argc > 6 ? argv[6] : "", settings, minY, height);
   double init = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   t0 = std::chrono::steady_clock::now();
   int n = 0;

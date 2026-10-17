@@ -18,7 +18,7 @@ struct Overworld {
   // pack: optional datapack dir whose biome JSON overrides vanilla's (compare.py stage packs).
   // settings: noise_settings name (overworld, nether, end); chunkMinY/chunkHeight: the dimension type's layout.
   // The same pipeline (biomes, terrain + surface + carvers, features) generates every dimension.
-  Overworld(int64_t seed, const std::string& stages, const std::string& dataRoot = "vanilla/src/data", const std::string& pack = "",
+  Overworld(int64_t seed, const std::string& stages, const std::string& dataRoot = "data/vanilla", const std::string& pack = "",
             const std::string& settings = "overworld", int chunkMinY = -64, int chunkHeight = 384);
   ~Overworld();
   int64_t seed;
