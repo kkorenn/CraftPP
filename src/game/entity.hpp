@@ -99,6 +99,7 @@ struct ItemEntity : Entity {
         int before = stack.count;
         int added = inventory_add(p, stack);
         if (added <= 0) return;
+        progress::award_stat(p, progress::PICKED_UP, stack.item, added);
         Writer w;
         w.varint(play_cb::take_item_entity).varint(id).varint(p.eid).varint(added);
         broadcast(w);
@@ -166,6 +167,7 @@ inline void pop_resource(int bx, int by, int bz, ItemStack s) {
 // LivingEntity.createItemStackToDrop for players (Q / death / inventory throw). Pickup delay 40.
 inline void player_drop(const Player& p, const ItemStack& s, bool randomly) {
     if (s.empty()) return;
+    progress::award_stat(const_cast<Player&>(p), progress::DROPPED, s.item, s.count);
     double ey = p.y + 1.62 - 0.3;
     if (randomly) {
         float pow = rand_float() * 0.5f, dir = rand_float() * float(M_PI * 2);

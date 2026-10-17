@@ -230,7 +230,8 @@ def json_ids(folder):
 
 
 REGS = ["attribute", "damage_type", "enchantment", "entity_type", "mob_effect", "timeline", "world_clock",
-        "worldgen/biome", "particle_type", "dimension_type", "point_of_interest_type"]
+        "worldgen/biome", "particle_type", "dimension_type", "point_of_interest_type", "stat_type", "custom_stat",
+        "recipe_book_category", "trim_pattern", "potion"]
 h.append("struct Registry { const char* name; const char* const* entries; int count; };")
 reg_rows = []
 for r in REGS:

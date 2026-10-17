@@ -69,6 +69,7 @@ struct MerchantMenu : Menu {
             if (merchant_lookup) merchant_lookup(trader, x, y, z);
             if (orb > 0) spawn_xp_orbs(x, y + 0.5, z, orb);
             s->last_traded_uh = p.uuid_hi, s->last_traded_ul = p.uuid_lo, s->traded = true;
+            if (Entity* ve = entity_by_id(trader)) progress::villager_trade(p, *ve, o.result);
             if (levelled) {
                 s->update_special_prices(s->gossips.reputation(p.uuid_hi, p.uuid_lo));
                 send_merchant_offers(p, *s);

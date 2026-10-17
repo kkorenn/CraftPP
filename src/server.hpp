@@ -7,6 +7,7 @@
 #include "gen/command_data.hpp"
 #include "storage/nbt_io.hpp"
 #include "game/player_state.hpp"
+#include "progress/api.hpp"
 #include "worldgen/block_state.hpp"
 #include "worldgen/random.hpp"
 #include "worldgen/material.hpp"
@@ -92,6 +93,7 @@ struct Player {
     std::array<Slot, 41> inv;  // vanilla Inventory indices: 0-8 hotbar, 9-35 main, 36-39 armor, 40 offhand
     int selected = 0;          // hotbar slot 0-8
     PlayerGame g;              // survival state, owned by the tick thread (src/game/)
+    std::shared_ptr<progress::State> prog;  // advancements, recipe book, stats (src/progress/)
     NetState net;              // keep-alive, teleport confirmation, client options (game/netplay.hpp)
     Outbox out;                // queued outgoing packets, flushed by the tick thread (src/game/tick.hpp)
     Inbox in;                  // serverbound play packets waiting for the tick thread

@@ -12,6 +12,7 @@
 
 // ---------- recipes ----------
 struct Recipe {
+    std::string id;
     int w = 0, h = 0;                       // shaped size; 0 = shapeless
     std::vector<std::vector<uint16_t>> in;  // shaped: w*h cells (empty = must be empty); shapeless: ingredients
     bool symmetric = false;
@@ -27,6 +28,7 @@ inline void load_recipes(const Json& rs) {
     };
     for (auto& r : rs.arr) {
         Recipe rc;
+        if (auto* id = r.find("id")) rc.id = id->asString();
         rc.result = {r["r"][0].asInt(), r["r"][1].asInt(), 0};
         if (auto* k = r.find("k")) {
             rc.w = r["w"].asInt(), rc.h = r["h"].asInt();
@@ -249,13 +251,14 @@ inline bool may_pickup(Player& p, const SlotRef& r) { return r.kind != S_MENU ||
 
 inline void update_result(Player& p) {
     const Recipe* r = find_recipe(grid(p), grid_width(p));
-    p.g.result = r ? r->result : ItemStack{};
+    p.g.result = r && progress::may_craft(p, int(r - recipes.data())) ? r->result : ItemStack{};
 }
 
 // ResultSlot.onTake: consume one of each grid item, leaving crafting remainders (buckets, bottles).
 inline void take_result(Player& p) {
     ItemStack* g = grid(p);
-    int n = grid_width(p) * grid_width(p);
+    int gw = grid_width(p), n = gw * gw;
+    if (const Recipe* r = find_recipe(g, gw)) progress::crafted(p, int(r - recipes.data()), r->result, g, n);
     for (int i = 0; i < n; i++) {
         if (g[i].empty()) continue;
         int rem = item_info[size_t(g[i].item)].craft_remainder;

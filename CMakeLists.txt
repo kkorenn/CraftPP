@@ -27,7 +27,7 @@ option(CRAFTPP_LTO "Link-time optimization" OFF)
 if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
-file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp src/effects/*.cpp)
+file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp src/effects/*.cpp src/progress/*.cpp)
 add_executable(craftpp src/main.cpp src/boss/end_worldgen.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
 # Game code is a Java port: signed int overflow wraps like Java instead of being UB.
 target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)

@@ -4,6 +4,7 @@
 // hooks for a later effects port (beacon_effect_hook).
 #include "stations.hpp"
 #include "../gen/light_data.hpp"
+#include "../progress/api.hpp"
 
 namespace cont {
 
@@ -166,6 +167,12 @@ struct BrewingMenu : SlotsMenu {
         return is_brewing_fuel(s);
     }
     int slot_limit(int i, const ItemStack& s) override { return i < 3 ? 1 : SlotsMenu::slot_limit(i, s); }
+    void on_take(Player& p, int i, const ItemStack& s) override {
+        if (i < 3) {
+            int pot = potion_of(s);
+            if (pot >= 0) progress::brewed_potion(p, pot);
+        }
+    }
     ItemStack quick_move(Player& p, int i) override {
         SlotRef r = menu_slot(p, i);
         if (r.s->empty()) return {};
@@ -181,6 +188,7 @@ struct BrewingMenu : SlotsMenu {
             else ok = move_to(p, stack, 5, 32, false);
         } else {
             ok = move_to(p, stack, 5, 41, true);
+            if (ok && i < 3) on_take(p, i, clicked);
         }
         if (!ok) return {};
         *r.s = stack;
@@ -264,6 +272,13 @@ struct BeaconBE : be::Live {
                 }
         }
         if (levels > 0) play_sound("block.beacon.ambient", x + 0.5, y + 0.5, z + 0.5, 1.0f, 1.0f);
+        if (prev < levels) {
+            for (auto& pp : players) {
+                Player& p = *pp;
+                if (p.x >= x - 10 && p.x <= x + 10 && p.y >= y - 5 && p.y <= y + 5 && p.z >= z - 10 && p.z <= z + 10)
+                    progress::construct_beacon(p, levels);
+            }
+        }
         if (prev == 0 && levels > 0) play_sound("block.beacon.activate", x + 0.5, y + 0.5, z + 0.5, 1.0f, 1.0f);
         else if (prev > 0 && levels == 0) play_sound("block.beacon.deactivate", x + 0.5, y + 0.5, z + 0.5, 1.0f, 1.0f);
         if (prev != levels) set_changed();

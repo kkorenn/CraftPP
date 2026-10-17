@@ -42,6 +42,7 @@ inline void move_to_level(Player& p, World* to, double x, double y, double z, fl
     send_health(p);
     send_experience(p);
     player_entity_respawned(p);  // old level's watchers drop the player; the new level's pair on the tracker tick
+    if (from != to) progress::changed_dimension(p, int(from - worlds), int(to - worlds));
 }
 
 // ---------- the end ----------

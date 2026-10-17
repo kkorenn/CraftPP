@@ -55,6 +55,7 @@ struct TamableAnimal : Animal {
         set_tame(true, true);
         set_owner(p.uuid_hi, p.uuid_lo);
         set_persistence_required();
+        progress::tame_animal(p, *this);
     }
     void set_ordered_to_sit(bool v) { ordered_to_sit = v; }
     bool is_allied_to(Entity& e) override {

@@ -4,6 +4,7 @@
 // bone meal, hoe tilling, flint and steel, and buckets (BucketItem.use). Tick thread only.
 #include "falling.hpp"
 #include "cauldrons.hpp"
+#include "../progress/api.hpp"
 
 namespace lvl {
 
@@ -402,6 +403,8 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
     int item = slot.item;
     if (item_name_is(item, "bone_meal")) {
         if (!bonemeal(hit)) return false;
+        progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
+        progress::award_stat(pl, progress::USED, item);
         consume(pl, slot);
         return true;
     }
@@ -412,6 +415,8 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
         else if (block(s) == ID.coarse_dirt) ns = blocks::dirt;
         if (ns < 0) return false;
         set(hit, ns, UPDATE_ALL_IMMEDIATE);
+        progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
+        progress::award_stat(pl, progress::USED, item);
         if (pl.gamemode != 1) slot.damage++;
         return true;
     }
@@ -421,6 +426,8 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
             int fs = fire_state_for(t);
             if (can_survive(fs, t)) {
                 set(t, fs, UPDATE_ALL_IMMEDIATE);
+                progress::placed_block(pl, t.x, t.y, t.z, slot);
+                progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
                 if (pl.gamemode != 1) slot.damage++;
                 return true;
             }
@@ -432,6 +439,8 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
     PlaceCtx c{pl, hit, face, cy, cx, cz, item};
     if (!place_block_item(c, b)) return false;
     if (block_item_placed_hook) block_item_placed_hook(pl, c.pos.x, c.pos.y, c.pos.z, slot);
+    progress::placed_block(pl, c.pos.x, c.pos.y, c.pos.z, slot);
+    progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
     consume(pl, slot);
     return true;
 }
@@ -492,15 +501,21 @@ inline bool use_bucket(Player& pl, ItemStack& slot) {
             got = item_by_name["minecraft:water_bucket"];
             set(h.pos, blocks::air, UPDATE_ALL_IMMEDIATE);
         }
-        if (got >= 0 && pl.gamemode != 1) {
-            if (--slot.count <= 0) slot = {got, 1, 0};
-            else give_item(pl, got, 1);
+        if (got >= 0) {
+            progress::award_stat(pl, progress::USED, item);
+            if (pl.gamemode != 1) {
+                if (--slot.count <= 0) slot = {got, 1, 0};
+                else give_item(pl, got, 1);
+            }
         }
         return true;
     }
     int fluid = water ? WATER : LAVA;
     Pos target = is_container(s) && water ? h.pos : h.pos.rel(h.face);
-    if (empty_bucket_contents(pl, target, fluid, &h) && pl.gamemode != 1) slot = {item_by_name["minecraft:bucket"], 1, 0};
+    if (empty_bucket_contents(pl, target, fluid, &h)) {
+        progress::placed_block(pl, target.x, target.y, target.z, slot);
+        if (pl.gamemode != 1) slot = {item_by_name["minecraft:bucket"], 1, 0};
+    }
     return true;
 }
 

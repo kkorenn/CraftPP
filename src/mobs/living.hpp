@@ -3,6 +3,7 @@
 // PlayerEntity, the per-player proxy that lets mobs target, hit and look at players through the same API.
 // Mobs TU only (src/mobs/*.cpp). Overview: src/mobs/mobs.hpp.
 #include "entity.hpp"
+#include "../progress/api.hpp"
 
 // ---------- raycast (Level.clip, ClipContext.Block.COLLIDER) ----------
 struct BlockHit { bool hit = false; Vec3 pos{}; int bx = 0, by = 0, bz = 0, face = 0; };
@@ -484,6 +485,9 @@ inline void LivingEntity::actually_hurt(const DamageSource& s, float dmg) {
 inline void LivingEntity::die(const DamageSource& s) {  // LivingEntity.die
     if (removed || dead) return;
     dead = true;
+    LivingEntity* k = kill_credit();
+    if (!k && s.causing) k = s.causing->as_living();
+    if (k) if (Player* p = k->as_player()) progress::player_killed_entity(*p, *this, s);
     drop_all_death_loot(s);
     broadcast_event(3);
     set_pose(Pose::DYING);

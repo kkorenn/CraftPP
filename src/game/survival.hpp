@@ -186,6 +186,10 @@ inline void kill(Player& p, const DamageSource& s) {
     p.g.health = 0;
     p.g.use_ticks = 0;
     p.g.digging = p.g.delayed = false;
+    progress::entity_killed_player(p, s.causing ? s.causing : s.direct, s);
+    if (Entity* ke = s.causing ? s.causing : s.direct)
+        if (Player* kp = ke->as_player(); kp && kp != &p)
+            if (Entity* pe = entity_by_id(p.eid)) progress::player_killed_entity(*kp, *pe, s);
     auto dt = damage_types.find(s.name());
     std::string key = "death.attack.generic";
     // DamageSource.getLocalizedDeathMessage: the killer (causing, else direct entity) is the second argument
@@ -303,7 +307,9 @@ inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak
     if (maxd <= 0) return;
     if ((amount = item_durability_change(t, amount)) <= 0) return;  // unbreaking
     if ((t.damage += amount) >= maxd) {
+        int broken = t.item;
         t = {};
+        progress::award_stat(p, progress::BROKEN, broken, 1);
         broadcast_near(p.x, p.z, entity_event_packet(p.eid, 47));  // main hand break animation + sound
     }
 }
@@ -344,6 +350,7 @@ inline bool destroy_block(Player& p, int x, int y, int z) {
     level_event(2001, x, y, z, state, &p);  // Block.spawnDestroyParticles (break particles + sound for others)
     if (!lvl::player_destroy(p, x, y, z, state)) return true;  // other halves of doors/beds/plants, leaves fluids
     if (p.gamemode == 1) return true;
+    progress::award_stat(p, progress::MINED, block_index(state), 1);
     if (correct_tool(p, state)) {
         static std::vector<ItemStack> drops;
         drops.clear();
@@ -486,6 +493,7 @@ inline void finish_using(Player& p) {
         p.g.saturation = std::clamp(p.g.saturation + it.saturation, 0.0f, float(p.g.food));
     }
     player_consume_effects(p, s.item, s);  // Consumable.onConsume: on_consume_effects, potion contents
+    progress::consume_item(p, s.copy(1));
     p.send(entity_event_packet(p.eid, 9));  // finished using
     if (p.gamemode == 1) return;
     int rem = it.use_remainder;
@@ -505,6 +513,8 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
     double dy = p.y - oy;
     int fx = int(std::floor(p.x)), fy = int(std::floor(p.y)), fz = int(std::floor(p.z));
     int feet = world.get_block(fx, fy, fz);
+    progress::moved(p, ox, oy, oz, was_on_ground);
+    progress::enter_block(p, feet);
     int bi = block_index(feet);
     bool in_fluid = is_fluid(uint16_t(feet));
     if (in_fluid || in_sorted(tag_climbable, bi) || in_sorted(tag_fall_reset, bi) || p.gamemode == 1 || p.gamemode == 3 ||
@@ -622,6 +632,7 @@ inline void save_player_extra(const Player& p, Nbt& t) {
     t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
     save_player_effects(p, t);  // active_effects (src/effects)
     if (save_player_containers) save_player_containers(p, t);  // EnderItems, XpSeed
+    progress::save_player(p, t);
 }
 inline void load_player_extra(Player& p, const Nbt& t) {
     auto D = [&](const char* k, double d) { const Nbt* n = t.get(k); return n && n->is_num() ? n->as_double() : d; };
@@ -632,6 +643,7 @@ inline void load_player_extra(Player& p, const Nbt& t) {
     g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
     load_player_effects(p, t);
     if (load_player_containers) load_player_containers(p, t);
+    progress::load_player(p, t);
 }
 // Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
 inline void load_player_extra_txt(Player& p, std::istream& f) {
