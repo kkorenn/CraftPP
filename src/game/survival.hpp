@@ -192,7 +192,7 @@ inline void respawn(Player& p) {
     place_new_player(p);  // overworld spawn
     World* spawn = p.level;
     p.level = died_in;
-    move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 0);
+    move_to_level(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch, 0);  // TeleportTransition.createDefault
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).

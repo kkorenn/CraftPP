@@ -647,7 +647,9 @@ struct World {
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
     std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
+    std::mutex save_m;                // autosave thread vs /save-all and stop on the tick thread: one shared .tmp per chunk
     int save_dirty() {
+        std::lock_guard save_lock(save_m);
         std::vector<ChunkPtr> dirty, idle;
         {
             std::lock_guard lock(m);

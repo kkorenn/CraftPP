@@ -6,14 +6,15 @@
 #include "survival.hpp"
 
 // ---------- moving between levels ----------
-inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep) {
+inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep, int rel) {
     World* from = p.level;
     (void)from;
     entities_reset_view(p);  // the client drops its entities on respawn; the tracker resends the new level's
     if (p.g.container) close_container(p, false);                 // the client closes screens on respawn
     p.g.use_ticks = 0;                                             // stopUsingItem
     p.level = to;
-    p.x = x, p.y = y, p.z = z, p.yaw = yaw, p.pitch = pitch;
+    p.x = x, p.y = y, p.z = z;
+    p.yaw = rel & 8 ? p.yaw + yaw : yaw, p.pitch = rel & 16 ? p.pitch + pitch : pitch;
     p.portal_time = 0;
 
     Writer w;
@@ -23,7 +24,7 @@ inline void move_to_level(Player& p, World* to, double x, double y, double z, fl
     p.send(difficulty_packet());
     send_commands(p);  // Restores client selector permissions after every respawn/dimension transfer.
     p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
-               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
+               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(yaw).f32(pitch).i32(rel));
     // PlayerList.sendLevelInfo
     p.send(border_init_packet());
     p.send(set_time_packet());
@@ -130,13 +131,13 @@ inline void dragon_fight_tick() {
     }
 }
 
-// ServerPlayer.showEndCredits: the end portal in the end. The client shows the credits (or skips them when
-// already seen) and answers with client_command PERFORM_RESPAWN.
+// ServerPlayer.showEndCredits: the end portal in the end (until seenCredits). The client shows the credits and
+// answers with client_command PERFORM_RESPAWN.
 inline void show_end_credits(Player& p) {
     if (p.won_game) return;
     p.won_game = true;
     player_entity_hidden(p);  // removePlayerImmediately: nobody sees the player during the credits
-    p.send(game_event(4, p.seen_credits ? 0.0f : 1.0f));  // WIN_GAME: 1 = roll the credits
+    p.send(game_event(4, 0.0f));  // WIN_GAME (26.3 always sends 0)
     p.seen_credits = true;
 }
 
@@ -153,7 +154,7 @@ inline void dimensions_init() {
             place_new_player(p);
             World* spawn = p.level;
             p.level = from;
-            move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 1);
+            move_to_level(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch, 1);  // createDefault: the spawn angle
             return;
         }
         prev(p, in, id);

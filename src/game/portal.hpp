@@ -184,13 +184,39 @@ Rect largest_rectangle(Pos center, int axis1, int limit1, int axis2, int limit2,
     return {center.rel(axis1, min1 - neg1).rel(axis2, min2 - c2), s1, s2};
 }
 
+// ---------- WorldBorder (bounds of the static/moving extent, clamped to the absolute max size) ----------
+// ponytail: CraftPP has one border (commands/state.hpp) for every level; 26.x keeps one per level.
+struct BorderBox { double min_x, max_x, min_z, max_z; };
+inline BorderBox border_box() {
+    double h = border.size() / 2, m = 29999984;
+    return {std::clamp(border.cx - h, -m, m), std::clamp(border.cx + h, -m, m), std::clamp(border.cz - h, -m, m),
+            std::clamp(border.cz + h, -m, m)};
+}
+inline bool within_border(double x, double z) {  // WorldBorder.isWithinBounds(x, z)
+    BorderBox b = border_box();
+    return x >= b.min_x && x < b.max_x && z >= b.min_z && z < b.max_z;
+}
+inline Pos clamp_to_border(double x, double y, double z) {  // WorldBorder.clampToBounds -> BlockPos.containing
+    BorderBox b = border_box();
+    const double eps = double(1.0E-5F);
+    return {int(std::floor(std::clamp(x, b.min_x, b.max_x - eps))), int(std::floor(y)),
+            int(std::floor(std::clamp(z, b.min_z, b.max_z - eps)))};
+}
+
 // ---------- PortalForcer ----------
-inline bool replaceable_no_fluid(uint16_t s) { return block_of(s).replaceable && !is_fluid(s); }  // canPortalReplaceBlock
-inline bool solid_block(uint16_t s) { return block_of(s).collision && !block_of(s).replaceable; }  // ponytail: isSolid
-inline int motion_blocking_height(int x, int z) {  // Heightmap MOTION_BLOCKING: top blocking / fluid block + 1
+inline bool replaceable_no_fluid(uint16_t s) {  // canPortalReplaceBlock: canBeReplaced && no fluid state
+    return bs::R().can_be_replaced(s) && !bs::R().has_fluid(s);
+}
+inline bool solid_block(uint16_t s) { return bs::R().is_solid(s); }  // BlockState.isSolid (legacy solid flag)
+// Level.getHeight(MOTION_BLOCKING): top blocking / fluid block + 1, but minY while the chunk isn't loaded (FULL).
+// createPortal reads blocks (which loads the chunk) only after asking, so the first column it visits in each
+// unloaded chunk finds nothing, like vanilla. ponytail: vanilla unloads idle chunks sooner than autosave does here.
+inline int motion_blocking_height(int x, int z) {
+    if (!world.get_if_loaded(x >> 4, z >> 4)) return world.min_y();
+    static const bs::Tag& motion = bs::R().tag("minecraft:blocks_motion_in_heightmap");
     for (int y = world.max_y() - 1; y >= world.min_y(); y--) {
         uint16_t s = world.get_block(x, y, z);
-        if (block_of(s).collision || is_fluid(s)) return y + 1;
+        if (bs::R().in(s, motion) || bs::R().has_fluid(s)) return y + 1;
     }
     return world.min_y();
 }
@@ -206,7 +232,7 @@ inline std::optional<Pos> find_closest_portal(World& w, Pos approx, bool to_neth
     for (auto it = w.portals.lower_bound({approx.x - r, INT_MIN, INT_MIN}); it != w.portals.end(); ++it) {
         auto [x, y, z] = *it;
         if (x > approx.x + r) break;
-        if (std::abs(z - approx.z) > r) continue;
+        if (std::abs(z - approx.z) > r || !within_border(x, z)) continue;
         double d = double(x - approx.x) * (x - approx.x) + double(y - approx.y) * (y - approx.y) + double(z - approx.z) * (z - approx.z);
         if (!best || d < best_d || (d == best_d && y < best->y)) best = Pos{x, y, z}, best_d = d;
     }
@@ -224,7 +250,7 @@ inline bool can_host_frame(Pos origin, int dx, int dz, int offset) {
     return true;
 }
 
-// PortalForcer.createPortal in cur_level. ponytail: no world border (vanilla clamps to it).
+// PortalForcer.createPortal in cur_level.
 inline Rect create_portal(Pos origin, int axis) {
     int dx = axis == X ? 1 : 0, dz = axis == Z ? 1 : 0;  // Direction.get(POSITIVE, axis)
     double full_d = -1, part_d = -1;
@@ -241,6 +267,7 @@ inline Rect create_portal(Pos origin, int axis) {
         }
         leg_index++;
         int height = std::min(max_y, motion_blocking_height(cx, cz));
+        if (!within_border(cx, cz) || !within_border(cx + dx, cz + dz)) continue;
         Pos col{cx, origin.y, cz};
         for (int y = height; y >= world.min_y(); y--) {
             col.y = y;
@@ -261,7 +288,7 @@ inline Rect create_portal(Pos origin, int axis) {
     if (full_d == -1) {  // no spot: a platform in the air
         int min_start = std::max(world.min_y() + 1, 70), max_start = max_y - 9;
         if (max_start < min_start) return {origin, 0, 0};
-        full = {origin.x - dx, std::clamp(origin.y, min_start, max_start), origin.z - dz};
+        full = clamp_to_border(origin.x - dx, std::clamp(origin.y, min_start, max_start), origin.z - dz);
         int cwx = -dz, cwz = dx;
         for (int box = -1; box < 2; box++)
             for (int w = 0; w < 2; w++)
@@ -294,19 +321,18 @@ inline void nether_portal_travel(Player& p) {
     World* to = from == &worlds[DIM_NETHER] ? &worlds[DIM_OVERWORLD] : &worlds[DIM_NETHER];
     bool to_nether = to == &worlds[DIM_NETHER];
     double scale = from->coordinate_scale / to->coordinate_scale;
-    Pos approx{int(std::floor(p.x * scale)), int(std::floor(p.y)), int(std::floor(p.z * scale))};
+    Pos approx = clamp_to_border(p.x * scale, p.y, p.z * scale);
     Pos entry{p.portal_x, p.portal_y, p.portal_z};
     uint16_t entry_state = at(entry);
     int entry_axis = is_nether_portal(entry_state) ? axis_of(entry_state) : X;
-    // Entity.getRelativePortalPosition (PortalShape.getRelativePosition) on the entry portal
-    double off_x = 0.5, off_y = 0, off_z = 0;
+    // LivingEntity.getRelativePortalPosition: PortalShape.getRelativePosition on the entry portal, forward reset to 0
+    double off_x = 0.5, off_y = 0;
     if (is_nether_portal(entry_state)) {
         Rect area = largest_rectangle(entry, entry_axis, 21, Y, 21, [&](Pos q) { return at(q) == entry_state; });
-        double pos_axis = entry_axis == X ? p.x : p.z, pos_fwd = entry_axis == X ? p.z : p.x;
+        double pos_axis = entry_axis == X ? p.x : p.z;
         double width = area.size1 - PLAYER_W, height = area.size2 - PLAYER_H;
         off_x = width > 0 ? std::clamp((pos_axis - (area.min.get(entry_axis) + PLAYER_W / 2)) / width, 0.0, 1.0) : 0.5;
         off_y = height > 0 ? std::clamp((p.y - area.min.y) / height, 0.0, 1.0) : 0.0;
-        off_z = pos_fwd - (area.min.get(entry_axis == X ? Z : X) + 0.5);
     }
     InLevel in_level(to);
     Rect exit;
@@ -321,47 +347,45 @@ inline void nether_portal_travel(Player& p) {
     uint16_t bl = at(exit.min);
     int axis = is_nether_portal(bl) ? axis_of(bl) : X;
     float rotation = entry_axis == axis ? 0.0f : 90.0f;
-    double right = PLAYER_W / 2 + (exit.size1 - PLAYER_W) * off_x, up = (exit.size2 - PLAYER_H) * off_y, fwd = 0.5 + off_z;
+    double right = PLAYER_W / 2 + (exit.size1 - PLAYER_W) * off_x, up = (exit.size2 - PLAYER_H) * off_y, fwd = 0.5;
     bool xa = axis == X;
     double tx = exit.min.x + (xa ? right : fwd), ty = exit.min.y + up, tz = exit.min.z + (xa ? fwd : right);
     // PortalShape.findCollisionFreePosition: allowed centers reach at most 1 block up.
     // ponytail: full-cube collision and a 1/16 step search stand in for Level.findFreePosition's shape search.
     for (double lift = 0; lift <= 1.0; lift += 1.0 / 16)
         if (box_free(tx, ty + lift, tz)) { ty += lift; break; }
-    change_dimension(p, to, tx, ty, tz, p.yaw + rotation, p.pitch);
+    change_dimension(p, to, tx, ty, tz, rotation, 0.0f, 8 | 16 | 32 | 64 | 128 | 256);  // Relative DELTA + ROTATION
 }
 
 // EndPortalBlock.getPortalDestination: into the end onto the platform, or out of it to the world spawn.
 inline void end_portal_travel(Player& p) {
     if (p.level == &worlds[DIM_END]) {
         World* from = p.level;
-        float yaw = p.yaw, pitch = p.pitch;
-        place_new_player(p);  // findRespawnPositionAndUseSpawnBlock: the world spawn
+        place_new_player(p);  // findRespawnPositionAndUseSpawnBlock -> TeleportTransition.createDefault
         World* spawn = p.level;
         p.level = from;
-        change_dimension(p, spawn, p.x, p.y, p.z, yaw, pitch);  // ponytail: vanilla turns to the spawn angle
+        change_dimension(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch);  // the spawn angle
         return;
     }
     World& end = worlds[DIM_END];
     create_end_platform(end, 100, 49, 0);                       // ServerLevel.END_SPAWN_POINT.below()
-    change_dimension(p, &end, 100.5, 49, 0.5, 90.0f, p.pitch);  // facing west
+    change_dimension(p, &end, 100.5, 49, 0.5, 90.0f, 0.0f, 16 | 32 | 64 | 128 | 256);  // facing west; DELTA + X_ROT
 }
 
 // ---------- standing in portals ----------
-// Entity.checkInsideBlocks against the portal shapes (nether: 4/16 thick slab; end: y 6/16..12/16).
+// Entity.checkInsideBlocks against the entity-inside shapes (nether portal: full block; end portal: y 6/16..12/16).
 inline int touched_portal(Player& p, Pos& where) {
-    double x0 = p.x - 0.3 + 1e-7, x1 = p.x + 0.3 - 1e-7, y0 = p.y + 1e-7, y1 = p.y + 1.8 - 1e-7;
-    double z0 = p.z - 0.3 + 1e-7, z1 = p.z + 0.3 - 1e-7;
+    // ponytail: the box at the current position only; vanilla also visits the blocks swept since the last tick.
+    const double e = double(1.0E-5F), hw = PLAYER_W / 2;  // makeBoundingBox(to).deflate(1.0E-5F)
+    double x0 = p.x - hw + e, x1 = p.x + hw - e, y0 = p.y + e, y1 = p.y + PLAYER_H - e;
+    double z0 = p.z - hw + e, z1 = p.z + hw - e;
     for (int bx = int(std::floor(x0)); bx <= int(std::floor(x1)); bx++)
         for (int by = int(std::floor(y0)); by <= int(std::floor(y1)); by++)
             for (int bz = int(std::floor(z0)); bz <= int(std::floor(z1)); bz++) {
                 uint16_t s = world.get_block(bx, by, bz);
                 bool hit = false;
                 if (is_nether_portal(s)) {
-                    bool ax = axis_of(s) == X;
-                    double lo = ax ? bz + 0.375 : bx + 0.375, hi = lo + 0.25;
-                    double a0 = ax ? z0 : x0, a1 = ax ? z1 : x1;
-                    hit = a1 > lo && a0 < hi;
+                    hit = true;  // no getEntityInsideCollisionShape override: the whole block
                 } else if (s == blocks::end_portal) {
                     hit = y1 > by + 0.375 && y0 < by + 0.75;
                 }
