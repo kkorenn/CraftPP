@@ -39,6 +39,10 @@ inline Pos block_random_pos(int x0, int y0, int z0, int ymask) {
 }
 
 inline void tick_precipitation(const Pos& p);  // behaviours (ice / snow)
+inline bool handling_tick = false;              // ServerLevel.handlingTick (redstone.hpp)
+inline void rs_level_tick_end();               // redstone.hpp: runBlockEvents
+inline void tick_block_entities();             // redstone.hpp: moving pistons
+inline void daylight_tick();
 
 inline uint32_t ticking_sections(LChunk& l) {
     if (l.seen_edits == l.c->edits) return l.ticking_sections;
@@ -117,6 +121,7 @@ inline void level_tick() {
     auto t0 = std::chrono::steady_clock::now();
     size_t nfluid = 0;
     tick_thread = std::this_thread::get_id();
+    handling_tick = true;
     {
         std::vector<ChunkPtr> q;
         {
@@ -152,10 +157,20 @@ inline void level_tick() {
         auto it = chunks.find(k);
         if (it != chunks.end()) tick_chunk(it->second, speed);
     }
+    rs_level_tick_end();
     tick_falling_blocks();
+    tick_block_entities();
+    daylight_tick();
     if (dbg) {
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (ms > 20) log_info("level tick %.1f ms: %zu fluid ticks, %zu ticking chunks", ms, nfluid, ticking.size());
+    }
+    static const bool profile = getenv("CRAFTPP_LEVEL_PROFILE");  // average level tick cost per 200 ticks
+    if (profile) {
+        static double sum = 0;
+        static int n = 0;
+        sum += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (++n == 200) log_info("level tick avg %.4f ms over 200 ticks", sum / n), sum = 0, n = 0;
     }
     // Every 5 s: save tick lists into the chunks; let go of chunks no player views (World unloads them).
     if (server_tick - last_release >= 100) {

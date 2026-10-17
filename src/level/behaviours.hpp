@@ -12,6 +12,13 @@ inline bool can_survive_more(int s, const Pos& p);
 inline int update_shape_more(int s, const Pos& p, int dir, int ns);
 inline void rail_on_place(int state, const Pos& p, int old, bool piston);
 inline bool veg_may_place_on_more(int plant, int below, int* r);
+// redstone.hpp (signals, wire, diodes, observers, pistons, powered doors / rails ...): true = handled.
+inline bool rs_can_survive(int s, const Pos& p, bool& r);
+inline bool rs_update_shape(int s, const Pos& p, int dir, int ns, int& r);
+inline bool rs_neighbor_changed(int s, const Pos& p, int src, bool piston);
+inline bool rs_on_place(int s, const Pos& p, int old, bool piston);
+inline void rs_after_removal(int s, const Pos& p, bool piston);
+inline bool rs_tick(int s, const Pos& p);
 
 enum Kind : uint8_t {
     K_NONE, K_LIQUID, K_BUBBLE_COLUMN, K_FALLING, K_CONCRETE_POWDER, K_ANVIL,
@@ -400,6 +407,7 @@ inline bool growing_can_survive(int s, const Pos& p) {
 // BlockBehaviour.canSurvive
 // ==================================================================================================
 inline bool can_survive(int state, Pos pos) {
+    if (bool r; rs_can_survive(state, pos, r)) return r;
     switch (kind(state)) {
         case K_BUBBLE_COLUMN: return bubble_can_survive(pos);
         case K_VEGETATION: case K_CROP: case K_STEM: case K_ATTACHED_STEM: case K_SAPLING: case K_MUSHROOM:
@@ -460,6 +468,7 @@ inline bool can_survive(int state, Pos pos) {
 // ==================================================================================================
 inline int update_shape(int state, Pos pos, int dir, Pos npos, int nstate) {
     (void)npos;
+    if (int r; rs_update_shape(state, pos, dir, nstate, r)) return r;
     int k = kind(state);
     switch (k) {
         case K_LIQUID: return liquid_update_shape(state, pos, dir, nstate);
@@ -604,7 +613,7 @@ inline int update_shape(int state, Pos pos, int dir, Pos npos, int nstate) {
 // ==================================================================================================
 inline void sponge_try_absorb(const Pos& p);
 inline void neighbor_changed(int state, Pos pos, int src_block, bool piston) {
-    (void)src_block;
+    if (rs_neighbor_changed(state, pos, src_block, piston)) return;
     switch (kind(state)) {
         case K_LIQUID: liquid_neighbor_changed(state, pos); break;
         case K_RAIL: {
@@ -626,7 +635,7 @@ inline void neighbor_changed(int state, Pos pos, int src_block, bool piston) {
 }
 
 inline void on_place(int state, Pos pos, int old, bool piston) {
-    (void)piston;
+    if (rs_on_place(state, pos, old, piston)) return;
     switch (kind(state)) {
         case K_LIQUID: liquid_on_place(state, pos); break;
         case K_FALLING:
@@ -645,7 +654,7 @@ inline void on_place(int state, Pos pos, int old, bool piston) {
     }
 }
 
-inline void after_removal(int state, Pos pos, bool piston) { (void)state, (void)pos, (void)piston; }
+inline void after_removal(int state, Pos pos, bool piston) { rs_after_removal(state, pos, piston); }
 
 // SpongeBlock.removeWaterBreadthFirstSearch: BlockPos.breadthFirstTraversal(pos, 6, 65, all directions).
 inline void sponge_try_absorb(const Pos& p) {
@@ -683,6 +692,7 @@ inline void sponge_try_absorb(const Pos& p) {
 // scheduled ticks
 // ==================================================================================================
 inline void block_tick(int state, Pos pos) {
+    if (rs_tick(state, pos)) return;
     auto& r = rng();
     switch (kind(state)) {
         case K_LIQUID:

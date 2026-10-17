@@ -55,6 +55,9 @@ inline int can_be_replaced_more(int s, const PlaceCtx& c);
 inline bool place_more(int b, PlaceCtx& c, int& out);
 inline int wall_variant_of(int standing, int& attach);
 inline bool hanging_wall_can_place(int s, const Pos& p);
+inline int rs_place_inputs(int s, const Pos& p);  // redstone.hpp
+inline void rs_placed_by(int s, const Pos& p);
+inline bool rs_use(Player& pl, const Pos& p, int s);
 // BlockBehaviour.canBeReplaced(state, context)
 inline bool can_be_replaced_ctx(int s, const PlaceCtx& c) {
     if (int r = can_be_replaced_more(s, c); r >= 0) return r;
@@ -248,7 +251,7 @@ inline void placed_by(int s, const Pos& p) {
         case K_DOOR: set(p.above(), with(s, "half", "upper")); break;
         case K_BED: set(p.rel(getdir(s)), with(s, "part", "head")); break;
         case K_DOUBLE_PLANT: set(p.above(), with_waterlogged(with(def(block(s)), "half", "upper"), p.above())); break;
-        default: break;
+        default: rs_placed_by(s, p); break;
     }
 }
 
@@ -276,6 +279,7 @@ inline bool place_block_item(PlaceCtx& c, int standing) {
         state = state_for_placement(block(standing), c);
         if (state >= 0 && !can_survive(state, c.pos)) state = -1;  // BlockItem.canPlace: mustSurvive
     }
+    if (state >= 0) state = rs_place_inputs(state, c.pos);
     if (state < 0 || obstructed_by_player(state, c.pos)) return false;
     if (!set(c.pos, state, UPDATE_ALL_IMMEDIATE)) return false;
     int placed = get(c.pos);
@@ -313,7 +317,7 @@ inline bool use_without_item(Player& pl, const Pos& p, int s) {
             level_event(getb(ns, "open") ? 1008 : 1014, p, 0);
             return true;
         }
-        default: return false;
+        default: return rs_use(pl, p, s);
     }
 }
 
@@ -496,3 +500,4 @@ inline bool use_bucket(Player& pl, ItemStack& slot) {
 }  // namespace lvl
 
 #include "place_rules.hpp"
+#include "redstone.hpp"
