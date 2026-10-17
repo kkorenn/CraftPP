@@ -304,7 +304,7 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
     Chunk& c = *l->c;
     int old;
     {  // LevelChunk.setBlockState (lock order: light engine, then chunk; like World::set_block)
-        std::lock_guard light_lock(light::mutex());
+        std::lock_guard light_lock(light::mutex(*cur_level));
         {
             std::lock_guard lock(c.m);
             if (section_only_air(c, p.y) && is_air(state)) return false;
@@ -313,7 +313,7 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
             c.set(p.x & 15, p.y, p.z & 15, uint16_t(state));
             c.dirty = true;
         }
-        if (!c.fullbright) light::block_changed(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
+        if (!c.fullbright) light::block_changed(*cur_level, p.x, p.y, p.z, uint16_t(old), uint16_t(state));
     }
     cur_level->note_block(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
     bool piston = flags & UPDATE_MOVE_BY_PISTON;

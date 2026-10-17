@@ -622,7 +622,7 @@ struct World {
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
         uint16_t old;
         {
-            std::unique_lock light_lock(light::mutex(), std::defer_lock);  // the light engine reads chunks under it
+            std::unique_lock light_lock(light::mutex(*this), std::defer_lock);  // the light engine reads chunks under it
             if (!fullbright) light_lock.lock();
             {
                 std::lock_guard lock(c->m);
@@ -630,7 +630,7 @@ struct World {
                 c->set(x & 15, y, z & 15, state);
                 c->dirty = true;
             }
-            if (!fullbright) light::block_changed(x, y, z, old, state);
+            if (!fullbright) light::block_changed(*this, x, y, z, old, state);
         }
         note_block(x, y, z, old, state);
         return true;
@@ -808,7 +808,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             c->level.post_processed = false;
             generator(*c);
             // Pipeline::on_take has already exposed this chunk to lighting readers.
-            std::lock_guard light_lock(light::mutex());
+            std::lock_guard light_lock(light::mutex(*this));
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);

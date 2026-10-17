@@ -228,7 +228,6 @@ inline void setup_dimensions(int64_t seed) {
         w.open(std::string("minecraft:") + d.name, d.type, 0, 256, world_dir + "/dimensions/minecraft/" + d.name, d.dim);
         w.coordinate_scale = d.scale, w.skylight = d.sky, w.ceiling = d.ceiling, w.sea_level = d.sea;
         w.logical_height = d.logical;
-        w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
         auto gen = std::make_shared<std::unique_ptr<worldgen::Overworld>>();
         auto once = std::make_shared<std::once_flag>();
         std::string settings = d.settings, stages = props["worldgen-stages"], pack = props["worldgen-datapack"], folder = w.dir;
@@ -237,6 +236,7 @@ inline void setup_dimensions(int64_t seed) {
         auto init = [=] {
             std::call_once(*once, [&] {
                 *gen = std::make_unique<worldgen::Overworld>(seed, stages, "vanilla/src/data", pack, settings, 0, 256);
+                light::attach(worlds[dim], (*gen)->pipeline);
                 if (structures) std::atomic_store(&structure_worlds[dim], std::make_shared<structure::StructureWorld>(**gen, true, dim, folder));
             });
         };
@@ -457,18 +457,22 @@ inline void deliver_chunks(Player& p) {
 // Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
 // (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
 inline void broadcast_light() {
-    auto changes = light::take_changes();
-    if (changes.empty()) return;
     int v = view_distance();
-    auto ps = snapshot();
-    for (auto& ch : changes) {
-        Writer w;
-        for (auto& p : ps) {
-            if (p->level != &worlds[DIM_OVERWORLD]) continue;  // the light engine lights the overworld only
-            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
-            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
-            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
-            p->send(w);
+    std::vector<PlayerPtr> ps;
+    for (World& level : worlds) {
+        if (level.fullbright) continue;
+        auto changes = light::take_changes(level);
+        if (changes.empty()) continue;
+        if (ps.empty()) ps = snapshot();
+        for (auto& ch : changes) {
+            Writer w;
+            for (auto& p : ps) {
+                if (p->level != &level) continue;
+                int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+                if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
+                if (w.b.empty()) light::write_update(level, w.varint(play_cb::light_update), ch);
+                p->send(w);
+            }
         }
     }
 }

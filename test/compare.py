@@ -48,10 +48,13 @@ args = ap.parse_args()
 if args.dimension != "overworld": MIN_Y = 0
 BOT = "Cmp"
 # Offline-mode profile id (UUIDUtil.createOfflinePlayerUUID): name-based v3 of "OfflinePlayer:<name>".
-h = bytearray(hashlib.md5(f"OfflinePlayer:{BOT}".encode()).digest())
-h[6] = h[6] & 0x0F | 0x30; h[8] = h[8] & 0x3F | 0x80
-BOT_UUID = uuid.UUID(bytes=bytes(h))
-OPS = json.dumps([{"uuid": str(BOT_UUID), "name": BOT, "level": 4, "bypassesPlayerLimit": False}])
+def offline_uuid(name):
+    h = bytearray(hashlib.md5(f"OfflinePlayer:{name}".encode()).digest())
+    h[6] = h[6] & 0x0F | 0x30; h[8] = h[8] & 0x3F | 0x80
+    return uuid.UUID(bytes=bytes(h))
+BOT_UUID = offline_uuid(BOT)
+# Cmp2 (the --edits rejoin) is op too: it teleports into --dimension with /execute.
+OPS = json.dumps([{"uuid": str(offline_uuid(n)), "name": n, "level": 4, "bypassesPlayerLimit": False} for n in (BOT, "Cmp2")])
 RUN = os.path.abspath(args.run_dir)
 view = min(32, int(args.radius * 1.42) + 2)  # vanilla sends a circle; cover the square + spawn fuzz
 
@@ -250,27 +253,29 @@ if nb:
 light_bad = 0
 if args.light:
     LA, LB = LIGHT
+    lo = -5 if args.dimension == "overworld" else -1  # lowest light section (min_y / 16 - 1)
+    nl = len(next(iter(A.values()))) + 2
     for kind in ("sky", "block"):
         diff, presence, per_y, ex, pairs, partial = 0, 0, collections.Counter(), [], collections.Counter(), 0
         for (cx, cz) in sorted(A):
             la, lb = LA[cx, cz][kind], LB[cx, cz][kind]
-            for si in range(26):
+            for si in range(nl):
                 if (si in la) != (si in lb):
                     presence += 1
-                    if len(ex) < args.examples: ex.append(f"  chunk {cx},{cz} section y {(si - 5) * 16}: present in {'vanilla' if si in la else args.against} only")
+                    if len(ex) < args.examples: ex.append(f"  chunk {cx},{cz} section y {(si + lo) * 16}: present in {'vanilla' if si in la else args.against} only")
                 a, b = la.get(si, bytes(2048)), lb.get(si, bytes(2048))
                 partial += sum(0 < (v >> 4 * h & 15) < 15 for v in a for h in (0, 1))
                 if a == b: continue
                 for i in range(4096):
                     va, vb = a[i >> 1] >> 4 * (i & 1) & 15, b[i >> 1] >> 4 * (i & 1) & 15
                     if va == vb: continue
-                    diff += 1; per_y[(si - 5) * 16] += 1; pairs[va, vb] += 1
+                    diff += 1; per_y[(si + lo) * 16] += 1; pairs[va, vb] += 1
                     if len(ex) < args.examples:
-                        x, y, z = cx * 16 + (i & 15), (si - 5) * 16 + (i >> 8), cz * 16 + (i >> 4 & 15)
-                        blk = NAMES[A[cx, cz][si - 1][0][i]] if 1 <= si <= 24 else "-"
+                        x, y, z = cx * 16 + (i & 15), (si + lo) * 16 + (i >> 8), cz * 16 + (i >> 4 & 15)
+                        blk = NAMES[A[cx, cz][si - 1][0][i]] if 1 <= si <= nl - 2 else "-"
                         ex.append(f"  {(x, y, z)} {blk}: vanilla {va}  {args.against} {vb}")
         light_bad += diff + presence
-        print(f"{kind} light: {diff} mismatching values ({100 * diff / (len(A) * 26 * 4096):.3f}%), {presence} section presence mismatches; vanilla has {partial} values strictly between 0 and 15")
+        print(f"{kind} light: {diff} mismatching values ({100 * diff / (len(A) * nl * 4096):.3f}%), {presence} section presence mismatches; vanilla has {partial} values strictly between 0 and 15")
         if diff:
             print("  per section y:", ", ".join(f"{y}={n}" for y, n in sorted(per_y.items())))
             print("  top (vanilla, ours):", ", ".join(f"{p}={n}" for p, n in pairs.most_common(6)))
