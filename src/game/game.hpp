@@ -5,6 +5,7 @@
 #include "survival.hpp"
 #include "../level/glue.hpp"
 #include "portal.hpp"
+#include "../containers/containers.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -21,6 +22,9 @@ inline void dispatch_packet(Player& p, const std::vector<uint8_t>& pkt) {
 // Tick thread: make a joined player visible (tab list + entities both ways).
 inline void register_player(const PlayerPtr& pp) {
     Player& p = *pp;
+    for (auto& q : players)  // handleConfigurationFinished: the same profile joined meanwhile
+        if ((q->uuid_hi == p.uuid_hi && q->uuid_lo == p.uuid_lo) || q->name == p.name)
+            return disconnect(p, tr("multiplayer.disconnect.duplicate_login"));
     std::vector<PlayerPtr> all = players;
     all.push_back(pp);
     p.send(info_add(all));  // entities (players too) are spawned by the tracker (src/mobs/manager.hpp)
@@ -50,6 +54,8 @@ inline void start_game() {
     game_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
+    containers_init();
+    lvl::container_signal = [](int, const lvl::Pos& p) { return be::comparator_signal(p.x, p.y, p.z); };  // comparators read containers
     dimensions_init();  // after the game handlers: wraps client_command
     portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
@@ -77,6 +83,7 @@ inline void request_stop() {
         log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
         mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
+        storage::close_all();  // queued region writes (entities saved after the chunks)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
         log_info("ThreadedAnvilChunkStorage: All dimensions are saved");

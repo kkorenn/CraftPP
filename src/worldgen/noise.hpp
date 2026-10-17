@@ -194,16 +194,16 @@ struct BlendedNoise {
 };
 
 // Loads <dataRoot>/<namespace>/worldgen/noise/<path>.json, e.g. id "minecraft:temperature".
-NormalNoise loadNormalNoise(std::string_view id, const std::string& dataRoot = "vanilla/src/data");
+NormalNoise loadNormalNoise(std::string_view id, const std::string& dataRoot = "data/vanilla");
 
 // Noises.instantiate: parameters.create(random.fromHashOf(id)).
 std::shared_ptr<NoiseStack> instantiateNoise(const PositionalRandomFactory& random, std::string_view id,
-                                             const std::string& dataRoot = "vanilla/src/data");
+                                             const std::string& dataRoot = "data/vanilla");
 
 // The noise/random parts of levelgen.RandomState.
 class RandomState {
  public:
-  RandomState(int64_t seed, bool useLegacyRandom, std::string dataRoot = "vanilla/src/data");
+  RandomState(int64_t seed, bool useLegacyRandom, std::string dataRoot = "data/vanilla");
   int64_t seed() const { return seed_; }
   bool legacy() const { return useLegacyRandom; }
   const PositionalRandomFactory& random() const { return *random_; }

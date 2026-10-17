@@ -25,17 +25,18 @@ struct Writer;
 namespace worldgen { class Pipeline; }
 
 namespace light {
+// One engine per World (its dimension's layout; sky light only with has_skylight).
 void attach(World& world, worldgen::Pipeline& pipeline);  // before the first chunk is generated
-std::mutex& mutex();  // guards the engine and every block write to a chunk the engine may read
+std::mutex& mutex(const World& world);  // guards the level's engine and every block write to a chunk it may read
 // World::produce, before the chunk is published. neighbours = false (a synchronous get_ptr, not a chunk headed
 // for a client): only the chunk itself is lit, like vanilla's getChunk(FULL); ensure_lit does the 3x3 before a send.
 void produced(World& world, Chunk& c, bool loaded, bool neighbours = true);
 void ensure_lit(World& world, Chunk& c);    // before sending; any thread, without mutex() or c.m held
 uint32_t write(Writer& w, Chunk& c);
 std::vector<uint8_t> save(Chunk& c, uint32_t& version);  // light to store with the chunk (-> Chunk::saved_light)        // light tail of level_chunk_with_light; returns c.light_version
-void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state);  // mutex() held
-// Light level at a block (LevelLightEngine.getLayerListener(...).getLightValue); -1 when the column isn't lit yet.
-// Takes mutex(); call without it held.
+void block_changed(const World& world, int x, int y, int z, uint16_t old_state, uint16_t new_state);  // mutex(world) held
+// Light level at a block of cur_level (LevelLightEngine.getLayerListener(...).getLightValue); -1 when the column
+// isn't lit yet; sky is 0 without a sky engine. Takes mutex(); call without it held.
 int get(int x, int y, int z, bool sky);
 int level(bool sky, int x, int y, int z);  // get() with unlit columns read as sky 15 / block 0
 
@@ -44,7 +45,7 @@ struct Change {
     uint32_t sky, block;  // changed light sections, bit 0 = section y -5
     bool all;             // send to every viewer, not only view-border ones (a loaded chunk's edits relit)
 };
-std::vector<Change> take_changes();  // runs queued updates; columns changed since the last call
-void write_update(Writer& w, const Change& c);  // body of light_update (without packet id)
+std::vector<Change> take_changes(World& world);  // runs queued updates; columns changed since the last call
+void write_update(World& world, Writer& w, const Change& c);  // body of light_update (without packet id)
 
 }  // namespace light

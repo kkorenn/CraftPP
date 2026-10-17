@@ -15,7 +15,7 @@ namespace worldgen {
 
 // WorldGenerationContext of the dimension being generated (minGenY, genDepth) + its sea level. Pipeline::run_step
 // sets it on the generating thread (thread_local: worker threads generate several dimensions); default overworld.
-struct GenContext { int min_y = -64, depth = 384, sea_level = 63; };
+struct GenContext { int min_y = -64, depth = 384, sea_level = 63; bool skylight = true; };  // + DimensionType.hasSkyLight
 inline thread_local GenContext gen_context;
 #define GEN_MIN_Y (::worldgen::gen_context.min_y)
 #define GEN_DEPTH (::worldgen::gen_context.depth)

@@ -885,7 +885,7 @@ Iv splineRange(const Spline& s) {
 
 std::mutex noiseRangeMutex;
 std::map<std::string, Iv> noiseRanges;
-std::string noiseDataRoot = "vanilla/src/data";
+std::string noiseDataRoot = "data/vanilla";
 Iv noiseRange(const std::string& id) {
   std::lock_guard l(noiseRangeMutex);
   auto it = noiseRanges.find(id);

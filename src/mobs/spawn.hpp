@@ -15,7 +15,7 @@ struct State {
     double last_charge = 0;
 };
 inline bool player_close_for_spawning(const Player& p, int cx, int cz) {  // ChunkMap.playerIsCloseEnoughForSpawning
-    if (p.gamemode == 3) return false;
+    if (p.gamemode == 3 || p.level != cur_level) return false;
     double dx = cx * 16 + 8 - p.x, dz = cz * 16 + 8 - p.z;
     return dx * dx + dz * dz < 16384.0;
 }
@@ -23,6 +23,50 @@ inline const BiomeSpawnInfo& spawns_at(int x, int y, int z) {
     static BiomeSpawnInfo none;
     int b = biome_at_pos(x, y, z);
     return size_t(b) < biome_spawns.size() ? biome_spawns[size_t(b)] : none;
+}
+// StructureManager.getAllStructuresAt (the chunk's structure references), memoized per level and chunk: the
+// references are deterministic and the lookup scans the 17x17 start cache.
+// ponytail: memo cleared wholesale at 4096 chunks; vanilla keeps references in the chunk.
+inline const structure::StructureManager::References& structure_refs(structure::StructureManager& m, int cx, int cz) {
+    static std::array<std::unordered_map<int64_t, structure::StructureManager::References>, DIM_COUNT> memo;
+    auto& mm = memo[size_t(dim_of(cur_level))];
+    int64_t k = mth::chunk_key(cx, cz);
+    if (auto it = mm.find(k); it != mm.end()) return it->second;
+    if (mm.size() > 4096) mm.clear();
+    return mm[k] = m.references(cx, cz);
+}
+// NaturalSpawner.mobsAt: fortress enemies on nether bricks inside a fortress, then structure spawn overrides
+// (ChunkGenerator.getMobsAt), then the biome's spawns.
+inline const std::vector<SpawnerData>& mobs_at(int cat, int x, int y, int z) {
+    const auto& biome = spawns_at(x, y, z).spawners[size_t(cat)];
+    auto sw = std::atomic_load(&structure_worlds[size_t(dim_of(cur_level))]);
+    if (!sw) return biome;
+    auto& mgr = sw->manager();
+    const auto& refs = structure_refs(mgr, x >> 4, z >> 4);
+    if (refs.empty()) return biome;
+    auto starts_of = [&](const structure::Structure* st, int64_t key, auto test) {
+        for (auto& start : mgr.starts(int32_t(uint32_t(key)), int32_t(uint32_t(uint64_t(key) >> 32))))
+            if (start->structure == st && start->valid() && test(*start)) return true;
+        return false;
+    };
+    auto in_box = [&](const structure::StructureStart& s) { return s.boundingBox().isInside(x, y, z); };
+    auto in_piece = [&](const structure::StructureStart& s) {
+        for (auto& p : s.pieces) if (p->boundingBox.isInside(x, y, z)) return true;
+        return false;
+    };
+    if (cat == CAT_MONSTER && block_index(block_at(x, y - 1, z)) == block_index(blocks::nether_bricks))  // isInNetherFortressBounds
+        for (auto& [st, keys] : refs)
+            if (st->id == "minecraft:fortress")
+                for (int64_t k : keys)
+                    if (starts_of(st, k, in_box)) return structure_spawn_overrides["minecraft:fortress"][CAT_MONSTER].spawns;
+    for (auto& [st, keys] : refs) {
+        auto it = structure_spawn_overrides.find(st->id);
+        if (it == structure_spawn_overrides.end() || !it->second[size_t(cat)].set) continue;
+        const auto& o = it->second[size_t(cat)];
+        for (int64_t k : keys)
+            if (o.piece ? starts_of(st, k, in_piece) : starts_of(st, k, in_box)) return o.spawns;
+    }
+    return biome;
 }
 inline double potential_change(const State& s, int x, int y, int z, double charge) {
     if (charge == 0.0) return 0.0;
@@ -69,15 +113,15 @@ inline const SpawnerData* pick_weighted(const std::vector<SpawnerData>& l) {  //
     for (auto& s : l) if ((r -= s.weight) < 0) return &s;
     return nullptr;
 }
-inline bool contains(const std::vector<SpawnerData>& l, const SpawnerData* d) {
-    for (auto& s : l) if (&s == d) return true;
+inline bool contains(const std::vector<SpawnerData>& l, const SpawnerData* d) {  // WeightedList.contains (record equality)
+    for (auto& s : l) if (s.type == d->type && s.min == d->min && s.max == d->max) return true;
     return false;
 }
 inline Entity* nearest_spawn_player(double x, double y, double z, double& dsq) {  // getNearestPlayer(x, y, z, -1, false)
     Entity* best = nullptr;
     dsq = 1e300;
     for (Entity* p : player_entities()) {
-        if (p->is_spectator()) continue;
+        if (p->is_spectator() || p->level() != cur_level) continue;
         double d = p->dist_sqr(x, y, z);
         if (d < dsq) dsq = d, best = p;
     }
@@ -101,10 +145,10 @@ inline void spawn_category_at(State& st, int cat, int cx, int cz, int sx, int sy
             // isRightDistanceToPlayerAndSpawnPoint
             if (dsq <= 576.0) continue;
             double wx = world_spawn.x + 0.5 - xx, wy = world_spawn.y - sy, wz = world_spawn.z + 0.5 - zz;
-            if (wx * wx + wy * wy + wz * wz < 576.0) continue;
+            if (cur_level == &worlds[DIM_OVERWORLD] && wx * wx + wy * wy + wz * wz < 576.0) continue;  // respawn dimension only
             if (!((x >> 4) == cx && (z >> 4) == cz) && !is_entity_ticking_chunk(x >> 4, z >> 4)) continue;
             const BiomeSpawnInfo& bs = spawns_at(x, sy, z);
-            const auto& list = bs.spawners[size_t(cat)];
+            const auto& list = mobs_at(cat, x, sy, z);
             if (!data) {
                 if (cat == CAT_WATER_AMBIENT && biome_in_tag(biome_at_pos(x, sy, z), "reduced_water_ambient_spawns") && rand_float() < 0.98f) break;
                 data = pick_weighted(list);
@@ -154,10 +198,11 @@ inline State create_state() {  // NaturalSpawner.createState (over loaded entiti
     State s;
     std::unordered_set<int64_t> chunks;  // getNaturalSpawnChunkCount: chunks within 8 of a player
     for (auto& p : players)
+        if (p->level == cur_level)
         for (int x = p->cx - 8; x <= p->cx + 8; x++)
             for (int z = p->cz - 8; z <= p->cz + 8; z++) chunks.insert(mth::chunk_key(x, z));
     s.spawnable_chunks = int(chunks.size());
-    for (auto& pp : players) s.local[pp.get()] = {};
+    for (auto& pp : players) if (pp->level == cur_level) s.local[pp.get()] = {};
     for (Entity* e : ent_detail::to_tick) {
         if (e->removed) continue;
         Mob* m = e->as_mob();
@@ -178,7 +223,9 @@ inline State create_state() {  // NaturalSpawner.createState (over loaded entiti
 // ServerChunkCache.tickChunks spawning part. Runs once per tick after entity ticking.
 inline void tick_natural_spawning() {
     using namespace spawn_detail;
-    if (players.empty() || !rule("spawn_mobs")) return;
+    bool any = false;
+    for (auto& p : players) any |= p->level == cur_level;
+    if (!any || !rule("spawn_mobs")) return;
     State st = create_state();
     bool persistent = game_time % 400 == 0, enemies = difficulty() != 0;
     std::vector<int> cats;
@@ -196,6 +243,7 @@ inline void tick_natural_spawning() {
     std::unordered_set<int64_t> seen;
     int sim = simulation_distance();
     for (auto& p : players)
+        if (p->level == cur_level)
         for (int x = p->cx - sim; x <= p->cx + sim; x++)
             for (int z = p->cz - sim; z <= p->cz + sim; z++) {
                 if (!seen.insert(mth::chunk_key(x, z)).second || !loaded_chunk(x, z)) continue;
@@ -212,15 +260,15 @@ inline void tick_natural_spawning() {
             if (!local_ok) continue;
             int x = cx * 16 + rand_int(16), z = cz * 16 + rand_int(16);  // getRandomPosWithin
             int top = surface_y_cached(x, z) + 1;  // ponytail: MOTION_BLOCKING stands in for WORLD_SURFACE (same without leaves/glass panes)
-            int y = rand_between(MIN_Y, top);
-            if (y >= MIN_Y + 1) spawn_category_at(st, c, cx, cz, x, y, z);
+            int y = rand_between(world.min_y(), top);
+            if (y >= world.min_y() + 1) spawn_category_at(st, c, cx, cz, x, y, z);
         }
 }
 
 // Chunk-generation creature spawning (NaturalSpawner.spawnMobsForChunkGeneration), run on the tick thread for
 // freshly generated chunks once they are loaded. ponytail: uses the shared RNG, not the worldgen decoration seed.
 inline std::mutex fresh_chunks_mtx;
-inline std::vector<std::pair<int, int>> fresh_chunks;
+inline std::array<std::vector<std::pair<int, int>>, DIM_COUNT> fresh_chunks;  // by dimension
 inline void spawn_for_chunk_generation(int cx, int cz) {
     if (!rule("spawn_mobs")) return;
     int xo = cx * 16, zo = cz * 16;
@@ -282,7 +330,7 @@ inline void tick_fresh_chunks() {
     std::vector<std::pair<int, int>> list;
     {
         std::lock_guard lock(fresh_chunks_mtx);
-        list.swap(fresh_chunks);
+        list.swap(fresh_chunks[size_t(dim_of(cur_level))]);
     }
     std::vector<std::pair<int, int>> later;
     for (auto [cx, cz] : list) {
@@ -293,11 +341,12 @@ inline void tick_fresh_chunks() {
             for (int dz = -1; dz <= 1; dz++) ready &= loaded_chunk(cx + dx, cz + dz) != nullptr;
         if (!ready) { later.emplace_back(cx, cz); continue; }
         ensure_entity_chunk_loaded(cx, cz);
-        spawn_for_chunk_generation(cx, cz);
+        if (cur_level != &worlds[DIM_END]) spawn_for_chunk_generation(cx, cz);  // end.json disable_mob_generation
         if (Chunk* c = loaded_chunk(cx, cz)) spawn_structure_mobs(*c);
     }
     if (!later.empty()) {
         std::lock_guard lock(fresh_chunks_mtx);
-        fresh_chunks.insert(fresh_chunks.end(), later.begin(), later.end());
+        auto& f = fresh_chunks[size_t(dim_of(cur_level))];
+        f.insert(f.end(), later.begin(), later.end());
     }
 }
