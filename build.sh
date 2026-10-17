@@ -5,7 +5,8 @@ set -e
 cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/level.json ] || python3 tools/gen_level_data.py
-[ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
+# Generators need the developer vanilla/ dir (README); a plain clone (CI, release) uses the checked-in output.
+[ ! -d vanilla/src/net ] || [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py
 TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac

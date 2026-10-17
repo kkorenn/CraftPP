@@ -108,7 +108,7 @@ struct Bound {  // DensitySampler.Bound
 class DensityFunctions {
  public:
   // legacyRandom: noise_settings legacy_random_source (nether, end).
-  explicit DensityFunctions(int64_t seed, std::string dataRoot = "vanilla/src/data", bool legacyRandom = false);
+  explicit DensityFunctions(int64_t seed, std::string dataRoot = "data/vanilla", bool legacyRandom = false);
   NodeP function(const std::string& id);  // HolderHolder of a registry entry
   NodeP parse(const Json& j);
   SamplerP sampler(const NodeP& f);  // RandomState.getSampler

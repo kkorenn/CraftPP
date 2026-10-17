@@ -1,0 +1,56 @@
+name: Release
+
+# Publishing a GitHub release builds the server for each platform and attaches
+# craftpp-<tag>-<platform>.tar.gz (binary + data/) to that release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Build ${{ matrix.name }}
+    strategy:
+      matrix:
+        include:
+          - { name: linux-x86_64, runner: ubuntu-24.04 }
+          - { name: linux-aarch64, runner: ubuntu-24.04-arm }  # Raspberry Pi (64-bit OS)
+    runs-on: ${{ matrix.runner }}
+    # Debian 12 = Raspberry Pi OS Bookworm: the binary only needs glibc 2.36+.
+    container: debian:bookworm
+    env:
+      # ponytail: GCC 12 (Clang 14 + libstdc++ 12 rejects some incomplete-type uses); Clang is ~20% faster on a Pi.
+      LDFLAGS: -static-libstdc++ -static-libgcc
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends g++ cmake make zlib1g-dev binutils openjdk-17-jdk-headless ca-certificates
+      - uses: actions/checkout@v4
+      - run: tools/package_release.sh ${{ github.event.release.tag_name }}-${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.tar.gz
+
+  macos:
+    name: Build macos-arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/package_release.sh ${{ github.event.release.tag_name }}-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*.tar.gz
+
+  upload:
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release upload "${{ github.event.release.tag_name }}" dist/*.tar.gz --clobber --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
