@@ -28,6 +28,7 @@ struct AbstractHorse : Animal {
         set_hflag(2, true);
         set_persistence_required();
         broadcast_event(7);
+        progress::tame_animal(p, *this);
     }
     PlayerEntity* rider_entity() const { return rider ? static_cast<PlayerEntity*>(entity_by_id(rider)) : nullptr; }
     void send_passengers() { broadcast(set_passengers_packet(id, rider ? std::vector<int>{rider} : std::vector<int>{})); }

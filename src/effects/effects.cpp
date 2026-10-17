@@ -255,6 +255,8 @@ struct PlayerEffectSync {
     std::vector<uint8_t> particles{0};
     bool ambient = false;
     float absorption = 0;
+    int lev_ticks = 0;
+    double lev_x = 0, lev_y = 0, lev_z = 0;
 };
 static std::unordered_map<const Player*, PlayerEffectSync> sync_state;
 
@@ -283,6 +285,12 @@ static void player_effects_tick(Player& p) {
     }
     if (!p.g.dead) tick_effects(*pe);
     else update_dirty_effects(*pe);
+    if (!p.g.dead && pe->has_effect(eff::levitation)) {
+        if (st.lev_ticks == 0) st.lev_x = p.x, st.lev_y = p.y, st.lev_z = p.z;
+        progress::levitation(p, st.lev_x, st.lev_y, st.lev_z, ++st.lev_ticks);
+    } else {
+        st.lev_ticks = 0;
+    }
     if (!p.g.dead && (pe->block_x() != pe->last_block[0] || pe->block_y() != pe->last_block[1] || pe->block_z() != pe->last_block[2])) {
         pe->last_block = {pe->block_x(), pe->block_y(), pe->block_z()};
         enchant_location_changed(*pe);  // LivingEntity.onChangedBlock (frost walker, soul speed)
@@ -391,5 +399,13 @@ static MobRegistration effects_registration([] {
     cont::beacon_effect_hook = [](Player& p, int effect, int amp, int duration) {  // BeaconBlockEntity.applyEffects
         if (PlayerEntity* pe = player_entity(p); pe && effect >= 0 && size_t(effect) < mob_effects.size())
             add_effect(*pe, EffectInstance(effect, duration, amp, true, true));
+    };
+    progress::player_effect = [](Entity& e, int effect, int& amplifier, int& duration, bool& ambient, bool& visible) {
+        LivingEntity* l = e.as_living();
+        if (!l) return false;
+        const EffectInstance* in = l->effect(effect);
+        if (!in) return false;
+        amplifier = in->amp, duration = in->duration, ambient = in->ambient, visible = in->visible;
+        return true;
     };
 });

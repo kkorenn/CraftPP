@@ -738,12 +738,16 @@ inline int Animal::mob_interact(Player& p, int hand) {
 inline void Animal::spawn_child_from_breeding(Animal& partner) {
     auto up = breed_offspring(partner);
     if (!up) return;
-    if (auto* ac = dynamic_cast<AgeableMob*>(up.get())) ac->set_baby(true);
-    up->snap_to(pos.x, pos.y, pos.z, 0, 0);
+    Entity* child = up.get();
+    if (auto* ac = dynamic_cast<AgeableMob*>(child)) ac->set_baby(true);
+    child->snap_to(pos.x, pos.y, pos.z, 0, 0);
     add_entity(std::move(up));
+    Entity* pe = entity_by_id(love_cause ? love_cause : partner.love_cause);
+    if (pe) if (Player* p = pe->as_player()) progress::bred_animals(*p, *this, partner, child);
     set_age(6000);
     partner.set_age(6000);
     in_love = 0, partner.in_love = 0;
+    love_cause = 0, partner.love_cause = 0;
     broadcast_event(18);
     if (rule("mob_drops")) spawn_xp_orbs(pos.x, pos.y, pos.z, rand_int(7) + 1);
 }

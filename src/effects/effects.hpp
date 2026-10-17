@@ -148,12 +148,15 @@ inline void add_effect_modifiers(LivingEntity& e, int id, int amp) {
 }
 
 // ---------- callbacks (LivingEntity / ServerPlayer onEffect*) ----------
-inline void on_effect_added(LivingEntity& e, const EffectInstance& in) {
+inline void on_effect_added(LivingEntity& e, const EffectInstance& in, Entity* source = nullptr) {
     e.effects_dirty = true;
     add_effect_modifiers(e, in.id, in.amp);
-    if (Player* p = e.as_player()) p->send(update_effect_packet(e.id, in, true));
+    if (Player* p = e.as_player()) {
+        p->send(update_effect_packet(e.id, in, true));
+        progress::effects_changed(*p, source);
+    }
 }
-inline void on_effect_updated(LivingEntity& e, const EffectInstance& in, bool refresh_attrs) {
+inline void on_effect_updated(LivingEntity& e, const EffectInstance& in, bool refresh_attrs, Entity* source = nullptr) {
     e.effects_dirty = true;
     if (refresh_attrs) {
         uint64_t before = e.attr_dirty;
@@ -161,7 +164,10 @@ inline void on_effect_updated(LivingEntity& e, const EffectInstance& in, bool re
         add_effect_modifiers(e, in.id, in.amp);
         refresh_dirty_attributes(e, before);
     }
-    if (Player* p = e.as_player()) p->send(update_effect_packet(e.id, in, false));
+    if (Player* p = e.as_player()) {
+        p->send(update_effect_packet(e.id, in, false));
+        progress::effects_changed(*p, source);
+    }
 }
 inline void on_effects_removed(LivingEntity& e, const std::vector<EffectInstance>& gone) {
     e.effects_dirty = true;
@@ -171,6 +177,7 @@ inline void on_effects_removed(LivingEntity& e, const std::vector<EffectInstance
         if (Player* p = e.as_player()) p->send(remove_effect_packet(e.id, in.id));
     }
     refresh_dirty_attributes(e, before);
+    if (Player* p = e.as_player()) progress::effects_changed(*p, nullptr);
 }
 
 // ---------- per-effect behaviour (MobEffect subclasses) ----------
@@ -299,14 +306,14 @@ inline EffectInstance* find_effect(LivingEntity& e, int id) {
     for (auto& x : e.effects()) if (x.id == id) return &x;
     return nullptr;
 }
-inline bool add_effect(LivingEntity& e, const EffectInstance& in, Entity* = nullptr) {  // addEffect
+inline bool add_effect(LivingEntity& e, const EffectInstance& in, Entity* source = nullptr) {  // addEffect
     if (in.id < 0 || size_t(in.id) >= mob_effects.size() || !can_be_affected(e, in.id)) return false;
     bool changed = false;
     if (EffectInstance* cur = find_effect(e, in.id)) {
-        if (cur->update(in)) on_effect_updated(e, *cur, true), changed = true;
+        if (cur->update(in)) on_effect_updated(e, *cur, true, source), changed = true;
     } else {
         e.effects().push_back(in);
-        on_effect_added(e, in);
+        on_effect_added(e, in, source);
         changed = true;
         if (!mob_effects[size_t(in.id)].sound.empty())  // onEffectAdded: soundOnAdded
             play_sound(mob_effects[size_t(in.id)].sound, e.sound_source(), e.pos.x, e.pos.y, e.pos.z, 1.0f, 1.0f);

@@ -3,6 +3,7 @@
 // grindstone, anvil, loom, cartography table, enchanting table. Inputs go back to the player on close
 // (clearContainer). The update_recipes packet (stonecutter list + recipe property sets) is sent on join.
 #include "enchant.hpp"
+#include "../progress/api.hpp"
 
 namespace cont {
 
@@ -579,6 +580,7 @@ struct EnchantingMenu : StationMenu {
         for (auto& x : list) ench_set_level(e, x.id, std::max(ench_level(e, x.id), x.level));  // ItemStack.enchant (upgrade)
         set_enchs(s, e, to_book);
         if (!infinite && (lapis.count -= need) <= 0) lapis = {};
+        progress::enchanted_item(p, s, need);
         changed(p, 0);
         play_sound("block.enchantment_table.use", x + 0.5, y + 0.5, z + 0.5, 1.0f, rand_float() * 0.1f + 0.9f);
         return true;
