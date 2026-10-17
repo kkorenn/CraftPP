@@ -564,26 +564,33 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
     return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);  // block use, item useOn, BlockItem.place
 }
 
-// ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
-namespace comp {  // src/containers/components.hpp
-inline std::string patch_hex(const ItemStack& s);
-inline void patch_from_hex(ItemStack& s, const std::string& h);
-}  // namespace comp
-inline void save_player_containers(const Player& p, std::ostream& f);                   // ender chest (src/containers)
-inline bool load_player_containers(Player& p, const std::string& key, std::istream& f);
-// "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
-inline void save_player_extra(const Player& p, std::ostream& f) {
+// ---------- persistence (players/data/<uuid>.dat, vanilla LivingEntity / Player / FoodData tags) ----------
+inline void (*save_player_containers)(const Player& p, Nbt& t) = nullptr;  // src/containers: EnderItems, XpSeed
+inline void (*load_player_containers)(Player& p, const Nbt& t) = nullptr;
+inline void save_player_extra(const Player& p, Nbt& t) {
     auto& g = p.g;
-    f << "vitals " << g.health << ' ' << g.food << ' ' << g.saturation << ' ' << g.exhaustion << ' '
-      << g.fall_distance << ' ' << g.dead << '\n';
-    f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
-    for (size_t i = 0; i < p.inv.size(); i++)
-        if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
-    for (size_t i = 0; i < p.inv.size(); i++)
-        if (!p.inv[i].empty() && p.inv[i].comp) f << "patch " << i << ' ' << comp::patch_hex(p.inv[i]) << '\n';
-    save_player_containers(p, f);
+    t.set("Health", Nbt::real(Nbt::Float, g.health));
+    t.set("foodLevel", Nbt::num(Nbt::Int, g.food));
+    t.set("foodSaturationLevel", Nbt::real(Nbt::Float, g.saturation));
+    t.set("foodExhaustionLevel", Nbt::real(Nbt::Float, g.exhaustion));
+    t.set("fall_distance", Nbt::real(Nbt::Double, g.fall_distance));
+    t.set("DeathTime", Nbt::num(Nbt::Short, g.dead ? 1 : 0));
+    t.set("XpLevel", Nbt::num(Nbt::Int, g.xp_level));
+    t.set("XpP", Nbt::real(Nbt::Float, g.xp_progress));
+    t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
+    if (save_player_containers) save_player_containers(p, t);  // EnderItems, XpSeed
 }
-inline void load_player_extra(Player& p, std::istream& f) {
+inline void load_player_extra(Player& p, const Nbt& t) {
+    auto D = [&](const char* k, double d) { const Nbt* n = t.get(k); return n && n->is_num() ? n->as_double() : d; };
+    auto& g = p.g;
+    g.health = float(D("Health", 20)), g.food = int(D("foodLevel", 20));
+    g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
+    g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
+    g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+    if (load_player_containers) load_player_containers(p, t);
+}
+// Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
+inline void load_player_extra_txt(Player& p, std::istream& f) {
     f.clear();
     for (std::string key; f >> key;) {
         if (key == "vitals") f >> p.g.health >> p.g.food >> p.g.saturation >> p.g.exhaustion >> p.g.fall_distance >> p.g.dead;

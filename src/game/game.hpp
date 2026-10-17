@@ -77,6 +77,7 @@ inline void request_stop() {
         log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
         mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
+        storage::close_all();  // queued region writes (entities saved after the chunks)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
         log_info("ThreadedAnvilChunkStorage: All dimensions are saved");

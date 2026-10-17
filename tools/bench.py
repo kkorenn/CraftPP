@@ -21,7 +21,7 @@ ap.add_argument("--speeds", default="10,40", help="walk phases, blocks/s (creati
 ap.add_argument("--extra-props", default="", help="extra server.properties lines, ';'-separated")
 args = ap.parse_args()
 
-NAME = "craftpp-bench"
+NAME = f"craftpp-bench-{args.port}"  # per port: parallel benches (other worktrees) never collide
 work = os.path.join(ROOT, os.path.dirname(args.bin), "bench")
 shutil.rmtree(work, ignore_errors=True)
 os.makedirs(work)
@@ -116,6 +116,7 @@ try:
             time.sleep(0.05)
             if time.time() - sampled > 1:
                 peak, sampled = max(peak, rss()[0]), time.time()
+                if int(sampled - t0) % 30 == 0: print(f"    {sampled - t0:.0f} s: RSS {rss()[0]:.1f} MiB", flush=True)
                 pings.append(time.time()); c.send(PLAY_SB["chat_command"], varint(4) + b"list")
         walk_cpu = (cpu_ticks() - c0) / (time.time() - t0)
         ccx, ccz = math.floor(x) >> 4, math.floor(z) >> 4

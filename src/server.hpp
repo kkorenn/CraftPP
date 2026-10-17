@@ -4,6 +4,8 @@
 #include "log.hpp"
 #include "net.hpp"
 #include "world.hpp"
+#include "gen/command_data.hpp"
+#include "storage/nbt_io.hpp"
 #include "game/player_state.hpp"
 #include "worldgen/block_state.hpp"
 #include "worldgen/random.hpp"
@@ -22,6 +24,7 @@
 #include <future>
 #include <charconv>
 #include <climits>
+#include <unordered_map>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -231,19 +234,29 @@ inline void setup_dimensions(int64_t seed) {
         w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
         auto gen = std::make_shared<std::unique_ptr<worldgen::Overworld>>();
         auto once = std::make_shared<std::once_flag>();
+        auto initialized = std::make_shared<std::atomic<bool>>(false);
         std::string settings = d.settings, stages = props["worldgen-stages"], pack = props["worldgen-datapack"], folder = w.dir;
         bool structures = props["generate-structures"] != "false" && (stages == "structures" || stages == "features");
         int dim = d.dim;
         auto init = [=] {
             std::call_once(*once, [&] {
                 *gen = std::make_unique<worldgen::Overworld>(seed, stages, "vanilla/src/data", pack, settings, 0, 256);
+                (*gen)->pipeline.dimension = dim;
+                (*gen)->pipeline.persist = true;
                 if (structures) std::atomic_store(&structure_worlds[dim], std::make_shared<structure::StructureWorld>(**gen, true, dim, folder));
+                initialized->store(true, std::memory_order_release);
             });
         };
         w.initialize_generator = init;
         w.generator = [=](Chunk& c) { init(); (*gen)->pipeline.take(c.cx, c.cz, c); };
         w.ticket = [=](int cx, int cz, bool add) { init(); add ? (*gen)->pipeline.ticket(cx, cz) : (*gen)->pipeline.cancel(cx, cz); };
         w.on_saved = [dim] { if (auto sw = std::atomic_load(&structure_worlds[dim])) sw->manager().saveDirty(); };
+        w.on_flush = [gen, initialized, dim](bool all) {
+            if (!initialized->load(std::memory_order_acquire)) return;  // This dimension has never initialized.
+            auto& pipeline = (*gen)->pipeline;
+            int margin = int(pipeline.accumulated(worldgen::Status::FULL).size()) + 1;
+            pipeline.evict(worlds[dim].near_view(margin), all);
+        };
     }
 }
 inline void on_player_sync(void (*f)(Player&));  // game/tick.hpp
@@ -252,6 +265,7 @@ inline void deliver_chunks(Player& p);
 inline void setup_world() {
     worlds[DIM_OVERWORLD].start(props.count("worker-threads") ? std::stoi(props["worker-threads"]) : 0);
     compression_threshold = std::stoi(props["network-compression-threshold"]);
+    storage::sync_writes = props["sync-chunk-writes"] != "false";
     on_player_sync(deliver_chunks);
     auto level = read_level_data();
     std::string type, seed_str;
@@ -284,6 +298,10 @@ inline void setup_world() {
     worlds[DIM_OVERWORLD].generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
     worlds[DIM_OVERWORLD].ticket = [ow](int cx, int cz, bool add) { add ? ow->pipeline.ticket(cx, cz) : ow->pipeline.cancel(cx, cz); };
     light::attach(worlds[DIM_OVERWORLD], ow->pipeline);
+    // Proto chunks beyond the generation pyramid are persisted and unloaded.
+    ow->pipeline.persist = true;
+    int margin = int(ow->pipeline.accumulated(worldgen::Status::FULL).size()) + 1;
+    worlds[DIM_OVERWORLD].on_flush = [ow, margin](bool all) { ow->pipeline.evict(worlds[DIM_OVERWORLD].near_view(margin), all); };
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
         world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
@@ -370,8 +388,47 @@ inline std::string uuid_hex(const Player& p) {
     return buf;
 }
 
-// playerdata/<uuid>.txt: "x y z yaw pitch gamemode selected [dimension [seen_credits]]" then "slot item count" lines.
-inline bool load_player(Player& p) {
+// players/data/<uuid>.dat (vanilla 26.x PlayerDataStorage): gzip NBT like ServerPlayer.saveWithoutId. Old
+// playerdata/<uuid>.txt files ("x y z yaw pitch gamemode selected", "slot item count" lines, extras) are read once.
+inline std::string player_dat(const Player& p) {
+    char b[40];
+    uint64_t h = uint64_t(p.uuid_hi), l = uint64_t(p.uuid_lo);
+    snprintf(b, sizeof b, "%08x-%04x-%04x-%04x-%012llx", unsigned(h >> 32), unsigned(h >> 16 & 0xFFFF), unsigned(h & 0xFFFF),
+             unsigned(l >> 48), (unsigned long long)(l & 0xFFFFFFFFFFFFull));
+    return world_dir + "/players/data/" + b + ".dat";
+}
+inline const char* const EQUIPMENT_SLOTS[5] = {"feet", "legs", "chest", "head", "offhand"};  // inv 36..40
+
+inline Nbt item_nbt(const ItemStack& s) {  // ItemStack.CODEC: {id, count, components}
+    Nbt e = Nbt::compound();
+    e.set("id", Nbt::str(std::string("minecraft:") + gen::ITEM_NAMES[s.item]));
+    e.set("count", Nbt::num(Nbt::Int, s.count));
+    if (s.damage) {
+        Nbt c = Nbt::compound();
+        c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
+        e.set("components", c);
+    }
+    return e;
+}
+inline ItemStack item_from(const Nbt& e) {
+    static const std::unordered_map<std::string, int> ids = [] {
+        std::unordered_map<std::string, int> m;
+        for (int i = 0; i < ITEM_COUNT; i++) m["minecraft:" + std::string(gen::ITEM_NAMES[i])] = i;
+        return m;
+    }();
+    ItemStack s;
+    const Nbt* id = e.get("id");
+    auto it = id ? ids.find(id->s.find(':') == std::string::npos ? "minecraft:" + id->s : id->s) : ids.end();
+    if (it == ids.end() || it->second == 0) return s;
+    s.item = it->second;
+    const Nbt* n = e.get("count");
+    s.count = n && n->is_num() ? int(n->i) : 1;
+    if (const Nbt* c = e.get("components"))
+        if (const Nbt* d = c->get("minecraft:damage"); d && d->is_num()) s.damage = int(d->i);
+    return s;
+}
+
+inline bool load_player_txt(Player& p) {
     std::ifstream f(world_dir + "/playerdata/" + uuid_hex(p) + ".txt");
     if (!(f >> p.x >> p.y >> p.z >> p.yaw >> p.pitch >> p.gamemode >> p.selected)) return false;
     std::string rest, dim;
@@ -382,23 +439,65 @@ inline bool load_player(Player& p) {
     line >> p.seen_credits;
     for (int slot, item, count; f >> slot >> item >> count;)
         if (slot >= 0 && slot < int(p.inv.size()) && item >= 0 && item < ITEM_COUNT) p.inv[slot] = {item, count};
-    load_player_extra(p, f);  // game/survival.hpp: vitals, xp, tool damage
+    load_player_extra_txt(p, f);
+    return true;
+}
+
+inline bool load_player(Player& p) {
+    Nbt t;
+    if (!nbtio::read_file(player_dat(p), t)) return load_player_txt(p);
+    auto D = [](const Nbt* n, double d) { return n && n->is_num() ? n->as_double() : d; };
+    if (const Nbt* pos = t.get("Pos"); pos && pos->list.size() == 3)
+        p.x = pos->list[0].d, p.y = pos->list[1].d, p.z = pos->list[2].d;
+    if (const Nbt* r = t.get("Rotation"); r && r->list.size() == 2) p.yaw = float(r->list[0].d), p.pitch = float(r->list[1].d);
+    if (const Nbt* dim = t.get("Dimension"); dim && dim->t == Nbt::String)
+        if (World* w = level_by_id(dim->s)) p.level = w;
+    p.seen_credits = D(t.get("seenCredits"), 0) != 0;
+    p.on_ground = D(t.get("OnGround"), 1) != 0;
+    p.gamemode = std::clamp(int(D(t.get("playerGameType"), p.gamemode)), 0, 3);
+    p.selected = std::clamp(int(D(t.get("SelectedItemSlot"), 0)), 0, 8);
+    if (const Nbt* inv = t.get("Inventory"))
+        for (auto& e : inv->list)
+            if (int slot = int(D(e.get("Slot"), -1)); slot >= 0 && slot < 36) p.inv[size_t(slot)] = item_from(e);
+    if (const Nbt* eq = t.get("equipment"))
+        for (int i = 0; i < 5; i++)
+            if (const Nbt* e = eq->get(EQUIPMENT_SLOTS[i])) p.inv[size_t(36 + i)] = item_from(*e);
+    load_player_extra(p, t);  // game/survival.hpp: vitals, xp
     return true;
 }
 
 inline void save_player(const Player& p) {
-    std::filesystem::create_directories(world_dir + "/playerdata");
-    std::string path = world_dir + "/playerdata/" + uuid_hex(p) + ".txt";
-    {
-        std::ofstream f(path + ".tmp");
-        f.precision(17);
-        f << p.x << ' ' << p.y << ' ' << p.z << ' ' << p.yaw << ' ' << p.pitch << ' ' << p.gamemode << ' '
-          << p.selected << ' ' << p.level->id << ' ' << p.seen_credits << '\n';
-        for (size_t i = 0; i < p.inv.size(); i++)
-            if (p.inv[i].item >= 0) f << i << ' ' << p.inv[i].item << ' ' << p.inv[i].count << '\n';
-        save_player_extra(p, f);
+    Nbt t = Nbt::compound();
+    auto list = [](std::initializer_list<Nbt> v) { Nbt l = Nbt::make_list(); l.list = v; return l; };
+    auto Dbl = [](double v) { return Nbt::real(Nbt::Double, v); };
+    auto Flt = [](double v) { return Nbt::real(Nbt::Float, v); };
+    t.set("DataVersion", Nbt::num(Nbt::Int, DATA_VERSION));
+    t.set("Pos", list({Dbl(p.x), Dbl(p.y), Dbl(p.z)}));
+    t.set("Motion", list({Dbl(0), Dbl(0), Dbl(0)}));
+    t.set("Rotation", list({Flt(p.yaw), Flt(p.pitch)}));
+    t.set("OnGround", Nbt::num(Nbt::Byte, p.on_ground));
+    Nbt uuid;
+    uuid.t = Nbt::IntArray;
+    uuid.arr = {int32_t(uint64_t(p.uuid_hi) >> 32), int32_t(p.uuid_hi), int32_t(uint64_t(p.uuid_lo) >> 32), int32_t(p.uuid_lo)};
+    t.set("UUID", uuid);
+    t.set("Dimension", Nbt::str(p.level->id));
+    t.set("seenCredits", Nbt::num(Nbt::Byte, p.seen_credits));
+    t.set("playerGameType", Nbt::num(Nbt::Int, p.gamemode));
+    t.set("SelectedItemSlot", Nbt::num(Nbt::Int, p.selected));
+    Nbt inv = Nbt::make_list(), eq = Nbt::compound();
+    for (int i = 0; i < 41; i++) {
+        const ItemStack& s = p.inv[size_t(i)];
+        if (s.empty() || s.item >= ITEM_COUNT) continue;
+        Nbt e = item_nbt(s);
+        if (i >= 36) { eq.set(EQUIPMENT_SLOTS[i - 36], e); continue; }
+        e.set("Slot", Nbt::num(Nbt::Byte, i));
+        inv.list.push_back(e);
     }
-    std::filesystem::rename(path + ".tmp", path);
+    t.set("Inventory", inv);
+    t.set("equipment", eq);
+    save_player_extra(p, t);
+    std::filesystem::create_directories(world_dir + "/players/data");
+    nbtio::write_file(player_dat(p), t);
 }
 
 inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
@@ -407,7 +506,7 @@ inline void save_all() {
     if (before_world_save) before_world_save();
     if (on_save_all) on_save_all();
     for (auto& p : snapshot()) save_player(*p);
-    for (auto& w : worlds) w.save_dirty();
+    for (auto& w : worlds) w.save_dirty(true);
 }
 
 // Creative-menu slot number -> Inventory index (-1 = not a player inventory slot).
