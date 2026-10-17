@@ -167,11 +167,16 @@ for reg, ns in [("minecraft:entity_type", "entity_types"), ("minecraft:command_a
         h.append("inline constexpr const char* NAMES[] = {" + ",".join(f'"{e}"' for e, _ in sorted(id_maps[reg].items(), key=lambda kv: kv[1])) + "};")
     h.append("}")
 # item id -> default block state it places (-1 = not a block item). Same-name rule covers most blocks.
-# ponytail: special items (redstone, seeds, buckets, signs...) need an explicit table later.
+# Items named differently from their block (redstone, string, seeds, berries...) come from Items.java's
+# createBlockItemWithCustomItemName(Blocks.X) registrations.
 default_state = {name: st["id"] for name, b in blocks.items() for st in b["states"] if st.get("default")}
 items = sorted(id_maps["minecraft:item"].items(), key=lambda kv: kv[1])
+items_java = open(os.path.join(ROOT, "vanilla/src/net/minecraft/world/item/Items.java")).read()
+custom = {"minecraft:" + m.group(1).lower(): "minecraft:" + m.group(2).lower() for m in re.finditer(
+    r"Item (\w+) = registerItem\(\s*BlockItemIds\.\w+,\s*createBlockItemWithCustomItemName\(Blocks\.(\w+)\)", items_java)}
+assert all(i in id_maps["minecraft:item"] and b in default_state for i, b in custom.items()), custom
 h.append("inline constexpr int32_t ITEM_TO_BLOCK[] = {" +
-         ",".join(str(default_state.get(name, -1)) if name != "minecraft:air" else "-1" for name, _ in items) + "};")
+         ",".join(str(default_state.get(custom.get(name, name), -1)) if name != "minecraft:air" else "-1" for name, _ in items) + "};")
 h.append(f"inline constexpr int ITEM_COUNT = {len(items)};")
 # Block -> clone item (pick block): states are contiguous per block, so store each block's first state id.
 # ponytail: same-name rule only; wall_torch->torch, redstone_wire->redstone etc. need overrides.

@@ -189,7 +189,7 @@ struct OceanRuinPiece : TemplatePiece {
       level.set(pos, BS(blocks::chest).with("waterlogged", hasWater(level.get(pos))));
       random.nextLong();  // ChestBlockEntity.setLootTable
     } else if (marker == "drowned") {
-      // ponytail: the drowned entity is not spawned; its marker block still is replaced like vanilla
+      level.addMob(entity_types::drowned, pos, true);
       level.set(pos, pos.y > SEA_LEVEL ? blocks::air : blocks::water);
     }
   }

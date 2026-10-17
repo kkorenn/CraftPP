@@ -13,7 +13,6 @@
 namespace storage {
 namespace {
 
-constexpr int LIGHT_SECTIONS = SECTIONS + 2, MIN_SECTION = (MIN_Y >> 4);  // light sections y -5..20
 
 Nbt I(int64_t v) { return Nbt::num(Nbt::Int, v); }
 Nbt L(int64_t v) { return Nbt::num(Nbt::Long, v); }
@@ -140,7 +139,10 @@ Nbt byte_array(const uint8_t* p, uint8_t fill) {
 
 }  // namespace
 
-std::string dimension_dir() { return world_dir + "/dimensions/minecraft/overworld"; }
+std::string dimension_dir(int dim) {
+    static const char* names[DIM_COUNT] = {"overworld", "the_nether", "the_end"};
+    return world_dir + "/dimensions/minecraft/" + names[dim >= 0 && dim < DIM_COUNT ? dim : 0];
+}
 
 std::vector<ChunkHook>& chunk_hooks() {
     static std::vector<ChunkHook> h;
@@ -148,6 +150,8 @@ std::vector<ChunkHook>& chunk_hooks() {
 }
 
 Nbt encode(const Chunk& c, const std::string& status, const std::vector<uint8_t>& light, const Heightmaps* hm, unsigned hm_mask) {
+    // Per dimension: sections from min_y; light sections one below and above (light::save layout).
+    const int SECTIONS = int(c.sections.size()), LIGHT_SECTIONS = SECTIONS + 2, MIN_SECTION = c.min_y >> 4, MIN_Y = c.min_y;
     Nbt root = Nbt::compound();
     root.set("DataVersion", I(DATA_VERSION));
     root.set("xPos", I(c.cx));
@@ -159,7 +163,7 @@ Nbt encode(const Chunk& c, const std::string& status, const std::vector<uint8_t>
 
     // Light (light::save): per light section a flags byte (1 present, 2 sky array, 4 block array), then sky and
     // block as 2048 bytes or one uniform value. Vanilla stores a layer unless it is uniformly 0.
-    std::array<Nbt, LIGHT_SECTIONS> sky, block;
+    std::vector<Nbt> sky = std::vector<Nbt>(size_t(LIGHT_SECTIONS)), block = sky;
     size_t at = 0;
     bool lit = !light.empty();
     for (int si = 0; lit && si < LIGHT_SECTIONS; si++) {
@@ -263,7 +267,7 @@ std::string status_of(const Nbt& root) {
     return s->s.find(':') == std::string::npos ? "minecraft:" + s->s : s->s;
 }
 
-unsigned decode_heightmaps(const Nbt& root, Heightmaps& hm) {
+unsigned decode_heightmaps(const Nbt& root, Heightmaps& hm, int MIN_Y) {
     unsigned mask = 0;
     const Nbt* hms = root.get("Heightmaps");
     for (int h = 0; hms && h < 6; h++) {
@@ -277,8 +281,10 @@ unsigned decode_heightmaps(const Nbt& root, Heightmaps& hm) {
 }
 
 void decode(const Nbt& root, Chunk& c, std::vector<uint8_t>* light) {
+    const int SECTIONS = int(c.sections.size()), LIGHT_SECTIONS = SECTIONS + 2, MIN_SECTION = c.min_y >> 4, MIN_Y = c.min_y,
+              HEIGHT = SECTIONS * 16;
     bool lit = num(root.get("isLightOn")) != 0 && light;
-    std::array<const Nbt*, LIGHT_SECTIONS> sky{}, block{};
+    std::vector<const Nbt*> sky = std::vector<const Nbt*>(size_t(LIGHT_SECTIONS)), block = sky;
     if (const Nbt* secs = root.get("sections"))
         for (auto& s : secs->list) {
             int y = int(int8_t(num(s.get("Y"))));
@@ -356,7 +362,7 @@ void decode(const Nbt& root, Chunk& c, std::vector<uint8_t>* light) {
         }
 }
 
-void save_entities(int cx, int cz, const std::vector<Nbt>& entities) {
+void save_entities(int dim, int cx, int cz, const std::vector<Nbt>& entities) {
     Nbt root = Nbt::compound();
     root.set("DataVersion", I(DATA_VERSION));
     Nbt pos;
@@ -366,11 +372,11 @@ void save_entities(int cx, int cz, const std::vector<Nbt>& entities) {
     Nbt list = Nbt::make_list();
     list.list = entities;
     root.set("Entities", list);
-    write(entities_dir(), cx, cz, nbtio::write(root));
+    write(entities_dir(dim), cx, cz, nbtio::write(root));
 }
 
-std::vector<Nbt> load_entities(int cx, int cz) {
-    auto raw = read(entities_dir(), cx, cz);
+std::vector<Nbt> load_entities(int dim, int cx, int cz) {
+    auto raw = read(entities_dir(dim), cx, cz);
     if (raw.empty()) return {};
     try {
         Nbt root = nbtio::parse(raw);

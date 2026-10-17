@@ -47,18 +47,34 @@ BiomeSource::BiomeSource() : BiomeSource([] {
     return v;
 }()) {}
 
+BiomeSource BiomeSource::nether() {
+    auto point = [](float t, float h, float offset, int biome) {  // Climate.parameters(t, h, 0, 0, 0, 0, offset)
+        ParameterPoint p{};
+        int64_t qt = quantize_coord(t), qh = quantize_coord(h), qo = quantize_coord(offset);
+        p.space[0] = {qt, qt}, p.space[1] = {qh, qh}, p.space[6] = {qo, qo};
+        return std::pair{p, biome};
+    };
+    return BiomeSource({point(0.0F, 0.0F, 0.0F, biomes::nether_wastes), point(0.0F, -0.5F, 0.0F, biomes::soul_sand_valley),
+                        point(0.4F, 0.0F, 0.0F, biomes::crimson_forest), point(0.0F, 0.5F, 0.375F, biomes::warped_forest),
+                        point(-0.5F, 0.0F, 0.175F, biomes::basalt_deltas)});
+}
+
 BiomeSource::BiomeSource(std::vector<std::pair<ParameterPoint, int>> values, int childrenPerNode)
     : values_(std::move(values)), childrenPerNode_(childrenPerNode), id_(next_id++) {
     std::vector<int> leaves;
     for (auto& [p, biome] : values_) {
         Node n;
         std::copy(p.space, p.space + 7, n.space);
+        for (int d = 0; d < 7; d++) n.center[d] = center(n.space[d]);
         n.value = biome;
         leaves.push_back((int)nodes_.size());
         nodes_.push_back(std::move(n));
     }
     root_ = build(std::move(leaves));
 }
+
+BiomeSource::BiomeSource(const BiomeSource& o)
+    : values_(o.values_), nodes_(o.nodes_), root_(o.root_), childrenPerNode_(o.childrenPerNode_), id_(next_id++) {}
 
 // RTree.build. Java List.sort is a stable TimSort; std::stable_sort gives the identical order.
 int BiomeSource::build(std::vector<int> children) {
@@ -71,15 +87,15 @@ int BiomeSource::build(std::vector<int> children) {
     auto make_subtree = [&](std::vector<int> kids) {
         Node n;
         space_of(kids, n.space);
+        for (int d = 0; d < 7; d++) n.center[d] = center(n.space[d]);
         n.children = std::move(kids);
         nodes_.push_back(std::move(n));
         return (int)nodes_.size() - 1;
     };
     // sort(): lexicographic over dimensions dim, dim+1, ... (mod 7), key = center (or |center|)
-    auto less = [](const Parameter* a, const Parameter* b, int dim, bool absolute) {
-        for (int i = 0; i < 7; i++) {
-            int d = (dim + i) % 7;
-            int64_t ka = center(a[d]), kb = center(b[d]);
+    auto less = [](const int64_t* a, const int64_t* b, int dim, bool absolute) {
+        for (int i = 0, d = dim; i < 7; i++, d = d == 6 ? 0 : d + 1) {
+            int64_t ka = a[d], kb = b[d];
             if (absolute) ka = jabs(ka), kb = jabs(kb);
             if (ka != kb) return ka < kb;
         }
@@ -90,14 +106,14 @@ int BiomeSource::build(std::vector<int> children) {
     if ((int)children.size() <= childrenPerNode_) {
         auto mag = [this](int n) {
             int64_t m = 0;
-            for (int d = 0; d < 7; d++) m = add(m, jabs(center(nodes_[n].space[d])));
+            for (int d = 0; d < 7; d++) m = add(m, jabs(nodes_[n].center[d]));
             return m;
         };
         std::stable_sort(children.begin(), children.end(), [&](int a, int b) { return mag(a) < mag(b); });
         return make_subtree(std::move(children));
     }
 
-    struct Bucket { std::vector<int> kids; Parameter space[7]; };
+    struct Bucket { std::vector<int> kids; Parameter space[7]; int64_t center[7]; };
     int64_t minCost = INT64_MAX;
     int minDimension = -1;
     std::vector<Bucket> minBuckets;
@@ -105,12 +121,13 @@ int BiomeSource::build(std::vector<int> children) {
                                  std::floor(std::log((double)children.size() - 0.01) / std::log((double)childrenPerNode_)));
     for (int d = 0; d < 7; d++) {
         std::stable_sort(children.begin(), children.end(),
-                         [&](int a, int b) { return less(nodes_[a].space, nodes_[b].space, d, false); });
+                         [&](int a, int b) { return less(nodes_[a].center, nodes_[b].center, d, false); });
         std::vector<Bucket> buckets;  // bucketize
         for (size_t i = 0; i < children.size(); i += expected) {
             Bucket b;
             b.kids.assign(children.begin() + i, children.begin() + std::min(children.size(), i + expected));
             space_of(b.kids, b.space);
+            for (int k = 0; k < 7; k++) b.center[k] = center(b.space[k]);
             buckets.push_back(std::move(b));
         }
         int64_t totalCost = 0;
@@ -119,7 +136,7 @@ int BiomeSource::build(std::vector<int> children) {
         if (minCost > totalCost) minCost = totalCost, minDimension = d, minBuckets = std::move(buckets);
     }
     std::stable_sort(minBuckets.begin(), minBuckets.end(),
-                     [&](const Bucket& a, const Bucket& b) { return less(a.space, b.space, minDimension, true); });
+                     [&](const Bucket& a, const Bucket& b) { return less(a.center, b.center, minDimension, true); });
     std::vector<int> built;
     for (auto& b : minBuckets) built.push_back(build(std::move(b.kids)));
     return make_subtree(std::move(built));

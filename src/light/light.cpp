@@ -634,6 +634,9 @@ struct Engine {
     }
     void initialize(int cx, int cz, Chunk* blocks = nullptr) {  // ChunkStatusTasks.initializeLight
         Column& c = col_create(cx, cz);
+        // take_changes can release the block handle of an initialized column before it is lit.
+        // Flat-world ensure_lit has loaded it again; restore the handle even when setup is complete.
+        if (c.adopted && (c.resolve || !c.chunk)) acquire(c, cx, cz);
         if (c.status != NEW) return;
         if (blocks) c.chunk = blocks;
         else c.adopted = true, acquire(c, cx, cz);
@@ -649,9 +652,7 @@ Engine& engine() {
     return e;
 }
 
-// ponytail: runs here (pipeline light steps, tick) read proto blocks that another thread's FEATURES step may be
-// writing outside this lock (vanilla's light thread races the same way); the write reports itself through
-// on_block_changed, so the light converges. Take the light lock in ProtoChunk::set if storage gets resizable.
+// Generation mutations of palettes exposed to lighting hold mutex() and notify on_block_changed.
 // PULL_LIGHT_IN on the column's blocks along one side (DX/DZ direction d: NORTH SOUTH WEST EAST): their
 // neighbours across that side push light in. Vanilla never needs it (it saves proto chunks with their light);
 // here a chunk lit from saved light can meet a neighbour that was regenerated.
@@ -735,6 +736,7 @@ std::mutex& mutex() {
 int get(int x, int y, int z, bool sky) {
     std::lock_guard lock(mutex());
     Engine& e = engine();
+    if (e.world != cur_level) return -1;  // Never read another dimension's columns.
     auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
     Column* c = it == e.columns.end() ? nullptr : it->second.get();
     if (!c || c->status != LIT) return -1;
@@ -773,8 +775,9 @@ void attach(World& world, worldgen::Pipeline& p) {
         e.lit++;
         print_stats(e, 1);
     }, 1);
+    p.write_lock = &mutex();
     p.on_block_changed = [](worldgen::ProtoChunk& c, int x, int y, int z, uint16_t old_state, uint16_t new_state) {
-        std::lock_guard lock(mutex());
+        // ProtoChunk::set holds mutex() around both the palette mutation and this notification.
         block_changed(c.cx * 16 + x, y, c.cz * 16 + z, old_state, new_state);
     };
     p.on_evict = [](const std::function<bool(int, int)>& keep) {  // pipeline evict: generation is paused
@@ -920,7 +923,7 @@ bool lit_3x3(Engine& e, int cx, int cz) {
 
 // ChunkMap.prepareTickingChunk: a chunk is sent once its 3x3 is FULL, so every light source that can reach it
 // (< 16 blocks) has been propagated.
-void produced(World& world, Chunk& w, bool loaded) {
+void produced(World& world, Chunk& w, bool loaded, bool neighbours) {
     Engine& e = engine();
     {
         std::lock_guard lock(mutex());
@@ -954,7 +957,7 @@ void produced(World& world, Chunk& w, bool loaded) {
         if (!c.adopted) adopt_loaded(e, c, w);
         return;
     }
-    if (!e.pipeline) return;
+    if (!e.pipeline || !neighbours) return;  // FULL already lit the chunk itself
     // ChunkMap.prepareTickingChunk: sent once its 3x3 is lit (loaded neighbours keep their saved light).
     for (int dx = -1; dx <= 1; dx++)
         for (int dz = -1; dz <= 1; dz++) e.pipeline->ensure(w.cx + dx, w.cz + dz, worldgen::Status::LIGHT);

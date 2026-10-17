@@ -165,7 +165,7 @@ inline void pack_ticks(Writer& w, const ChunkTicks& c, int64_t now) {
     std::sort(all.begin(), all.end(), [](auto& a, auto& b) { return a.sub < b.sub; });  // SUB_TICK_ORDERING
     w.varint(int32_t(all.size()));
     for (auto& t : all)
-        w.varint(t.type).u8(uint8_t((t.pos.x & 15) | (t.pos.z & 15) << 4)).varint(t.pos.y - MIN_Y)
+        w.varint(t.type).u8(uint8_t((t.pos.x & 15) | (t.pos.z & 15) << 4)).varint(t.pos.y - world.min_y())
             .i32(int32_t(t.trigger - now)).u8(uint8_t(t.priority));
 }
 // LevelChunkTicks.unpack: saved ticks get sub-tick orders -n..-1, before anything scheduled after load.
@@ -174,7 +174,7 @@ inline void unpack_ticks(Reader& r, ChunkTicks& c, int cx, int cz, int64_t now) 
     int64_t sub = -n;
     for (int i = 0; i < n; i++) {
         int type = r.varint();
-        int xz = r.u8(), y = r.varint() + MIN_Y, delay = r.i32();
+        int xz = r.u8(), y = r.varint() + world.min_y(), delay = r.i32();
         int8_t pr = int8_t(r.u8());
         c.schedule({type, {cx * 16 + (xz & 15), y, cz * 16 + (xz >> 4)}, now + delay, pr, sub++});
     }

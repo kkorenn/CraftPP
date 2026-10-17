@@ -168,7 +168,7 @@ for first, name, b in blocks:
         pr = DEFAULT
     out_blocks.append({"n": short(name), "f": first, "c": len(b["states"]), "h": pr["h"], "t": pr["t"],
                        "col": pr["col"] and not pr["air"], "r": pr["r"],
-                       "p": [[k, v] for k, v in b.get("properties", {}).items()]})
+                       "p": [[k, v] for k, v in sorted(b.get("properties", {}).items())]})  # state ids: properties by name (StateDefinition)
 
 # ---------- items ----------
 items_java = open(os.path.join(SRC, "world", "item", "Items.java")).read()

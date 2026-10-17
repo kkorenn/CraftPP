@@ -10,6 +10,8 @@ inline int locate_structure(Cmd& c) {
     bool tag = !arg.empty() && arg[0] == '#';
     std::string id = structure::fullId(tag ? arg.substr(1) : arg);
     std::string printable = tag ? "#" + id : id;
+    if (cur_level->initialize_generator) cur_level->initialize_generator();
+    auto structure_world = std::atomic_load(&structure_worlds[dim_of(cur_level)]);
     if (!structure_world) throw err("commands.locate.structure.not_found", {printable});  // flat / generate-structures=false
     auto& mgr = structure_world->manager();
     std::vector<const structure::Structure*> wanted;

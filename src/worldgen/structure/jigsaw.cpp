@@ -9,22 +9,24 @@
 
 #include "worldgen/structure/jigsaw.hpp"
 
+#include "log.hpp"
+
 namespace structure {
 
 // ------------------------------------------------------------------------------------------- anchors / heights
-int resolveAnchor(const Json& j) {  // VerticalAnchor with WorldGenerationContext(minY -64, height 384)
+int resolveAnchor(const Json& j, int minY, int height) {  // VerticalAnchor in WorldGenerationContext
   if (auto* v = j.find("absolute")) return v->asInt();
-  if (auto* v = j.find("above_bottom")) return MIN_Y + v->asInt();
-  if (auto* v = j.find("below_top")) return MIN_Y + GEN_HEIGHT - 1 - v->asInt();
+  if (auto* v = j.find("above_bottom")) return minY + v->asInt();
+  if (auto* v = j.find("below_top")) return minY + height - 1 - v->asInt();
   return 0;
 }
 
-int sampleHeight(const Json& j, RandomSource& r) {  // HeightProvider.sample
-  if (!j.find("type")) return resolveAnchor(j);
+int sampleHeight(const Json& j, RandomSource& r, int minY, int height) {  // HeightProvider.sample
+  if (!j.find("type")) return resolveAnchor(j, minY, height);
   std::string t = j["type"].asString();
-  if (t == "minecraft:constant") return resolveAnchor(j["value"]);
+  if (t == "minecraft:constant") return resolveAnchor(j["value"], minY, height);
   if (t == "minecraft:uniform") {
-    int mn = resolveAnchor(j["min_inclusive"]), mx = resolveAnchor(j["max_inclusive"]);
+    int mn = resolveAnchor(j["min_inclusive"], minY, height), mx = resolveAnchor(j["max_inclusive"], minY, height);
     return mn > mx ? mn : randomBetweenInclusive(r, mn, mx);
   }
   throw std::runtime_error("structure: unsupported height provider " + t);
@@ -90,7 +92,7 @@ const Pool* Pool::get(const std::string& id) {
       for (int i = 0; i < e["weight"].asInt(); i++) p->templates.push_back(el);
     }
   } catch (const std::exception& e) {
-    if (std::filesystem::exists(path)) fprintf(stderr, "structure: bad template pool %s: %s\n", key.c_str(), e.what());
+    if (std::filesystem::exists(path)) log_warn("structure: bad template pool %s: %s", key.c_str(), e.what());
     p = nullptr;  // missing pool
   }
   return (pools[key] = std::move(p)).get();
@@ -419,7 +421,8 @@ struct JigsawStructure : Structure {
   }
 
   std::optional<Stub> findGenerationPoint(GenContext& ctx) const override {
-    int height = sampleHeight(startHeight, ctx.random);
+    const int MIN_Y = ctx.gen.minBuildHeight(), MAX_Y = ctx.gen.maxBuildHeight() - 1;
+    int height = sampleHeight(startHeight, ctx.random, MIN_Y, ctx.gen.generationHeight());
     BlockPos position{ctx.cx * 16, height, ctx.cz * 16};
     auto aliasMap = std::make_shared<std::map<std::string, std::string>>();
     if (aliases.isArray() && !aliases.arr.empty()) {  // PoolAliasLookup.create

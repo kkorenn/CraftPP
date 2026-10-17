@@ -16,10 +16,11 @@ namespace storage {
 
 using Heightmaps = std::array<std::array<int16_t, 256>, 6>;  // worldgen::Heightmap order, first free y
 
-// <world>/dimensions/minecraft/overworld (26.x layout); region/ and entities/ live below it.
-std::string dimension_dir();
-inline std::string region_dir() { return dimension_dir() + "/region"; }
-inline std::string entities_dir() { return dimension_dir() + "/entities"; }
+// <world>/dimensions/minecraft/<overworld|the_nether|the_end> (26.x layout; dim = world.hpp Dim); region/ and
+// entities/ live below it.
+std::string dimension_dir(int dim);
+inline std::string region_dir(int dim) { return dimension_dir(dim) + "/region"; }
+inline std::string entities_dir(int dim) { return dimension_dir(dim) + "/entities"; }
 
 // Root compound with DataVersion, position, status, sections (+ light from light::save's format if non-empty:
 // isLightOn), block entities, heightmaps (bit h of hm_mask = worldgen::Heightmap h; null = computed FINAL four),
@@ -30,7 +31,7 @@ Nbt encode(const Chunk& c, const std::string& status, const std::vector<uint8_t>
 void decode(const Nbt& root, Chunk& c, std::vector<uint8_t>* light);
 std::string status_of(const Nbt& root);  // "minecraft:full", ... ("" if absent: vanilla treats it as no chunk)
 // Heightmaps present in the tag (mask of decoded types).
-unsigned decode_heightmaps(const Nbt& root, Heightmaps& hm);
+unsigned decode_heightmaps(const Nbt& root, Heightmaps& hm, int min_y);
 
 // Subsystem tags of World chunks (block ticks, structures, ...): called after encode / decode, c.m held on save.
 struct ChunkHook {
@@ -42,7 +43,7 @@ std::vector<ChunkHook>& chunk_hooks();
 // Entities (entities/r.x.z.mca, vanilla EntityStorage): for the entity subsystem, which owns the entity NBT
 // (vanilla Entity.save compounds with "id"). Saving an empty list removes nothing on disk but writes an empty
 // entry, like vanilla. Queued with the chunk writes (flush on autosave).
-void save_entities(int cx, int cz, const std::vector<Nbt>& entities);
-std::vector<Nbt> load_entities(int cx, int cz);
+void save_entities(int dim, int cx, int cz, const std::vector<Nbt>& entities);
+std::vector<Nbt> load_entities(int dim, int cx, int cz);
 
 }  // namespace storage

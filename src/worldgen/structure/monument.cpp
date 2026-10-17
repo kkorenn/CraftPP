@@ -50,6 +50,10 @@ struct RoomDef {
 
 struct MonPiece : Piece {
   RoomDef* roomDefinition = nullptr;
+  void spawnElder(Level& level, const BoundingBox& chunkBB, int x, int y, int z) {
+    BlockPos p = worldPos(x, y, z);
+    if (chunkBB.isInside(p)) level.addMob(entity_types::elder_guardian, p, false, true);
+  }
   MonPiece(Dir o, int depth, const BoundingBox& bb) : Piece(depth, bb) { setOrientation(o); }
   MonPiece(int depth, Dir o, RoomDef* def, int w, int h, int d) : Piece(depth, roomBox(o, def, w, h, d)), roomDefinition(def) {
     setOrientation(o);
@@ -899,6 +903,7 @@ struct OceanMonumentWingRoom : MonPiece {
             placeBlock(level, BASE_LIGHT, 13, 7, 20, chunkBB);
             generateBox(level, chunkBB, 6, 0, 21, 7, 4, 21, BASE_LIGHT, BASE_LIGHT, false);
             generateBox(level, chunkBB, 15, 0, 21, 16, 4, 21, BASE_LIGHT, BASE_LIGHT, false);
+            spawnElder(level, chunkBB, 11, 2, 16);
          } else if (mainDesign == 1) {
             generateBox(level, chunkBB, 9, 3, 18, 13, 3, 20, BASE_LIGHT, BASE_LIGHT, false);
             generateBox(level, chunkBB, 9, 0, 18, 9, 2, 18, BASE_LIGHT, BASE_LIGHT, false);
@@ -937,6 +942,7 @@ struct OceanMonumentWingRoom : MonPiece {
 
             generateBox(level, chunkBB, 8, 3, 8, 8, 3, 13, BASE_BLACK, BASE_BLACK, false);
             generateBox(level, chunkBB, 14, 3, 8, 14, 3, 13, BASE_BLACK, BASE_BLACK, false);
+            spawnElder(level, chunkBB, 11, 5, 13);
          }
       }
 };
@@ -984,6 +990,7 @@ struct OceanMonumentPenthouse : MonPiece {
          generateBox(level, chunkBB, 8, 0, 10, 8, 2, 10, BASE_LIGHT, BASE_LIGHT, false);
          generateBox(level, chunkBB, 6, -1, 7, 7, -1, 8, BASE_BLACK, BASE_BLACK, false);
          generateWaterBox(level, chunkBB, 6, -1, 3, 7, -1, 4);
+         spawnElder(level, chunkBB, 6, 1, 6);
       }
 };
 

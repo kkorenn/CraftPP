@@ -42,6 +42,7 @@ inline void random_tick(int state, Pos pos);
 inline void fluid_tick(Pos pos, int state);
 inline void fluid_random_tick(Pos pos, int state);
 inline bool can_survive(int state, Pos pos);
+inline void wire_indirect_shapes(int s, const Pos& p, int flags, int limit);  // place_rules.hpp
 
 // Level.random: RandomSource.create() (LegacyRandomSource with a random seed).
 inline LegacyRandomSource& rng() {
@@ -63,7 +64,7 @@ inline int64_t sub_tick = 0;
 inline int64_t now() { return game_time; }
 
 inline std::mutex loaded_m;
-inline std::vector<ChunkPtr> loaded_q;  // World::on_load (any thread) -> adopt() on the tick thread
+inline std::vector<ChunkPtr> loaded_q[DIM_COUNT];  // per level: World::on_load (any thread) -> adopt() on the tick thread
 inline std::vector<int64_t> post_pending;
 
 inline int64_t last_key = INT64_MIN;
@@ -133,7 +134,7 @@ inline LChunk* lchunk(int cx, int cz) {
 }
 inline bool loaded(int cx, int cz) { return lchunk(cx, cz) != nullptr; }
 inline bool loaded(const Pos& p) { return loaded(p.x >> 4, p.z >> 4); }
-inline bool in_height(int y) { return y >= MIN_Y && y < MIN_Y + HEIGHT; }
+inline bool in_height(int y) { return y >= world.min_y() && y < world.max_y(); }
 
 inline int get(const Pos& p) {
     if (!in_height(p.y)) return blocks::void_air;
@@ -293,7 +294,7 @@ inline int update_from_neighbour_shapes(int state, const Pos& p) {
 
 // ---------- Level.setBlock ----------
 inline bool section_only_air(const Chunk& c, int y) {
-    auto& b = c.sections[size_t((y - MIN_Y) >> 4)].blocks;
+    auto& b = c.sections[size_t((y - c.min_y) >> 4)].blocks;
     return !b.bits && is_air(b.palette[0]);
 }
 inline bool set(const Pos& p, int state, int flags, int limit) {
@@ -312,8 +313,9 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
             c.set(p.x & 15, p.y, p.z & 15, uint16_t(state));
             c.dirty = true;
         }
-        light::block_changed(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
+        if (!c.fullbright) light::block_changed(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
     }
+    cur_level->note_block(p.x, p.y, p.z, uint16_t(old), uint16_t(state));
     bool piston = flags & UPDATE_MOVE_BY_PISTON;
     bool changed_block = block(old) != block(state);
     if ((changed_block || rail_table[size_t(block(state))]) && ((flags & UPDATE_NEIGHBORS) || piston)) after_removal(old, p, piston);
@@ -325,7 +327,8 @@ inline bool set(const Pos& p, int state, int flags, int limit) {
     if (flags & UPDATE_NEIGHBORS) update_neighbors(p, block(old));  // ponytail: comparator output updates with redstone
     if (!(flags & UPDATE_KNOWN_SHAPE) && limit > 0) {
         int nf = flags & ~(UPDATE_NEIGHBORS | UPDATE_SUPPRESS_DROPS);
-        update_neighbour_shapes(state, p, nf, limit - 1);  // updateIndirectNeighbourShapes: redstone wire only
+        update_neighbour_shapes(state, p, nf, limit - 1);
+        wire_indirect_shapes(state, p, nf, limit - 1);  // updateIndirectNeighbourShapes: redstone wire only
     }
     return true;
 }
@@ -370,16 +373,16 @@ inline bool thundering() { return raining() && weather.thunder_level > 0.9f; }
 // Heightmap MOTION_BLOCKING: first y above the top block that blocks motion or holds fluid.
 inline int motion_blocking_height(int x, int z) {
     LChunk* l = lchunk(x >> 4, z >> 4);
-    if (!l) return MIN_Y;
+    if (!l) return world.min_y();
     std::lock_guard lock(l->c->m);
-    for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--) {
+    for (int y = world.max_y() - 1; y >= world.min_y(); y--) {
         int s = l->c->get(x & 15, y, z & 15);
         if (is_solid(s) || has_fluid(s)) return y + 1;
     }
-    return MIN_Y;
+    return world.min_y();
 }
 // Light from the light engine (src/light/): stored sky / block light, LevelReader.getRawBrightness.
-inline int sky_light(const Pos& p) { return in_height(p.y) ? light::level(true, p.x, p.y, p.z) : 15; }
+inline int sky_light(const Pos& p) { if (!cur_level->skylight) return 0; return in_height(p.y) ? light::level(true, p.x, p.y, p.z) : 15; }
 inline int block_light(const Pos& p) { return in_height(p.y) ? light::level(false, p.x, p.y, p.z) : 0; }
 inline int raw_light(const Pos& p, int darken) { return std::max(sky_light(p) - darken, block_light(p)); }
 // Level.skyDarken: 15 - SKY_LIGHT_LEVEL. ponytail: the overworld timeline curve approximated by the legacy
@@ -429,7 +432,7 @@ inline int64_t lcg(int64_t a, int64_t b) { return int64_t(uint64_t(a) * (uint64_
 inline int noise_biome(int qx, int qy, int qz) {
     LChunk* l = lchunk(qx >> 2, qz >> 2);
     if (!l) return 0;
-    int y = std::clamp(qy - (MIN_Y >> 2), 0, HEIGHT / 4 - 1);
+    int y = std::clamp(qy - (l->c->min_y >> 2), 0, l->c->height() / 4 - 1);
     std::lock_guard lock(l->c->m);
     return l->c->get_biome(qx & 3, y, qz & 3);
 }

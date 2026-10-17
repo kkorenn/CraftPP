@@ -109,7 +109,7 @@ inline void tick_falling(FallingBlock& f) {
     bool stuck_in_water = concrete && is_water(get(p));
     // ponytail: the fast-concrete clip (moveVec > 1) checks only the end position.
     if (!f.on_ground && !stuck_in_water) {
-        if ((f.time > 100 && (p.y <= MIN_Y || p.y > MIN_Y + HEIGHT - 1)) || f.time > 600) {
+        if ((f.time > 100 && (p.y <= world.min_y() || p.y > world.max_y() - 1)) || f.time > 600) {
             fb_drop(f);
             f.removed = true;
         }
