@@ -425,6 +425,7 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
     if (b < 0) return false;
     PlaceCtx c{pl, hit, face, cy, cx, cz, item};
     if (!place_block_item(c, b)) return false;
+    if (placed_hook) placed_hook(pl, c.pos.x, c.pos.y, c.pos.z, slot);
     consume(pl, slot);
     return true;
 }

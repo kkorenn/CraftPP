@@ -402,7 +402,9 @@ inline void save_player(const Player& p) {
 }
 
 inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
+inline void (*before_world_save)() = nullptr;  // tick thread: flush live state into chunks (src/containers)
 inline void save_all() {
+    if (before_world_save) before_world_save();
     if (on_save_all) on_save_all();
     for (auto& p : snapshot()) save_player(*p);
     for (auto& w : worlds) w.save_dirty();

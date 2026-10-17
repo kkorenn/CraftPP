@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/level.json ] || python3 tools/gen_level_data.py
 [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
+[ data/containers.json -nt tools/gen_container_data.py ] || python3 tools/gen_container_data.py
 TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac
@@ -68,6 +69,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   python3 -u test/dimensions_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
+  python3 -u test/containers_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
   grep -q 'Alice lost connection: Disconnected' $LOG || fail "lost connection line"
@@ -100,6 +102,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
   python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
   python3 -u test/mobs_test.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/containers_test.py 127.0.0.1 $PORT --after-restart
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"

@@ -164,5 +164,6 @@ for _ in range(20000):
         break
 c.send(PLAY_SB["client_command"], varint(0))  # credits done: PERFORM_RESPAWN
 arrive(c, "minecraft:overworld")
+cmd(c, "fill 20 -60 20 24 -60 24 air")
 print("credits + return to the overworld ok")
 print("dimensions ok")

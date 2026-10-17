@@ -184,6 +184,7 @@ inline void respawn(Player& p) {
     p.g = [&] {
         PlayerGame g;
         g.next_container = p.g.next_container;
+        g.ender = std::move(p.g.ender), g.enchant_seed = p.g.enchant_seed;
         g.loaded = true;
         g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
         return g;
@@ -505,7 +506,8 @@ inline void vitals_tick(Player& p) {
     if (p.y < p.level->min_y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
-    if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
+    if (g.menu && !g.menu->still_valid(p)) close_container(p, true);
+    else if (g.container && !g.menu) {  // CraftingMenu.stillValid: table still there and within 8 blocks
         double dx = p.x - (g.table_x + 0.5), dy = p.y - (g.table_y + 0.5), dz = p.z - (g.table_z + 0.5);
         if (block_index(world.get_block(g.table_x, g.table_y, g.table_z)) != block_index(blocks::crafting_table) ||
             dx * dx + dy * dy + dz * dz > 64)
@@ -535,9 +537,16 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
     return false;
 }
 
+// Block interaction hooks (src/containers): use_block_hook returns true when the block consumed the click
+// (BlockState.useItemOn / useWithoutItem); placed_hook runs after a BlockItem placed its block, before the item is
+// used up (BlockItem.updateCustomBlockEntityTag). Placement states come from src/level/place_rules.hpp.
+inline bool (*use_block_hook)(Player& p, int hand, int x, int y, int z, int face) = nullptr;
+inline void (*placed_hook)(Player& p, int x, int y, int z, const ItemStack& item) = nullptr;
+
 // ServerPlayerGameMode.useItemOn. Returns 0 PASS, 1 SUCCESS (swing), 2 CONSUME (no swing).
 inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     if (p.g.dead) return 0;
+    if (use_block_hook && use_block_hook(p, hand, x, y, z, face)) return 1;
     int clicked = world.get_block(x, y, z);
     bool is_table = block_index(clicked) == block_index(blocks::crafting_table);
     if (p.gamemode == 3) {  // spectators can open menus but not use anything else
@@ -556,6 +565,12 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
+namespace comp {  // src/containers/components.hpp
+inline std::string patch_hex(const ItemStack& s);
+inline void patch_from_hex(ItemStack& s, const std::string& h);
+}  // namespace comp
+inline void save_player_containers(const Player& p, std::ostream& f);                   // ender chest (src/containers)
+inline bool load_player_containers(Player& p, const std::string& key, std::istream& f);
 // "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
 inline void save_player_extra(const Player& p, std::ostream& f) {
     auto& g = p.g;
@@ -564,6 +579,9 @@ inline void save_player_extra(const Player& p, std::ostream& f) {
     f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
     for (size_t i = 0; i < p.inv.size(); i++)
         if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
+    for (size_t i = 0; i < p.inv.size(); i++)
+        if (!p.inv[i].empty() && p.inv[i].comp) f << "patch " << i << ' ' << comp::patch_hex(p.inv[i]) << '\n';
+    save_player_containers(p, f);
 }
 inline void load_player_extra(Player& p, std::istream& f) {
     f.clear();
@@ -573,6 +591,11 @@ inline void load_player_extra(Player& p, std::istream& f) {
         else if (key == "dmg") {
             int slot, d;
             if (f >> slot >> d && slot >= 0 && slot < int(p.inv.size())) p.inv[size_t(slot)].damage = d;
+        } else if (key == "patch") {
+            int slot;
+            std::string hex;
+            if (f >> slot >> hex && slot >= 0 && slot < int(p.inv.size())) comp::patch_from_hex(p.inv[size_t(slot)], hex);
+        } else if (load_player_containers(p, key, f)) {
         } else {
             std::string rest;
             std::getline(f, rest);
