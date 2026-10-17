@@ -12,6 +12,7 @@ TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac
 done
+tools/setup_vanilla.sh ${TEST:+--reports}  # Mojang data is downloaded, not shipped (data/vanilla, data/reports)
 export BUILD_DIR=$B
 cmake -S . -B $B -DCMAKE_BUILD_TYPE=Release -DCRAFTPP_SANITIZE=$SAN >/dev/null
 if [ -n "$TEST" ]; then cmake --build $B -j; else cmake --build $B -j --target craftpp; fi

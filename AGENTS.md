@@ -9,9 +9,9 @@ CraftPP is a Minecraft Java Edition **26.3** (protocol 777) server written in C+
 
 ## Sources of truth
 - `vanilla/src/net/minecraft/`: decompiled, unobfuscated 26.3 source. 26.x rewrote a lot (worldgen, material rules, density functions), so port from this, not from knowledge of older versions.
-- `data/vanilla/minecraft/`: vanilla datapack JSON (worldgen, loot, recipes, tags), checked in. Server code and tests read it from here.
-- `data/reports/`: blocks.json, registries.json, packets.json, commands.json, biome_parameters (checked-in generator reports).
-- `vanilla/` is local only (jars, decompiled source, compare runs) and must never be committed.
+- `data/vanilla/minecraft/`: vanilla datapack JSON (worldgen, loot, recipes, tags, structure templates). Server code and tests read it from here.
+- `data/reports/`: blocks.json, registries.json, packets.json, commands.json, biome_parameters (generator reports).
+- Both are created by `tools/setup_vanilla.sh` (build.sh runs it) from Mojang's jar. `vanilla/`, `data/vanilla` and `data/reports` are Mojang files: never commit them.
 - Bytecode check: `javap -c -p -classpath vanilla/versions/26.3/server-26.3.jar <class>`. The decompiler prints some double constants with an `F` suffix; check the bytecode whenever float/double typing matters.
 - The volume path (`sampleVolume`) and the point path (`sampleValue`) can give different floats. Use whichever path vanilla uses at each call site.
 

@@ -36,3 +36,6 @@ data/block_dump.json
 build-*/
 .cache/
 dist/
+# Mojang game data: downloaded by tools/setup_vanilla.sh, never committed
+/data/vanilla/
+/data/reports/
