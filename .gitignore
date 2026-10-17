@@ -15,6 +15,7 @@ whitelist.json
 usercache.json
 eula.txt
 server.properties
+data/roster.json
 cache/
 /plugins/
 /ops.json

@@ -192,7 +192,7 @@ def main(host, port):
     assert "d" in msg and b"Sam" in msg["d"], f"no killer death message: {msg}"
     print("pvp ok: pvp=false blocks damage, death.attack.player names Sam")
     a.send(PLAY_SB["client_command"], varint(0))
-    a.s.close()
+    a.f.close(); a.s.close()  # makefile() holds the fd: close both so Alice really leaves
 
     # ---- pick block on an entity (creative): spawn egg ----
     cmd(c, f"summon pig {sx + 1.5} {sy} {sz} {{NoAI:1b}}")
@@ -209,6 +209,10 @@ def main(host, port):
     cmd(c, "kill @e[type=pig]")
 
     # ---- natural spawning at night ----
+    # Earlier tests ran with spawn_mobs on, so the flat world's slime chunks filled the monster cap with slimes
+    # (and /kill splits them). Peaceful discards every loaded monster (Mob.checkDespawn), emptying the cap.
+    cmd(c, "difficulty peaceful")
+    pump(c, 1, lambda pid, b: False)
     cmd(c, "difficulty normal")
     cmd(c, "time set midnight")
     cmd(c, "gamerule spawn_mobs true")

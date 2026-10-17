@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 [ -f data/config.bin ] || python3 tools/gen_data.py
 [ -f data/level.json ] || python3 tools/gen_level_data.py
 [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py  # regenerate when the generator changes
+[ data/roster.json -nt tools/gen_roster_data.py ] || python3 tools/gen_roster_data.py
 TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac
@@ -19,6 +20,7 @@ export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
 if [ -n "$TEST" ]; then
   # Free port per run so parallel test runs (other worktrees) never collide.
   PORT=${TEST_PORT:-$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")}
+  ./$B/roster_test
   LOG=$B/test-server.log
   fail() { echo "FAIL: $1"; tail -20 $LOG; exit 1; }
   wait_log() {  # wait_log <text> [count]: until the server log has <text> at least <count> times
@@ -68,6 +70,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/commands_test.py 127.0.0.1 $PORT
   python3 -u test/dimensions_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
+  python3 -u test/roster_bot.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
   grep -q 'Alice lost connection: Disconnected' $LOG || fail "lost connection line"

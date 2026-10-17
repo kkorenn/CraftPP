@@ -15,7 +15,7 @@ struct State {
     double last_charge = 0;
 };
 inline bool player_close_for_spawning(const Player& p, int cx, int cz) {  // ChunkMap.playerIsCloseEnoughForSpawning
-    if (p.gamemode == 3) return false;
+    if (p.gamemode == 3 || p.level != cur_level) return false;  // ServerLevel players only
     double dx = cx * 16 + 8 - p.x, dz = cz * 16 + 8 - p.z;
     return dx * dx + dz * dz < 16384.0;
 }
@@ -77,7 +77,7 @@ inline Entity* nearest_spawn_player(double x, double y, double z, double& dsq) {
     Entity* best = nullptr;
     dsq = 1e300;
     for (Entity* p : player_entities()) {
-        if (p->is_spectator()) continue;
+        if (p->is_spectator() || p->level() != cur_level) continue;
         double d = p->dist_sqr(x, y, z);
         if (d < dsq) dsq = d, best = p;
     }
@@ -154,6 +154,7 @@ inline State create_state() {  // NaturalSpawner.createState (over loaded entiti
     State s;
     std::unordered_set<int64_t> chunks;  // getNaturalSpawnChunkCount: chunks within 8 of a player
     for (auto& p : players)
+        if (p->level == cur_level)
         for (int x = p->cx - 8; x <= p->cx + 8; x++)
             for (int z = p->cz - 8; z <= p->cz + 8; z++) chunks.insert(mth::chunk_key(x, z));
     s.spawnable_chunks = int(chunks.size());
@@ -178,7 +179,7 @@ inline State create_state() {  // NaturalSpawner.createState (over loaded entiti
 // ServerChunkCache.tickChunks spawning part. Runs once per tick after entity ticking.
 inline void tick_natural_spawning() {
     using namespace spawn_detail;
-    if (players.empty() || !rule("spawn_mobs")) return;
+    if (!level_has_players(cur_level) || !rule("spawn_mobs")) return;
     State st = create_state();
     bool persistent = game_time % 400 == 0, enemies = difficulty() != 0;
     std::vector<int> cats;
@@ -196,6 +197,7 @@ inline void tick_natural_spawning() {
     std::unordered_set<int64_t> seen;
     int sim = simulation_distance();
     for (auto& p : players)
+        if (p->level == cur_level)
         for (int x = p->cx - sim; x <= p->cx + sim; x++)
             for (int z = p->cz - sim; z <= p->cz + sim; z++) {
                 if (!seen.insert(mth::chunk_key(x, z)).second || !loaded_chunk(x, z)) continue;
