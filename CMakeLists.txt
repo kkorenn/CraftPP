@@ -75,7 +75,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/test/terrain_test.cpp)
 endif()
 # Bukkit/Paper plugins (src/plugins, docs/plugins.md). libjvm is dlopen'd at runtime only when plugins/*.jar
 # exist, so nothing links against Java; jni.h is needed at build time (any JDK), else plugins are compiled out.
-target_sources(craftpp PRIVATE src/plugins/plugins.cpp src/plugins/api_items.cpp src/plugins/api_display.cpp src/plugins/api_entity.cpp src/plugins/api_inventory.cpp src/plugins/api_events.cpp)
+file(GLOB CRAFTPP_PLUGIN_SOURCES CONFIGURE_DEPENDS src/plugins/*.cpp)
+target_sources(craftpp PRIVATE ${CRAFTPP_PLUGIN_SOURCES})
 set(CRAFTPP_JNI_HOME "$ENV{JAVA_HOME}")
 if(NOT EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
   file(GLOB CRAFTPP_JDKS /Library/Java/JavaVirtualMachines/*/Contents/Home /usr/lib/jvm/*)
@@ -111,6 +112,6 @@ target_compile_options(structure_test PRIVATE -Wall -Wextra)
 add_executable(pipeline_test test/pipeline_test.cpp)
 target_link_libraries(pipeline_test PRIVATE craftpp_worldgen)
 # Mob roster checks: trading / breeding / taming logic (runs from the repo root, needs data/*.json).
-add_executable(roster_test test/roster_test.cpp src/plugins/plugins.cpp src/plugins/api_items.cpp src/plugins/api_display.cpp src/plugins/api_entity.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
+add_executable(roster_test test/roster_test.cpp ${CRAFTPP_PLUGIN_SOURCES} src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
 target_include_directories(roster_test PRIVATE src)
 target_link_libraries(roster_test PRIVATE craftpp_worldgen ${CMAKE_DL_LIBS})
