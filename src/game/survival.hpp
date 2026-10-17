@@ -37,7 +37,7 @@ inline void add_exhaustion(Player& p, float a) {
     if (survival_like(p)) p.g.exhaustion = std::min(p.g.exhaustion + a, 40.0f);
 }
 inline void heal(Player& p, float a) {
-    if (!p.g.dead && a > 0) p.g.health = std::min(p.g.health + a, 20.0f);
+    if (!p.g.dead && a > 0) p.g.health = std::min(p.g.health + a, player_max_health(p));
 }
 
 inline void kill(Player& p, const std::string& type);
@@ -78,6 +78,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
     if ((s.is(DT_IS_DROWNING) && !rule("drowning_damage")) || (s.is(DT_IS_FALL) && !rule("fall_damage")) ||
         (s.is(DT_IS_FIRE) && !rule("fire_damage")) || (s.is(DT_IS_FREEZING) && !rule("freeze_damage")))
         return false;
+    if (player_effect_blocks_damage(p, s)) return false;
     if (s.scales_with_difficulty()) {
         int d = difficulty();
         if (d == 0) amount = 0;
@@ -96,7 +97,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
         applied = amount;
     }
     applied = player_damage_after_armor(p, s, applied);
-    // ponytail: enchantment protection, resistance and absorption are not applied yet.
+    applied = player_damage_after_effects(p, s, applied);  // resistance, protection, absorption
     auto dt = damage_types.find(s.name());
     if (dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
     p.g.health = std::max(0.0f, p.g.health - applied);
@@ -108,6 +109,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
     broadcast_near(p.x, p.z, w);
     if (p.g.invulnerable == 20 && !s.is(DT_NO_KNOCKBACK)) player_knockback_from(p, s);
     if (p.g.health <= 0) kill(p, s);
+    else player_hurt_effects(p, s, applied);
     return true;
 }
 inline bool hurt(Player& p, float amount, const std::string& type) { return hurt(p, DamageSource::of(type), amount); }
@@ -212,7 +214,7 @@ inline void food_tick(Player& p) {
         if (g.saturation > 0) g.saturation = std::max(g.saturation - 1, 0.0f);
         else if (diff != 0) g.food = std::max(g.food - 1, 0);
     }
-    bool hurt_ = g.health > 0 && g.health < 20;
+    bool hurt_ = g.health > 0 && g.health < player_max_health(p);
     bool regen = rule("natural_health_regeneration");
     if (regen && g.saturation > 0 && hurt_ && g.food >= 20) {
         if (++g.food_timer >= 10) {
@@ -233,7 +235,7 @@ inline void food_tick(Player& p) {
     }
     if (diff == 0 && regen) {
         if (g.game_ticks % 20 == 0) {
-            if (g.health < 20) heal(p, 1);
+            if (g.health < player_max_health(p)) heal(p, 1);
             if (g.saturation < 20) g.saturation += 1;
         }
         if (g.food < 20 && g.game_ticks % 10 == 0) g.food++;
@@ -254,9 +256,7 @@ inline bool correct_tool(Player& p, int state) {  // Player.hasCorrectToolForDro
 inline float destroy_progress(Player& p, int state) {
     float h = block_of(state).hardness;
     if (h < 0) return 0;
-    float speed = tool_speed(held(p).item, state);
-    if (eye_in_water(p)) speed *= 0.2f;
-    if (!p.on_ground) speed /= 5.0f;
+    float speed = player_destroy_speed(p, tool_speed(held(p).item, state), eye_in_water(p));
     if (h == 0) return 1.0f;
     return speed / h / (correct_tool(p, state) ? 30.0f : 100.0f);
 }
@@ -448,7 +448,7 @@ inline void finish_using(Player& p) {
         p.g.food = std::clamp(p.g.food + it.nutrition, 0, 20);
         p.g.saturation = std::clamp(p.g.saturation + it.saturation, 0.0f, float(p.g.food));
     }
-    // ponytail: on_consume_effects (golden apple regen, milk clearing effects) need a mob effect system.
+    player_consume_effects(p, s.item, s);  // Consumable.onConsume: on_consume_effects, potion contents
     p.send(entity_event_packet(p.eid, 9));  // finished using
     if (p.gamemode == 1) return;
     int rem = it.use_remainder;
@@ -470,7 +470,8 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
     int feet = world.get_block(fx, fy, fz);
     int bi = block_index(feet);
     bool in_fluid = is_fluid(uint16_t(feet));
-    if (in_fluid || in_sorted(tag_climbable, bi) || in_sorted(tag_fall_reset, bi) || p.gamemode == 1 || p.gamemode == 3) {
+    if (in_fluid || in_sorted(tag_climbable, bi) || in_sorted(tag_fall_reset, bi) || p.gamemode == 1 || p.gamemode == 3 ||
+        player_has_effect(p, "slow_falling") || player_has_effect(p, "levitation")) {
         p.g.fall_distance = 0;
     } else {
         if (dy < 0) p.g.fall_distance -= dy;
@@ -484,7 +485,8 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
                 double dist = p.g.fall_distance;
                 if ((on.size() > 4 && on.compare(on.size() - 4, 4, "_bed") == 0) || on == "minecraft:shelf_mushroom")
                     dist *= 1.0f - 0.5f;  // Properties.fallDistanceReduction(0.5F)
-                int dmg = int(std::floor((dist + 1.0E-6 - 3.0) * mult));
+                int dmg = int(std::floor((dist + 1.0E-6 - player_attribute(p, "safe_fall_distance")) * mult *
+                                         player_attribute(p, "fall_damage_multiplier")));
                 if (dmg > 0) hurt(p, float(dmg), "fall");
             }
             p.g.fall_distance = 0;
@@ -570,6 +572,10 @@ inline void save_player_extra(const Player& p, std::ostream& f) {
     f << "vitals " << g.health << ' ' << g.food << ' ' << g.saturation << ' ' << g.exhaustion << ' '
       << g.fall_distance << ' ' << g.dead << '\n';
     f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
+    for (auto& e : g.effects)  // "effect id duration amplifier ambient visible icon", hidden chain as "effect_hidden ..."
+        for (const EffectInstance* x = &e; x; x = x->hidden.get())
+            f << (x == &e ? "effect " : "effect_hidden ") << x->id << ' ' << x->duration << ' ' << x->amp << ' ' << x->ambient
+              << ' ' << x->visible << ' ' << x->icon << '\n';
     for (size_t i = 0; i < p.inv.size(); i++)
         if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
 }
@@ -578,6 +584,16 @@ inline void load_player_extra(Player& p, std::istream& f) {
     for (std::string key; f >> key;) {
         if (key == "vitals") f >> p.g.health >> p.g.food >> p.g.saturation >> p.g.exhaustion >> p.g.fall_distance >> p.g.dead;
         else if (key == "xp") f >> p.g.xp_level >> p.g.xp_progress >> p.g.xp_total;
+        else if (key == "effect" || key == "effect_hidden") {
+            EffectInstance x;
+            f >> x.id >> x.duration >> x.amp >> x.ambient >> x.visible >> x.icon;
+            if (key == "effect") p.g.effects.push_back(std::move(x));
+            else if (!p.g.effects.empty()) {
+                EffectInstance* t = &p.g.effects.back();
+                while (t->hidden) t = t->hidden.get();
+                t->hidden = std::make_unique<EffectInstance>(std::move(x));
+            }
+        }
         else if (key == "dmg") {
             int slot, d;
             if (f >> slot >> d && slot >= 0 && slot < int(p.inv.size())) p.inv[size_t(slot)].damage = d;

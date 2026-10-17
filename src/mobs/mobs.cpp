@@ -321,6 +321,7 @@ void mobs_save_all() { save_all_entities(); }
 void player_entity_respawned(Player& p) {
     PlayerEntity* pe = player_entity(p);
     if (!pe) return;
+    effects_player_respawned(p);
     std::vector<Player*> w = pe->trk.watchers;
     for (Player* q : w) track_remove(*pe, *q);
     pe->sync();

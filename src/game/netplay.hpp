@@ -46,7 +46,7 @@ inline void sync_player_data(Player& p) {
     auto& n = p.net;
     auto& g = p.g;
     bool flying_pose = n.fall_flying && !p.on_ground;
-    int flags = (g.sneaking ? 0x02 : 0) | (g.sprinting ? 0x08 : 0) | (flying_pose ? 0x80 : 0);
+    int flags = (g.sneaking ? 0x02 : 0) | (g.sprinting ? 0x08 : 0) | (flying_pose ? 0x80 : 0) | g.effect_flags;
     int pose = g.dead ? 7                                                                  // DYING
              : flying_pose ? 1                                                             // FALL_FLYING
              : g.sneaking && !n.flying && p.gamemode != 3 ? 5 : 0;                         // CROUCHING / STANDING
