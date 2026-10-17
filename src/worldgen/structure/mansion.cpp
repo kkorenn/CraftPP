@@ -351,7 +351,7 @@ struct MansionPiece : TemplatePiece {
       else if (marker == "ChestEast") chest = chest.with("facing", rotate(rot, Dir::EAST));
       else if (marker == "ChestSouth") chest = chest.with("facing", rotate(rot, Dir::SOUTH));
       else if (marker == "ChestNorth") chest = chest.with("facing", rotate(rot, Dir::NORTH));
-      createChest(level, bb, random, pos, chest);
+      createChest(level, bb, random, pos, "minecraft:chests/woodland_mansion", chest);
       return;
     }
     int mobs, type;

@@ -323,7 +323,8 @@ inline void register_vanilla_commands() {
         if (c.is("destroy") && world.get_block(x, y, z) != blocks::air) batch.set(x, y, z, blocks::air);  // ponytail: no drops
         bool ok = batch.set(x, y, z, b.state);
         batch.flush();
-        if (!ok) throw err("commands.setblock.failed");
+        if (b.nbt && set_block_nbt_hook) set_block_nbt_hook(x, y, z, *b.nbt);
+        if (!ok && !b.nbt) throw err("commands.setblock.failed");
         c.success(tr("commands.setblock.success", {x, y, z}), true);
         return 1;
     });

@@ -52,7 +52,7 @@ struct IglooPiece : TemplatePiece {
   void handleDataMarker(const std::string& marker, BlockPos pos, Level& level, RandomSource& random, const BoundingBox&) override {
     if (marker != "chest") return;
     level.set(pos, blocks::air);
-    if (Blocks::get().is(level.get(pos.below()), "chest")) random.nextLong();
+    if (Blocks::get().is(level.get(pos.below()), "chest")) level.setLootTable(pos.below(), "minecraft:chests/igloo_chest", random.nextLong());
   }
   void postProcess(Level& level, RandomSource& random, const BoundingBox& chunkBB, int cx, int cz, BlockPos ref) override {
     PlaceSettings s = iglooSettings(settings.rotation, *spec);
@@ -106,7 +106,9 @@ struct ShipwreckPiece : TemplatePiece, ShipwreckHandle {
   ShipwreckPiece(const std::string& id, BlockPos pos, Rotation r, bool beached)
       : TemplatePiece(0, id, shipwreckSettings(r), pos), beached(beached) {}
   void handleDataMarker(const std::string& marker, BlockPos pos, Level& level, RandomSource& random, const BoundingBox&) override {
-    if (marker == "map_chest" || marker == "treasure_chest" || marker == "supply_chest") setLootTable(level, random, pos.below());
+    if (marker == "map_chest") setLootTable(level, random, pos.below(), "minecraft:chests/shipwreck_map");
+    else if (marker == "treasure_chest") setLootTable(level, random, pos.below(), "minecraft:chests/shipwreck_treasure");
+    else if (marker == "supply_chest") setLootTable(level, random, pos.below(), "minecraft:chests/shipwreck_supply");
   }
   bool tooBig() const override { return tmpl->size.x > 32 || tmpl->size.y > 32; }
   int beachedPosition(int minY, RandomSource& random) const override { return minY - tmpl->size.y / 2 - random.nextInt(3); }
@@ -187,7 +189,7 @@ struct OceanRuinPiece : TemplatePiece {
   void handleDataMarker(const std::string& marker, BlockPos pos, Level& level, RandomSource& random, const BoundingBox&) override {
     if (marker == "chest") {
       level.set(pos, BS(blocks::chest).with("waterlogged", hasWater(level.get(pos))));
-      random.nextLong();  // ChestBlockEntity.setLootTable
+      level.setLootTable(pos, large ? "minecraft:chests/underwater_ruin_big" : "minecraft:chests/underwater_ruin_small", random.nextLong());
     } else if (marker == "drowned") {
       level.addMob(entity_types::drowned, pos, true);
       level.set(pos, pos.y > SEA_LEVEL ? blocks::air : blocks::water);

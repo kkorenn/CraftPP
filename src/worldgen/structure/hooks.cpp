@@ -6,6 +6,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "commands/nbt.hpp"
 #include "worldgen/features.hpp"
 #include "worldgen/material.hpp"
 #include "worldgen/overworld.hpp"
@@ -122,6 +123,27 @@ class RegionLevel : public Level {
     if (c && c->chunk) c->chunk->structure_mobs.push_back({type, p.x + 0.5, double(p.y), p.z + 0.5, persistent, heal, finalize});
   }
   void markPostProcessing(int x, int y, int z) override { blockLevel().mark_post_processing({x, y, z}); }
+  void setLootTable(BlockPos p, const std::string& table, int64_t seed) override {
+    worldgen::ProtoChunk* c = r_.chunk(p.x >> 4, p.z >> 4);
+    if (!c || !c->chunk || !r_.writable(p.x, p.z)) return;
+    int type = bs::R().block(bs::R().block_of(c->get(p.x & 15, p.y, p.z & 15))).block_entity;
+    if (type < 0) return;
+    BlockEntity* be = blockLevel().block_entity({p.x, p.y, p.z});
+    if (!be) {  // blocks set through the region have no entry yet (the server creates one on first use)
+      c->chunk->block_entities.push_back({uint8_t(p.x & 15), uint8_t(p.z & 15), int16_t(p.y), type, {}});
+      be = &c->chunk->block_entities.back();
+    }
+    {
+      be->type = type;
+      Nbt n = Nbt::compound();
+      n.set("LootTable", Nbt::str(table));
+      n.set("LootTableSeed", Nbt::num(Nbt::Long, seed));
+      Writer w;
+      w.u8(Nbt::Compound);
+      nbt_payload(w, n);
+      be->nbt = std::move(w.b);
+    }
+  }
   void updatePlacedShapes(BlockPos mn, BlockPos mx, const std::vector<BlockPos>& placed) override {
     namespace feat = worldgen::feat;
     feat::Level& l = blockLevel();

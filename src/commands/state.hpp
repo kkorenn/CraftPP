@@ -18,6 +18,7 @@ inline std::recursive_mutex cmd_mtx;
 inline std::string server_dir = ".";  // where ops.json etc. live (directory of server.properties)
 inline bool autosave_off = false;  // /save-off (main.cpp autosave checks it)
 inline std::mt19937_64 cmd_rng{std::random_device{}()};
+inline void (*set_block_nbt_hook)(int x, int y, int z, const Nbt& nbt) = nullptr;
 
 inline Writer pkt(int id) { Writer w; w.varint(id); return w; }
 inline void send_text(Player& p, const Text& t, bool overlay = false) {
