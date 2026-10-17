@@ -2,14 +2,24 @@
 
 Minecraft Java server in C++, targeting **26.3** (protocol 777).
 
-## Setup (once)
+## Run a release
+Download `craftpp-<version>-<platform>.tar.gz` from GitHub Releases (linux-aarch64 for a Raspberry Pi with a
+64-bit OS), extract it, `cd` into the folder and run `./craftpp`. Everything it needs (`data/`) is inside.
+
+## Build from source
+The vanilla 26.3 datapack and generator reports are checked in (`data/vanilla`, `data/reports`), so a plain clone
+builds, tests and runs. CI (`.github/workflows/ci.yml`) builds and tests every push; publishing a GitHub release
+runs `.github/workflows/release.yml`, which attaches Linux x86_64/aarch64 and macOS arm64 builds.
+
+## Developer setup (porting from vanilla, regenerating data)
 ```
 mkdir -p vanilla && curl -o vanilla/server.jar https://piston-data.mojang.com/v1/objects/33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c/server.jar
 cd vanilla && java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --server --output generated && cd ..
 java -jar tools/vineflower.jar --only=net/minecraft vanilla/versions/26.3/server-26.3.jar vanilla/src   # also extracts data/
 python3 tools/gen_data.py
 ```
-Needs Java 25 for the vanilla jar.
+Needs Java 25 for the vanilla jar. `vanilla/` (decompiled source, jars) is local only; after a version bump, copy
+`vanilla/src/data` to `data/vanilla` and `vanilla/generated/reports` to `data/reports`.
 
 ## Build + run
 ```

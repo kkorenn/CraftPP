@@ -65,7 +65,7 @@ Registry::Registry() {
 
   // Block tags: load every file, resolve references recursively.
   std::unordered_map<std::string, std::vector<std::string>> raw;
-  const std::string root = "vanilla/src/data/minecraft/tags/block";
+  const std::string root = "data/vanilla/minecraft/tags/block";
   for (auto& e : std::filesystem::recursive_directory_iterator(root)) {
     if (e.path().extension() != ".json") continue;
     std::string rel = e.path().generic_string();  // <root>/<name>.json
@@ -93,7 +93,7 @@ Registry::Registry() {
   };
   for (auto& [k, v] : raw) resolve(k);
 
-  const std::string froot = "vanilla/src/data/minecraft/tags/fluid";
+  const std::string froot = "data/vanilla/minecraft/tags/fluid";
   std::unordered_map<std::string, std::vector<std::string>> fraw;
   for (auto& e : std::filesystem::directory_iterator(froot))
     if (e.path().extension() == ".json") {

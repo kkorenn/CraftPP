@@ -5,7 +5,7 @@ import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+ITEMS = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:item"]["entries"]
 ENTITY = ids("entity_types")
 def pos(x, y, z): return struct.pack(">q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF))
 
@@ -99,7 +99,7 @@ assert struct.unpack(">f", h.take(4))[0] == 20.0
 print("death + respawn ok")
 
 # 5. Crafting table: place one, use it -> open_screen with the crafting menu type.
-REG = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))
+REG = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))
 c.send(PLAY_SB["chat_command"], string("gamemode creative"))
 wait(c, PLAY_CB["game_event"], lambda b: b.d[b.i] == 3)
 c.send(PLAY_SB["set_creative_mode_slot"], struct.pack(">h", 36) + varint(1) + varint(item("crafting_table")) + varint(0) + varint(0))

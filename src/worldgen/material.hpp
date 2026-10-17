@@ -71,7 +71,7 @@ class MaterialSystem {
   // Reads noise_settings/<settingsId> (default_block, sea_level, material_rule, noise.min_y/height,
   // noise_router.chunk_surface_level) plus the referenced rules/conditions and biome temperatures; block states from data/blocks.bin.
   explicit MaterialSystem(RandomState& randomState, const std::string& settingsId = "minecraft:overworld",
-                          const std::string& dataRoot = "vanilla/src/data",
+                          const std::string& dataRoot = "data/vanilla",
                           bool keepLoader = false);  // true: keep blocks table so stateId/parse*File work later
   ~MaterialSystem();
 
