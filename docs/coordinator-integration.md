@@ -64,3 +64,13 @@ run: 884736 blocks and 13824 biome cells, zero mismatches. A separate full-featu
 pipeline probe measured 30.4 ms/chunk and 22 MiB peak RSS on macOS arm64, excluding
 runtime lighting and structures. Fossil/template features and possible Java
 HashSet tree-bin iteration differences remain known limitations.
+
+## Client selectors after respawn
+
+Death replaces the vanilla client's LocalPlayer, whose permissions start empty.
+CraftPP now resends the permission entity event and command tree after respawn,
+in vanilla's event-before-tree order. This fixes client-side rejection of `@s`
+and `@a` while explicit names still parse. The commands regression checks the
+restored permission event and tree after respawn and executes both selectors.
+The isolated selector suite and its full integration suite include restart,
+fuzzing, stress and Bukkit plugin checks.

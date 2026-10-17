@@ -25,6 +25,8 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 - Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md.
 
+- Client selectors: resend permission status and command tree after death/respawn, in vanilla packet order; regression covers `@s` and `@a`.
+
 - Feature ordering: FIFO generation tickets and x-major decoration layers, failed-prefetch recovery, synchronized palette writes visible to lighting. Surface-only comparison seed 12345/radius 1 matched all blocks and biomes.
 
 ## In progress (branches)
