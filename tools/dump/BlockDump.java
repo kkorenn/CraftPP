@@ -91,6 +91,7 @@ public class BlockDump {
                 if (fs.getValue(FlowingFluid.FALLING)) fl |= 128;
             }
             f |= (long) fl << 42;
+            f |= (long) s.getPistonPushReaction().ordinal() << 50;
             if (i > 0) st.append(',');
             st.append('[').append(id).append(',').append(f).append(']');
         }

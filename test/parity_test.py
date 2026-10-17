@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+ITEMS = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:item"]["entries"]
 def item(n): return ITEMS["minecraft:" + n]["protocol_id"]
 def cmd(c, s): c.send(PLAY_SB["chat_command"], string(s))
 def health(c, pred):

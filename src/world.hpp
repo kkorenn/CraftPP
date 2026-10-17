@@ -2,6 +2,7 @@
 #include "gen/ids.hpp"
 #include "net.hpp"
 #include "light/light.hpp"
+#include "storage/region.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,6 +12,8 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
+#include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -19,6 +22,7 @@
 #include <deque>
 #include <future>
 #include <thread>
+#include <chrono>
 #include <cmath>
 #include <iterator>
 #include <string>
@@ -146,13 +150,21 @@ struct ChunkLevelData {
 };
 
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
-// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+// saved NBT (saveCustomOnly: nameless compound incl. the 0x0a tag byte). The chunk packet sends
+// block_entity_update_tag(type, nbt) instead (most types send {}). Chunk::set drops the one at a position whose
+// block changes (same block, other state: kept). Live game state: src/containers/block_entity.hpp.
 struct BlockEntity {
     uint8_t x, z;
     int16_t y;
     int type;
     std::vector<uint8_t> nbt{0x0a, 0x00};
 };
+
+inline int state_block_index(int state) {  // block index (position in BLOCK_FIRST_STATE)
+    return int(std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state) - std::begin(BLOCK_FIRST_STATE)) - 1;
+}
+// BlockEntity.getUpdateTag: set by src/containers (nullptr = send the saved NBT).
+inline void (*block_entity_update_tag)(const BlockEntity& e, Writer& w) = nullptr;
 
 struct Chunk {
     int cx = 0, cz = 0;
@@ -171,8 +183,10 @@ struct Chunk {
     std::mutex m;        // guards sections + body against concurrent edit + encode
     std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
     bool on_disk = false;
+    std::chrono::steady_clock::time_point saved_at{};  // last save (World::save_dirty's 10 s cooldown)
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::atomic<bool> light_ready{false};  // its 3x3 is lit (light::ensure_lit needs no light lock)
     std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     explicit Chunk(int min_y = MIN_Y, int height = HEIGHT) : min_y(min_y), sections(size_t(height / 16)) {}
@@ -181,10 +195,11 @@ struct Chunk {
         return sections[(y - min_y) >> 4].blocks.get((((y - min_y) & 15) * 16 + z) * 16 + x);
     }
     void set(int x, int y, int z, uint16_t s) {
+        uint16_t old = block_entities.empty() ? s : get(x, y, z);
         sections[(y - min_y) >> 4].blocks.set((((y - min_y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
         edits++;
-        if (!block_entities.empty())
+        if (!block_entities.empty() && state_block_index(old) != state_block_index(s))
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..height/4-1 (quart rows from min_y).
@@ -270,7 +285,8 @@ inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const W
     w.varint(int32_t(c.block_entities.size() + portals.size()));
     for (auto& e : c.block_entities) {
         w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
-        w.bytes(e.nbt.data(), e.nbt.size());
+        if (block_entity_update_tag) block_entity_update_tag(e, w);
+        else w.bytes(e.nbt.data(), e.nbt.size());
     }
     for (auto [si, i] : portals) {
         uint16_t state = c.sections[size_t(si)].blocks.get(i);
@@ -390,125 +406,27 @@ struct ChunkPool {
 };
 
 inline void generate_flat(Chunk& c);
+struct World;
+// Called on a worker thread once a chunk is loaded or generated, before it is published (src/containers).
+inline void (*chunk_loaded_hook)(World* w, const ChunkPtr& c) = nullptr;
+// A block of `w` changed (World::set_block or the level tick writer; tick thread): src/containers.
+inline void (*block_changed_hook)(World* w, int x, int y, int z, int old_state, int new_state) = nullptr;
 
-// On-disk chunk: c.<x>.<z>.bin = "CPP2", raw size (u32 LE), then zlib of the 24 sections in network form
-// (blocks then biomes paletted containers). "CPP1" (uncompressed flat arrays) is still read.
-// ponytail: one file per chunk; switch to Anvil region files (NBT, block names) for vanilla compatibility.
 inline std::string world_dir = "world";  // server.properties level-name
 
-// <world_dir>/level.dat: per-world settings as key=value text lines (vanilla keeps these in level.dat NBT).
-// Shared by all subsystems: read the map, change your keys, write it back (other keys are preserved).
-// Keys so far: level-seed, level-type.
-inline std::string level_data_path() { return world_dir + "/level.dat"; }
-inline std::map<std::string, std::string> read_level_data() {
-    std::map<std::string, std::string> kv;
-    std::ifstream f(level_data_path());
-    for (std::string line; std::getline(f, line);)
-        if (auto eq = line.find('='); eq != std::string::npos && line[0] != '#') kv[line.substr(0, eq)] = line.substr(eq + 1);
-    return kv;
-}
-inline void write_level_data(const std::map<std::string, std::string>& changes) {
-    auto kv = read_level_data();
-    auto old = kv;
-    for (auto& [k, v] : changes) kv[k] = v;
-    if (kv == old && std::filesystem::exists(level_data_path())) return;  // unchanged: spare the SD card
-    std::filesystem::create_directories(world_dir);
-    std::string path = level_data_path();
-    {
-        std::ofstream f(path + ".tmp");
-        for (auto& [k, v] : kv) f << k << '=' << v << '\n';
-    }
-    std::filesystem::rename(path + ".tmp", path);
-}
+// Per-world settings (src/storage/level.cpp): a key=value map shared by all subsystems (read it, change your
+// keys, write it back; other keys are kept). Stored in vanilla 26.3 files: level.dat, data/minecraft/*.dat and
+// dimensions/minecraft/overworld/data/minecraft/world_border.dat; keys vanilla has no field for are kept in a
+// "CraftPP" compound of level.dat (vanilla drops it when it rewrites level.dat; values are then rebuilt from
+// the vanilla fields). Keys: level-seed, level-type, spawn-x/y/z, and save_level's (commands/state.hpp).
+std::map<std::string, std::string> read_level_data();  // storage/level.cpp
+void write_level_data(const std::map<std::string, std::string>& changes);
 
-inline std::string chunk_path(const std::string& dir, int cx, int cz) {
-    return dir + "/chunks/c." + std::to_string(cx) + "." + std::to_string(cz) + ".bin";
-}
-inline constexpr uint32_t CHUNK_MAGIC_V1 = 0x43505031, CHUNK_MAGIC = 0x43505032;  // "CPP1", "CPP2"
-
-// Optional chunk-file sections owned by other subsystems (structures: starts + references), after block entities.
+// Vanilla Anvil regions, with legacy CPP1/CPP2 readers in storage/world_io.cpp.
 inline std::array<std::function<void(const Chunk&, Writer&)>, DIM_COUNT> chunk_save_extra;
 inline std::array<std::function<void(Chunk&, Reader&)>, DIM_COUNT> chunk_load_extra;
-
-inline bool load_chunk(const std::string& dir, Chunk& c) {
-    std::ifstream f(chunk_path(dir, c.cx, c.cz), std::ios::binary);
-    uint32_t magic = 0, raw = 0;
-    if (!f.read(reinterpret_cast<char*>(&magic), 4)) return false;
-    if (magic == CHUNK_MAGIC_V1) {
-        std::vector<uint16_t> b(4096 + 64);
-        for (auto& s : c.sections) {
-            if (!f.read(reinterpret_cast<char*>(b.data()), std::streamsize(b.size() * 2))) return false;
-            for (int i = 0; i < 4096; i++) s.blocks.set(i, b[size_t(i)]);
-            for (int i = 0; i < 64; i++) s.biomes.set(i, b[size_t(4096 + i)]);
-            s.blocks.compact(), s.biomes.compact();
-        }
-        return c.on_disk = true;
-    }
-    if (magic != CHUNK_MAGIC || !f.read(reinterpret_cast<char*>(&raw), 4) || raw > (4u << 20)) return false;
-    std::vector<uint8_t> z(std::istreambuf_iterator<char>(f), {}), out(raw);
-    uLongf n = raw;
-    if (uncompress(out.data(), &n, z.data(), uLong(z.size())) != Z_OK || n != raw) return false;
-    Reader r(out);
-    for (auto& s : c.sections) s.blocks.read(r), s.biomes.read(r);
-    if (r.i < out.size())  // block entities: count, then x z y type nbt-length nbt
-        for (int n = r.varint(); n > 0; n--) {
-            BlockEntity e;
-            e.x = r.u8(), e.z = r.u8(), e.y = int16_t(r.varint()), e.type = r.varint();
-            int len = r.varint();
-            e.nbt.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + size_t(len)));
-            r.i += size_t(len);
-            c.block_entities.push_back(std::move(e));
-        }
-    if (r.i < out.size()) {  // light (light::save)
-        size_t len = size_t(r.varint());
-        if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
-        r.i += len;
-    }
-    if (r.i < r.n && r.u8() == 1) {  // level data, after light (absent in older files: processed, no ticks)
-        c.level.post_processed = r.u8();
-        c.level.post.resize(size_t(r.varint()));
-        for (auto& v : c.level.post) v = uint32_t(r.i32());
-        c.level.ticks.resize(size_t(r.varint()));
-        for (auto& b : c.level.ticks) b = r.u8();
-    }
-    if (r.i < out.size() && chunk_load_extra[c.dimension]) chunk_load_extra[c.dimension](c, r);  // structures (starts + references)
-    return c.on_disk = true;
-}
-
-inline void save_chunk(const std::string& dir, Chunk& c) {
-    std::filesystem::create_directories(dir + "/chunks");
-    std::string path = chunk_path(dir, c.cx, c.cz), tmp = path + ".tmp";
-    Writer w;
-    uint32_t light_version;
-    std::vector<uint8_t> light;
-    if (!c.fullbright) light = light::save(c, light_version);  // before c.m: lock order is light, then chunk
-    else light_version = c.light_version;
-    {
-        std::lock_guard lock(c.m);
-        for (auto& s : c.sections) s.blocks.write(w), s.biomes.write(w);
-        w.varint(int32_t(c.block_entities.size()));
-        for (auto& e : c.block_entities)
-            w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
-        w.varint(int32_t(light.size())).bytes(light);
-        w.u8(1).u8(c.level.post_processed).varint(int32_t(c.level.post.size()));
-        for (uint32_t v : c.level.post) w.i32(int32_t(v));
-        w.varint(int32_t(c.level.ticks.size()));
-        w.bytes(c.level.ticks.data(), c.level.ticks.size());
-        if (chunk_save_extra[c.dimension]) chunk_save_extra[c.dimension](c, w);
-        c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
-    }
-    std::vector<uint8_t> z(compressBound(uLong(w.b.size())));
-    uLongf n = uLongf(z.size());
-    compress2(z.data(), &n, w.b.data(), uLong(w.b.size()), 1);  // level 1: ~3x faster than 6, barely bigger
-    {
-        std::ofstream f(tmp, std::ios::binary);
-        uint32_t raw = uint32_t(w.b.size());
-        f.write(reinterpret_cast<const char*>(&CHUNK_MAGIC), 4).write(reinterpret_cast<const char*>(&raw), 4);
-        f.write(reinterpret_cast<const char*>(z.data()), std::streamsize(n));
-    }
-    std::filesystem::rename(tmp, path);  // atomic replace: a crash never leaves a half-written chunk
-    c.on_disk = true;
-}
+bool load_chunk(const std::string& dir, Chunk& c);
+void save_chunk(const std::string& dir, Chunk& c);
 
 inline ChunkPool chunk_pool;  // shared by every World (dimension)
 inline bool is_nether_portal(uint16_t s) { return s == blocks::nether_portal || s == blocks::nether_portal + 1; }
@@ -577,7 +495,7 @@ struct World {
         return c->get(x & 15, y, z & 15);
     }
 
-    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded.
+    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded and its 3x3 is lit.
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
@@ -586,6 +504,20 @@ struct World {
                 if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
                 produce(cx, cz, *job, true);
             });
+        else if (ChunkPtr c = get_if_loaded(cx, cz); c && !fullbright && !c->light_ready) {
+            // Loaded by a synchronous get_ptr (only the chunk itself lit): light its 3x3 on the pool, not on
+            // the tick thread that sends it.
+            auto lit = std::make_shared<std::promise<ChunkPtr>>();
+            f = lit->get_future().share();
+            pool.submit([this, c, lit] {
+                try {
+                    light::ensure_lit(*this, *c);
+                    lit->set_value(c);
+                } catch (...) {
+                    lit->set_exception(std::current_exception());
+                }
+            });
+        }
         return f;
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
@@ -622,7 +554,7 @@ struct World {
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
         uint16_t old;
         {
-            std::unique_lock light_lock(light::mutex(), std::defer_lock);  // the light engine reads chunks under it
+            std::unique_lock light_lock(light::mutex(*this), std::defer_lock);  // the light engine reads chunks under it
             if (!fullbright) light_lock.lock();
             {
                 std::lock_guard lock(c->m);
@@ -630,13 +562,14 @@ struct World {
                 c->set(x & 15, y, z & 15, state);
                 c->dirty = true;
             }
-            if (!fullbright) light::block_changed(x, y, z, old, state);
+            if (!fullbright) light::block_changed(*this, x, y, z, old, state);
         }
         note_block(x, y, z, old, state);
         return true;
     }
     // Shared by World::set_block and the level tick block writer.
     void note_block(int x, int y, int z, uint16_t old, uint16_t state) {
+        if (block_changed_hook && old != state) block_changed_hook(this, x, y, z, old, state);
         if (is_nether_portal(old) != is_nether_portal(state)) {
             std::lock_guard pl(m);
             if (is_nether_portal(state)) portals.insert({x, y, z});
@@ -645,12 +578,16 @@ struct World {
         }
     }
 
-    // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
-    std::function<void()> on_saved;  // after the dirty chunks are written (structure piece state)
-    std::mutex save_m;                // autosave thread vs /save-all and stop on the tick thread: one shared .tmp per chunk
-    int save_dirty() {
+    // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds, then writes
+    // the queued chunks to the region files in one batch. Like vanilla's ChunkMap.saveChunksEagerly, a modified
+    // chunk is written at most every 10 s while it keeps changing; `all` (save-all, shutdown) writes everything.
+    std::function<void()> on_saved;          // after the dirty chunks are written (structure piece state)
+    std::function<void(bool all)> on_flush;  // before the region writes (proto chunk eviction, worldgen)
+    std::mutex save_m;                       // autosave thread vs /save-all and stop on the tick thread
+    int save_dirty(bool all = false) {
         std::lock_guard save_lock(save_m);
         std::vector<ChunkPtr> dirty, idle;
+        auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard lock(m);
             for (auto& [k, c] : chunks) {
@@ -658,31 +595,27 @@ struct World {
                     std::lock_guard cl(c->m);  // uncompressed frames are ~75 KB: only for the sends right after generation
                     c->body.reset();
                 }
-                if (c->dirty) dirty.push_back(c);
-                else if (!viewed(k) && c.use_count() == 1) idle.push_back(c);
+                bool idle_chunk = !viewed(k) && c.use_count() == 1;
+                if (c->dirty && (all || idle_chunk || now - c->saved_at >= std::chrono::seconds(10))) dirty.push_back(c);
+                else if (idle_chunk) idle.push_back(c);
             }
         }
         int saved = int(dirty.size());
-        for (auto& c : dirty) save_chunk(dir, *c);
+        for (auto& c : dirty) save_chunk(dir, *c), c->saved_at = now;
         if (on_saved) on_saved();
         for (auto& c : idle)
-            if (cache_generated && !c->on_disk) save_chunk(dir, *c);
-        std::lock_guard lock(m);
-        if (portals_dirty) {  // ponytail: whole set rewritten; fine for hundreds of portal blocks
-            portals_dirty = false;
-            std::filesystem::create_directories(dir);
-            {
-                std::ofstream f(dir + "/portals.txt.tmp");
-                for (auto& [x, y, z] : portals) f << x << ' ' << y << ' ' << z << '\n';
+            if (cache_generated && !c->on_disk) save_chunk(dir, *c), c->saved_at = now;
+        if (on_flush) on_flush(all);
+        storage::flush();
+        {
+            std::lock_guard lock(m);
+            for (auto& c : dirty) idle.push_back(std::move(c));
+            for (auto& c : idle) {
+                Key k{c->cx, c->cz};
+                auto it = chunks.find(k);  // use_count 2 = map + `idle`: nobody else picked it up meanwhile
+                if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
+                    chunks.erase(it);
             }
-            std::filesystem::rename(dir + "/portals.txt.tmp", dir + "/portals.txt");
-        }
-        for (auto& c : dirty) idle.push_back(std::move(c));
-        for (auto& c : idle) {
-            Key k{c->cx, c->cz};
-            auto it = chunks.find(k);  // use_count 2 = map + `idle`: nobody else picked it up meanwhile
-            if (it != chunks.end() && !viewed(k) && it->second.use_count() == 2 && !c->dirty && (c->on_disk || !cache_generated))
-                chunks.erase(it);
         }
 #ifdef __GLIBC__
         malloc_trim(0);  // hand freed chunk memory (and the join burst buffers) back to the OS
@@ -692,6 +625,25 @@ struct World {
     size_t loaded() {
         std::lock_guard lock(m);
         return chunks.size();
+    }
+    // Snapshot predicate: chunk within `margin` of a player's view square, or loaded / being loaded here. What
+    // worldgen and lighting keep in memory (World::on_flush -> Pipeline::evict).
+    std::function<bool(int, int)> near_view(int margin) {
+        std::lock_guard lock(m);
+        auto cols = std::make_shared<std::unordered_map<int, std::pair<int, int>>>();  // x -> viewed z range
+        for (auto& [k, n] : viewers) {
+            auto [it, fresh] = cols->try_emplace(k.first, k.second, k.second);
+            if (!fresh) it->second.first = std::min(it->second.first, k.second), it->second.second = std::max(it->second.second, k.second);
+        }
+        auto held = std::make_shared<std::set<Key>>();
+        for (auto& [k, c] : chunks) held->insert(k);
+        for (auto& [k, f] : inflight) held->insert(k);
+        return [cols, held, margin](int cx, int cz) {
+            if (held->count({cx, cz})) return true;
+            for (int x = cx - margin; x <= cx + margin; x++)
+                if (auto it = cols->find(x); it != cols->end() && it->second.first - margin <= cz && cz <= it->second.second + margin) return true;
+            return false;
+        };
     }
 
     // View square bookkeeping (ViewTicket): +1/-1 for every chunk of the square.
@@ -808,12 +760,10 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
             c->level.post_processed = false;
-            generator(*c);
-            // Pipeline::on_take has already exposed this chunk to lighting readers.
-            std::lock_guard light_lock(light::mutex());
-            for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
+            generator(*c);  // Pipeline::take compacts the palettes before lighting can read them
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);
+        if (chunk_loaded_hook) chunk_loaded_hook(this, c);
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);

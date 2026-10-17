@@ -82,6 +82,21 @@ inline void place_end_podium(World& w, int ox, int oy, int oz, bool active) {
     for (auto& t : torch) change_block(ox + t[0], oy + 2, oz + t[1], t[2]);
 }
 
+// EndGatewayFeature.delayedExitSearch at `x, y, z` (EnderDragonFight.spawnNewGateway, y 75): the gateway block in
+// a bedrock cross with air around. Worldgen gateways (end_gateway feature) live in worldgen/feature_nether_end.cpp.
+inline void place_end_gateway(World& w, int ox, int oy, int oz) {
+    InLevel in_level(&w);
+    for (int z = oz - 1; z <= oz + 1; z++)
+        for (int y = oy - 2; y <= oy + 2; y++)
+            for (int x = ox - 1; x <= ox + 1; x++) {
+                bool sx = x == ox, sy = y == oy, sz = z == oz, end = std::abs(y - oy) == 2;
+                int state = sx && sy && sz ? blocks::end_gateway
+                          : sy ? blocks::air
+                          : (end && sx && sz) || ((sx || sz) && !end) ? blocks::bedrock : blocks::air;
+                change_block(x, y, z, state);
+            }
+}
+
 // EnderDragonFight state that matters without the dragon: where the exit portal is and whether it is open.
 // Persisted in <end dir>/dragon_fight.txt.
 struct DragonFight {

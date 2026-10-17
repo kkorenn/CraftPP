@@ -184,6 +184,7 @@ inline void respawn(Player& p) {
     p.g = [&] {
         PlayerGame g;
         g.next_container = p.g.next_container;
+        g.ender = std::move(p.g.ender), g.enchant_seed = p.g.enchant_seed;
         g.loaded = true;
         g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
         return g;
@@ -505,7 +506,8 @@ inline void vitals_tick(Player& p) {
     if (p.y < p.level->min_y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
-    if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
+    if (g.menu && !g.menu->still_valid(p)) close_container(p, true);
+    else if (g.container && !g.menu) {  // CraftingMenu.stillValid: table still there and within 8 blocks
         double dx = p.x - (g.table_x + 0.5), dy = p.y - (g.table_y + 0.5), dz = p.z - (g.table_z + 0.5);
         if (block_index(world.get_block(g.table_x, g.table_y, g.table_z)) != block_index(blocks::crafting_table) ||
             dx * dx + dy * dy + dz * dz > 64)
@@ -535,9 +537,13 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
     return false;
 }
 
+// Block interaction hook (src/containers): true when the block consumed the click (useItemOn / useWithoutItem).
+inline bool (*use_block_hook)(Player& p, int hand, int x, int y, int z, int face) = nullptr;
+
 // ServerPlayerGameMode.useItemOn. Returns 0 PASS, 1 SUCCESS (swing), 2 CONSUME (no swing).
 inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     if (p.g.dead) return 0;
+    if (use_block_hook && use_block_hook(p, hand, x, y, z, face)) return 1;
     int clicked = world.get_block(x, y, z);
     bool is_table = block_index(clicked) == block_index(blocks::crafting_table);
     if (p.gamemode == 3) {  // spectators can open menus but not use anything else
@@ -555,17 +561,33 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
     return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);  // block use, item useOn, BlockItem.place
 }
 
-// ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
-// "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
-inline void save_player_extra(const Player& p, std::ostream& f) {
+// ---------- persistence (players/data/<uuid>.dat, vanilla LivingEntity / Player / FoodData tags) ----------
+inline void (*save_player_containers)(const Player& p, Nbt& t) = nullptr;  // src/containers: EnderItems, XpSeed
+inline void (*load_player_containers)(Player& p, const Nbt& t) = nullptr;
+inline void save_player_extra(const Player& p, Nbt& t) {
     auto& g = p.g;
-    f << "vitals " << g.health << ' ' << g.food << ' ' << g.saturation << ' ' << g.exhaustion << ' '
-      << g.fall_distance << ' ' << g.dead << '\n';
-    f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
-    for (size_t i = 0; i < p.inv.size(); i++)
-        if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
+    t.set("Health", Nbt::real(Nbt::Float, g.health));
+    t.set("foodLevel", Nbt::num(Nbt::Int, g.food));
+    t.set("foodSaturationLevel", Nbt::real(Nbt::Float, g.saturation));
+    t.set("foodExhaustionLevel", Nbt::real(Nbt::Float, g.exhaustion));
+    t.set("fall_distance", Nbt::real(Nbt::Double, g.fall_distance));
+    t.set("DeathTime", Nbt::num(Nbt::Short, g.dead ? 1 : 0));
+    t.set("XpLevel", Nbt::num(Nbt::Int, g.xp_level));
+    t.set("XpP", Nbt::real(Nbt::Float, g.xp_progress));
+    t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
+    if (save_player_containers) save_player_containers(p, t);  // EnderItems, XpSeed
 }
-inline void load_player_extra(Player& p, std::istream& f) {
+inline void load_player_extra(Player& p, const Nbt& t) {
+    auto D = [&](const char* k, double d) { const Nbt* n = t.get(k); return n && n->is_num() ? n->as_double() : d; };
+    auto& g = p.g;
+    g.health = float(D("Health", 20)), g.food = int(D("foodLevel", 20));
+    g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
+    g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
+    g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+    if (load_player_containers) load_player_containers(p, t);
+}
+// Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
+inline void load_player_extra_txt(Player& p, std::istream& f) {
     f.clear();
     for (std::string key; f >> key;) {
         if (key == "vitals") f >> p.g.health >> p.g.food >> p.g.saturation >> p.g.exhaustion >> p.g.fall_distance >> p.g.dead;

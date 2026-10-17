@@ -111,6 +111,9 @@ struct BiomeSpawnInfo {
     }
 };
 inline std::vector<BiomeSpawnInfo> biome_spawns;  // by biome id
+// Structure.spawnOverrides by structure id ("minecraft:fortress"): per category, PIECE (vs STRUCTURE) box + spawns.
+struct SpawnOverride { bool set = false, piece = false; std::vector<SpawnerData> spawns; };
+inline std::unordered_map<std::string, std::array<SpawnOverride, CAT_COUNT>> structure_spawn_overrides;
 
 // ---------- tags ----------
 inline std::map<std::string, std::vector<uint16_t>> etype_tags, damage_tags, block_tags_ext, item_tags_ext, biome_tags;
@@ -250,6 +253,12 @@ inline bool load_mob_data(const std::string& path = "data/mobs.json") {
         bi.temperature = b["temp"].asFloat();
         biome_spawns.push_back(std::move(bi));
     }
+    for (auto& st : j["structure_spawns"].arr)
+        for (auto& c : st["cats"].arr) {
+            auto& o = structure_spawn_overrides[st["id"].asString()][size_t(c[0].asInt())];
+            o.set = true, o.piece = c[1].asBool();
+            for (auto& sp : c[2].arr) o.spawns.push_back({sp[0].asInt(), sp[1].asInt(), sp[2].asInt(), sp[3].asInt()});
+        }
     auto tags = [](const Json& o, std::map<std::string, std::vector<uint16_t>>& out) {
         for (auto& [k, v] : o.obj) {
             auto& vec = out[k];

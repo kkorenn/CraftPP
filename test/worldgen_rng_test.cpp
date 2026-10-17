@@ -1,4 +1,4 @@
-// Self-checks for src/worldgen/{random,noise,json}. Run from the repo root (reads vanilla/src/data).
+// Self-checks for src/worldgen/{random,noise,json}. Run from the repo root (reads data/vanilla).
 // Expected noise/xoroshiro values come from an independent Python re-derivation of the Java source
 // (float32 via numpy); java.util.Random values are well-known constants.
 #undef NDEBUG
@@ -117,7 +117,7 @@ int main() {
   {
     RandomState rs(-4172144997902289642LL, false), rs2(-4172144997902289642LL, false), legacy(1, true);
     int count = 0;
-    std::string root = "vanilla/src/data/minecraft/worldgen/noise/";
+    std::string root = "data/vanilla/minecraft/worldgen/noise/";
     for (auto& e : std::filesystem::recursive_directory_iterator(root)) {
       if (e.path().extension() != ".json") continue;
       std::string rel = e.path().string().substr(root.size());
@@ -149,7 +149,7 @@ int main() {
   }
   // --- BlendedNoise (overworld base_3d_noise)
   {
-    Json j = Json::parseFile("vanilla/src/data/minecraft/worldgen/density_function/overworld/base_3d_noise.json");
+    Json j = Json::parseFile("data/vanilla/minecraft/worldgen/density_function/overworld/base_3d_noise.json");
     assert(j["type"].asString() == "minecraft:old_blended_noise");
     BlendedNoise bn = BlendedNoise::fromJson(j);
     RandomState rs(0, false);
