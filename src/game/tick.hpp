@@ -232,6 +232,7 @@ inline void run_play_connection(const PlayerPtr& pp, void (*on_register)(const P
     run_on_tick([pp, on_register] {
         InLevel in_level(pp->level);
         on_register(pp);
+        if (std::find(players.begin(), players.end(), pp) == players.end()) return;  // refused (duplicate login)
         for (auto f : tick_detail::join_hooks) f(*pp);
     });
     std::vector<uint8_t> pkt;

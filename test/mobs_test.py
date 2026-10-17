@@ -225,6 +225,24 @@ def main(host, port):
     assert pump(c, 30, on_spawn), "no monster spawned at night"
     name = {v: k for k, v in ENTITY.items()}
     print(f"night spawning ok: {', '.join(name[t] for t in spawned.values())}")
+
+    # ---- nether natural spawning (biome natural_mob_spawns): zombified piglins / skeletons ----
+    # The test world's seed is random, so try a few spots until one is in a biome with an implemented mob.
+    nether = {ENTITY[n] for n in ("zombified_piglin", "skeleton")}
+    got = {}
+    def on_nether(pid, b):
+        if pid == PLAY_CB["add_entity"]:
+            e = add_entity(b)
+            if e[1] in nether: got[e[0]] = e[1]
+        return len(got) >= 1
+    for x, z in ((0, 0), (3000, 0), (0, -3000), (-3000, 3000), (6000, 6000)):
+        cmd(c, f"execute in minecraft:the_nether run tp Sam {x + .5} 64 {z + .5}")
+        if pump(c, 20, on_nether): break
+    assert got, "no zombified piglin / skeleton spawned in the nether"
+    print(f"nether spawning ok: {', '.join(name[t] for t in got.values())}")
+    cmd(c, "execute in minecraft:the_nether run kill @e[type=!player]")
+    cmd(c, f"execute in minecraft:overworld run tp Sam {sx} {sy} {sz}")
+    pump(c, 1.5, lambda pid, b: False)
     cmd(c, "gamerule spawn_mobs false")
     cmd(c, "time set noon")
     cmd(c, "kill @e[type=!player]")

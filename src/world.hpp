@@ -150,13 +150,21 @@ struct ChunkLevelData {
 };
 
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
-// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+// saved NBT (saveCustomOnly: nameless compound incl. the 0x0a tag byte). The chunk packet sends
+// block_entity_update_tag(type, nbt) instead (most types send {}). Chunk::set drops the one at a position whose
+// block changes (same block, other state: kept). Live game state: src/containers/block_entity.hpp.
 struct BlockEntity {
     uint8_t x, z;
     int16_t y;
     int type;
     std::vector<uint8_t> nbt{0x0a, 0x00};
 };
+
+inline int state_block_index(int state) {  // block index (position in BLOCK_FIRST_STATE)
+    return int(std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state) - std::begin(BLOCK_FIRST_STATE)) - 1;
+}
+// BlockEntity.getUpdateTag: set by src/containers (nullptr = send the saved NBT).
+inline void (*block_entity_update_tag)(const BlockEntity& e, Writer& w) = nullptr;
 
 struct Chunk {
     int cx = 0, cz = 0;
@@ -178,6 +186,7 @@ struct Chunk {
     std::chrono::steady_clock::time_point saved_at{};  // last save (World::save_dirty's 10 s cooldown)
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::atomic<bool> light_ready{false};  // its 3x3 is lit (light::ensure_lit needs no light lock)
     std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     explicit Chunk(int min_y = MIN_Y, int height = HEIGHT) : min_y(min_y), sections(size_t(height / 16)) {}
@@ -186,10 +195,11 @@ struct Chunk {
         return sections[(y - min_y) >> 4].blocks.get((((y - min_y) & 15) * 16 + z) * 16 + x);
     }
     void set(int x, int y, int z, uint16_t s) {
+        uint16_t old = block_entities.empty() ? s : get(x, y, z);
         sections[(y - min_y) >> 4].blocks.set((((y - min_y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
         edits++;
-        if (!block_entities.empty())
+        if (!block_entities.empty() && state_block_index(old) != state_block_index(s))
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..height/4-1 (quart rows from min_y).
@@ -275,7 +285,8 @@ inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const W
     w.varint(int32_t(c.block_entities.size() + portals.size()));
     for (auto& e : c.block_entities) {
         w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
-        w.bytes(e.nbt.data(), e.nbt.size());
+        if (block_entity_update_tag) block_entity_update_tag(e, w);
+        else w.bytes(e.nbt.data(), e.nbt.size());
     }
     for (auto [si, i] : portals) {
         uint16_t state = c.sections[size_t(si)].blocks.get(i);
@@ -395,6 +406,11 @@ struct ChunkPool {
 };
 
 inline void generate_flat(Chunk& c);
+struct World;
+// Called on a worker thread once a chunk is loaded or generated, before it is published (src/containers).
+inline void (*chunk_loaded_hook)(World* w, const ChunkPtr& c) = nullptr;
+// A block of `w` changed (World::set_block or the level tick writer; tick thread): src/containers.
+inline void (*block_changed_hook)(World* w, int x, int y, int z, int old_state, int new_state) = nullptr;
 
 inline std::string world_dir = "world";  // server.properties level-name
 
@@ -479,7 +495,7 @@ struct World {
         return c->get(x & 15, y, z & 15);
     }
 
-    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded.
+    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded and its 3x3 is lit.
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
         auto f = find_or_claim(cx, cz, job);
@@ -488,6 +504,20 @@ struct World {
                 if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
                 produce(cx, cz, *job, true);
             });
+        else if (ChunkPtr c = get_if_loaded(cx, cz); c && !fullbright && !c->light_ready) {
+            // Loaded by a synchronous get_ptr (only the chunk itself lit): light its 3x3 on the pool, not on
+            // the tick thread that sends it.
+            auto lit = std::make_shared<std::promise<ChunkPtr>>();
+            f = lit->get_future().share();
+            pool.submit([this, c, lit] {
+                try {
+                    light::ensure_lit(*this, *c);
+                    lit->set_value(c);
+                } catch (...) {
+                    lit->set_exception(std::current_exception());
+                }
+            });
+        }
         return f;
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
@@ -524,7 +554,7 @@ struct World {
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
         uint16_t old;
         {
-            std::unique_lock light_lock(light::mutex(), std::defer_lock);  // the light engine reads chunks under it
+            std::unique_lock light_lock(light::mutex(*this), std::defer_lock);  // the light engine reads chunks under it
             if (!fullbright) light_lock.lock();
             {
                 std::lock_guard lock(c->m);
@@ -532,13 +562,14 @@ struct World {
                 c->set(x & 15, y, z & 15, state);
                 c->dirty = true;
             }
-            if (!fullbright) light::block_changed(x, y, z, old, state);
+            if (!fullbright) light::block_changed(*this, x, y, z, old, state);
         }
         note_block(x, y, z, old, state);
         return true;
     }
     // Shared by World::set_block and the level tick block writer.
     void note_block(int x, int y, int z, uint16_t old, uint16_t state) {
+        if (block_changed_hook && old != state) block_changed_hook(this, x, y, z, old, state);
         if (is_nether_portal(old) != is_nether_portal(state)) {
             std::lock_guard pl(m);
             if (is_nether_portal(state)) portals.insert({x, y, z});
@@ -573,9 +604,20 @@ struct World {
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(dir, *c), c->saved_at = now;
         if (on_flush) on_flush(all);
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %s %zu chunks loaded, %zu idle candidates, %zu viewed\n", id.c_str(), loaded(), idle.size(), viewers.size());
         storage::flush();
         {
             std::lock_guard lock(m);
+            if (portals_dirty) {  // ponytail: whole set rewritten; fine for hundreds of portal blocks
+                portals_dirty = false;
+                std::filesystem::create_directories(dir);
+                {
+                    std::ofstream f(dir + "/portals.txt.tmp");
+                    for (auto& [x, y, z] : portals) f << x << ' ' << y << ' ' << z << '\n';
+                }
+                std::filesystem::rename(dir + "/portals.txt.tmp", dir + "/portals.txt");
+            }
             for (auto& c : dirty) idle.push_back(std::move(c));
             for (auto& c : idle) {
                 Key k{c->cx, c->cz};
@@ -727,12 +769,10 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
             c->level.post_processed = false;
-            generator(*c);
-            // Pipeline::on_take has already exposed this chunk to lighting readers.
-            std::lock_guard light_lock(light::mutex());
-            for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
+            generator(*c);  // Pipeline::take compacts the palettes before lighting can read them
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);
+        if (chunk_loaded_hook) chunk_loaded_hook(this, c);
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);

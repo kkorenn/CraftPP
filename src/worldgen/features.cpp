@@ -897,6 +897,7 @@ Features::Features(Overworld& ow, const std::string& root) : ow(ow) {
   register_tree_features(parsers);
   register_cave_features(parsers);
   register_misc_features(parsers);
+  register_nether_end_features(parsers);
   for (auto& [k, v] : extra_feature_parsers()) parsers[k] = v;
   loader = std::make_unique<Loader>(*this, root);
 

@@ -94,9 +94,10 @@ until(c, lambda: all(block(c, x, y, 5) not in PORTAL | {-1} for x in (11, 12) fo
 print("portal collapse ok")
 
 # execute in: the source position scales by the coordinate scale.
+ox, oz = c.pos[0], c.pos[2]  # the original frame, or a new one when the nether exit was out of its search radius
 cmd(c, "execute in minecraft:the_nether run tp @s ~ 70 ~")
 arrive(c, "minecraft:the_nether")
-assert abs(c.pos[0] - 11.5 / 8) < 2 and c.pos[1] == 70, c.pos
+assert abs(c.pos[0] - ox / 8) < 1 and abs(c.pos[2] - oz / 8) < 1 and c.pos[1] == 70, c.pos
 # Per-dimension ticks: lava reaches level 7 in the Nether (drop-off 1, ten ticks per step),
 # while an Overworld client watching the same chunk coordinates receives no block changes.
 observer, _ = login("DimensionWatch", host, port, view=2, decode=True)

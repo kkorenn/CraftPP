@@ -231,7 +231,6 @@ inline void setup_dimensions(int64_t seed) {
         w.open(std::string("minecraft:") + d.name, d.type, 0, 256, world_dir + "/dimensions/minecraft/" + d.name, d.dim);
         w.coordinate_scale = d.scale, w.skylight = d.sky, w.ceiling = d.ceiling, w.sea_level = d.sea;
         w.logical_height = d.logical;
-        w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
         auto gen = std::make_shared<std::unique_ptr<worldgen::Overworld>>();
         auto once = std::make_shared<std::once_flag>();
         auto initialized = std::make_shared<std::atomic<bool>>(false);
@@ -243,6 +242,7 @@ inline void setup_dimensions(int64_t seed) {
                 *gen = std::make_unique<worldgen::Overworld>(seed, stages, "data/vanilla", pack, settings, 0, 256);
                 (*gen)->pipeline.dimension = dim;
                 (*gen)->pipeline.persist = true;
+                light::attach(worlds[dim], (*gen)->pipeline);
                 if (structures) std::atomic_store(&structure_worlds[dim], std::make_shared<structure::StructureWorld>(**gen, true, dim, folder));
                 initialized->store(true, std::memory_order_release);
             });
@@ -399,11 +399,19 @@ inline std::string player_dat(const Player& p) {
 }
 inline const char* const EQUIPMENT_SLOTS[5] = {"feet", "legs", "chest", "head", "offhand"};  // inv 36..40
 
+// Data components beyond damage (ItemStack::comp) <-> the "components" compound: src/containers/item_nbt.hpp.
+inline void (*item_components_to_nbt)(const ItemStack& s, Nbt& components) = nullptr;
+inline void (*item_components_from_nbt)(ItemStack& s, const Nbt& components) = nullptr;
 inline Nbt item_nbt(const ItemStack& s) {  // ItemStack.CODEC: {id, count, components}
     Nbt e = Nbt::compound();
     e.set("id", Nbt::str(std::string("minecraft:") + gen::ITEM_NAMES[s.item]));
     e.set("count", Nbt::num(Nbt::Int, s.count));
-    if (s.damage) {
+    if (s.comp && item_components_to_nbt) {
+        Nbt c = Nbt::compound();
+        if (s.damage) c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
+        item_components_to_nbt(s, c);
+        if (!c.comp.empty()) e.set("components", c);
+    } else if (s.damage) {
         Nbt c = Nbt::compound();
         c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
         e.set("components", c);
@@ -423,8 +431,10 @@ inline ItemStack item_from(const Nbt& e) {
     s.item = it->second;
     const Nbt* n = e.get("count");
     s.count = n && n->is_num() ? int(n->i) : 1;
-    if (const Nbt* c = e.get("components"))
+    if (const Nbt* c = e.get("components")) {
         if (const Nbt* d = c->get("minecraft:damage"); d && d->is_num()) s.damage = int(d->i);
+        if (item_components_from_nbt) item_components_from_nbt(s, *c);
+    }
     return s;
 }
 
@@ -500,9 +510,11 @@ inline void save_player(const Player& p) {
     nbtio::write_file(player_dat(p), t);
 }
 
-inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
+inline void (*on_save_all)() = nullptr;          // tick thread, before chunks are saved (level tick lists)
+inline void (*before_world_save)() = nullptr;    // tick thread: flush live block entities into chunks (src/containers)
 inline void save_all() {
     if (on_save_all) on_save_all();
+    if (before_world_save) before_world_save();
     for (auto& p : snapshot()) save_player(*p);
     for (auto& w : worlds) w.save_dirty(true);
 }
@@ -556,18 +568,22 @@ inline void deliver_chunks(Player& p) {
 // Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
 // (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
 inline void broadcast_light() {
-    auto changes = light::take_changes();
-    if (changes.empty()) return;
     int v = view_distance();
-    auto ps = snapshot();
-    for (auto& ch : changes) {
-        Writer w;
-        for (auto& p : ps) {
-            if (p->level != &worlds[DIM_OVERWORLD]) continue;  // the light engine lights the overworld only
-            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
-            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
-            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
-            p->send(w);
+    std::vector<PlayerPtr> ps;
+    for (World& level : worlds) {
+        if (level.fullbright) continue;
+        auto changes = light::take_changes(level);
+        if (changes.empty()) continue;
+        if (ps.empty()) ps = snapshot();
+        for (auto& ch : changes) {
+            Writer w;
+            for (auto& p : ps) {
+                if (p->level != &level) continue;
+                int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+                if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
+                if (w.b.empty()) light::write_update(level, w.varint(play_cb::light_update), ch);
+                p->send(w);
+            }
         }
     }
 }
