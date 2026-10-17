@@ -27,6 +27,26 @@ sam.send(PLAY_SB["ping_request"], struct.pack(">q", 0x1234567890))
 assert wait(sam, PLAY_CB["pong_response"]).i64() == 0x1234567890
 print("ping ok")
 
+# pick_item_from_block: out of reach (or unloaded) is ignored, so a forged position never generates chunks.
+def pick(c, x, y, z): c.send(PLAY_SB["pick_item_from_block"], struct.pack(">q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF)) + b"\0")
+sx, sy, sz = (int(v // 1) for v in sam.pos)
+pick(sam, 1000000, sy - 1, 1000000)
+sam.send(PLAY_SB["ping_request"], struct.pack(">q", 7))
+while (pid := sam.recv()[0]) != PLAY_CB["pong_response"]: assert pid != PLAY_CB["set_held_slot"], "picked out of reach"
+pick(sam, sx, sy - 1, sz)
+wait(sam, PLAY_CB["set_held_slot"])
+print("pick block reach ok")
+
+# Duplicate login: the same profile joining again kicks the old connection (PlayerList.disconnectAllPlayersWithProfile).
+DUPE = uuid.UUID("00000000-0000-4000-8000-0000000d0b1e")
+first, _ = login("Dupe", host, port, view=2, uid=DUPE)
+second, _ = login("Dupe2", host, port, view=2, uid=DUPE)
+wait(first, PLAY_CB["disconnect"], lambda b: b"multiplayer.disconnect.duplicate_login" in b.d)
+second.send(PLAY_SB["ping_request"], struct.pack(">q", 8))
+wait(second, PLAY_CB["pong_response"])
+first.s.close(); second.s.close()
+print("duplicate login kick ok")
+
 # Punch: the others see the arm swing (swing_animation main hand, whack, 6 ticks); skin layers arrive as entity data.
 sam.send(PLAY_SB["punch"])
 sw = wait(eve, PLAY_CB["swing_animation"])
