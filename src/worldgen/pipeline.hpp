@@ -38,25 +38,47 @@
 // worldgen::Overworld (overworld.hpp). FULL runs with lock radius 1: post-processing and the leaf ticks
 // worldgen scheduled may write into neighbours (never into chunks already taken by the World).
 //
+// DECORATION ORDER. Features of neighbouring chunks overlap (write radius 1), so the order chunks are decorated
+// in decides blocks. Vanilla runs every ChunkGenerationTask on one consecutive "worldgen" executor, lowest
+// ticket level (nearest the player, chessboard distance) first, and a FULL task at C decorates the 3x3 around C
+// in x-major order (ChunkGenerationTask.scheduleLayer); only the async noise/biome work runs in parallel. Here a
+// Ticket is such a task: ticket(cx, cz) queues one (call in vanilla ticket order from one thread, as
+// update_view does), and FEATURES only ever runs inside a ticket's layer, tickets strictly in queue order, so
+// the result never depends on worker timing. A chunk whose features are needed but no pending ticket covers
+// gets a radius-0 ticket at the end of the queue. Threads waiting for an earlier ticket generate terrain for
+// pending tickets meanwhile (the parallel part). Measured against vanilla's own run-to-run spread (JFR
+// minecraft.ChunkGeneration order, test/compare.py --jfr): the ring order agrees with vanilla's pairwise
+// decoration order more often than one vanilla run agrees with another.
+//
 // MEMORY. Block storage (a Chunk) is allocated when a chunk reaches BIOMES; below that a ProtoChunk is ~100
 // bytes + its structure_data. take() copies the FULL chunk out to the World. A taken FULL chunk frees its block
 // storage once all 8 neighbours are past LIGHT (nothing reads its blocks any more); the header and
 // structure_data stay, so later steps of chunks up to 8 away still see its structure starts.
-// ponytail: chunks below FULL keep their blocks (they may hold feature writes from neighbours) and headers are
-// never dropped; vanilla saves proto chunks to disk instead. Add proto persistence if long exploration
-// sessions grow memory on the Pi. A freed chunk requested again (World lost it) gets terrain only.
+// EVICTION (vanilla: proto chunks without a ticket are saved and unloaded). evict(keep), from the World's
+// autosave, drops every chunk `keep` rejects, under an exclusive lock that waits for running generation:
+//   status < TERRAIN      dropped: recomputed from the seed when needed again (no neighbour writes yet)
+//   TERRAIN .. LIGHT      saved to the region file as a vanilla proto chunk (Status + sections + heightmaps +
+//                         PostProcessing + block_ticks; INITIALIZE_LIGHT and later are saved as FEATURES: their
+//                         light is recomputed), then dropped; get_or_create loads it back from disk
+//   FULL (taken)          dropped: the World saved it; loaded back as a header if a neighbour needs it
+// on_evict (lighting) then drops the light columns of the same chunks. Steps never see a chunk vanish: ensure()
+// and take() hold the lock shared. A freed chunk requested again (World lost it) gets terrain only.
 #pragma once
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
 #include "world.hpp"
+#include "worldgen/providers.hpp"
 
 namespace worldgen {
 
@@ -69,6 +91,9 @@ const char* status_name(Status s);
 // Heightmap.Types, vanilla ordinal order.
 enum Heightmap { WORLD_SURFACE_WG, WORLD_SURFACE, OCEAN_FLOOR_WG, OCEAN_FLOOR, MOTION_BLOCKING, MOTION_BLOCKING_NO_LEAVES };
 Heightmap heightmap_by_name(const std::string& name);
+const char* heightmap_name(Heightmap h);  // serialization key, e.g. "MOTION_BLOCKING"
+// Heightmap.primeHeightmaps for all six types (first free y per column, index z * 16 + x).
+void prime_heightmaps(const Chunk& c, std::array<std::array<int16_t, 256>, 6>& out);
 
 class Pipeline;
 
@@ -91,15 +116,14 @@ struct ProtoChunk {
   ProtoChunk(int cx, int cz, Pipeline* owner) : cx(cx), cz(cz), owner(owner) {}
   Status get_status() const { return status.load(std::memory_order_acquire); }
   // Local x, z (0..15), world y. Outside the build height: void_air / ignored, like ProtoChunk.
-  uint16_t get(int x, int y, int z) const {
-    return y < MIN_Y || y >= MIN_Y + HEIGHT ? uint16_t(blocks::void_air) : chunk->get(x, y, z);
-  }
+  uint16_t get(int x, int y, int z) const;
   // ProtoChunk.setBlockState: stores the state and updates the final heightmaps (from TERRAIN on).
   void set(int x, int y, int z, uint16_t state);
   int height(Heightmap h, int x, int z) const { return heightmaps[h][size_t(z * 16 + x)]; }
   void prime_heightmaps();  // all six from the blocks (Heightmap.primeHeightmaps)
 };
 using ProtoPtr = std::shared_ptr<ProtoChunk>;
+
 
 // WorldGenRegion: the chunks a step may see. Block coordinates are world coordinates.
 struct Region {
@@ -119,7 +143,7 @@ struct Region {
   // WorldGenRegion.setBlock: false (and no write) outside the write radius or the build height.
   bool set(int x, int y, int z, uint16_t state) const {
     if (std::abs((x >> 4) - cx) > write_radius || std::abs((z >> 4) - cz) > write_radius) return false;
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return false;
+    if (y < chunk(x >> 4, z >> 4)->chunk->min_y || y >= chunk(x >> 4, z >> 4)->chunk->min_y + chunk(x >> 4, z >> 4)->chunk->height()) return false;
     chunk(x >> 4, z >> 4)->set(x & 15, y, z & 15, state);
     return true;
   }
@@ -135,19 +159,35 @@ using StepFn = std::function<void(Region&)>;
 class Pipeline {
  public:
   Pipeline();
+  // Dimension layout (chunk min_y / height) and WorldGenerationContext; set before the first ensure.
+  int min_y = MIN_Y, height = HEIGHT;
+  GenContext context;
   // lock_radius -1: max(write radius, 0). A larger lock radius also makes those chunks readable and writable
   // in the Region (used by the FULL step for post-processing and scheduled leaf ticks, which cross borders).
   void set_step(Status s, StepFn fn, int lock_radius = -1);
-  // Called by ProtoChunk::set for chunks at >= INITIALIZE_LIGHT (lighting hook). May be empty.
+  // Protects palettes exposed to the light engine while generation continues writing nearby chunks.
+  std::mutex* write_lock = nullptr;
+  // Called by ProtoChunk::set at >= INITIALIZE_LIGHT with write_lock held. May be empty.
   std::function<void(ProtoChunk&, int x, int y, int z, uint16_t old_state, uint16_t new_state)> on_block_changed;
   // Called by take() under the chunk's mutex after copying into `out`, before the proto storage may be freed
   // (lighting hook: stop reading the proto blocks). May be empty.
   std::function<void(ProtoChunk&, Chunk& out)> on_take;
 
+  // Proto chunks are saved to / loaded from the region files (storage/) on eviction. Off: never read from disk.
+  int dimension = 0;  // storage dimension index
+  bool persist = false;
+  // Drops what keep(cx, cz) rejects (see EVICTION). `all`: also save the kept proto chunks (shutdown, save-all).
+  // Returns the number of chunks dropped.
+  size_t evict(const std::function<bool(int, int)>& keep, bool all);
+  std::function<void(const std::function<bool(int, int)>& keep)> on_evict;  // lighting: drop its columns too
+
   // Brings (cx, cz) to at least `target` (and its dependencies), on the calling thread.
   ProtoPtr ensure(int cx, int cz, Status target);
   // ensure(FULL), then copies blocks, biomes and block entities into `out` (World::generator).
   void take(int cx, int cz, Chunk& out);
+  // Decoration order (see DECORATION ORDER): queue a FULL task's 3x3 layer at (cx, cz) / drop it if not started.
+  void ticket(int cx, int cz);
+  void cancel(int cx, int cz);
 
   // Dependency tables (ChunkStep): deps(s)[r] = status needed at chessboard distance r before step s runs.
   const std::vector<Status>& deps(Status s) const { return steps[size_t(s)].direct; }
@@ -168,7 +208,25 @@ class Pipeline {
   std::unordered_map<int64_t, ProtoPtr> chunks;
   int takes = 0;
 
+  struct Ticket {
+    int cx, cz, radius;
+    bool prefetching = false, running = false;
+  };
+  std::mutex om;  // order: tickets below (never held while a step runs)
+  std::condition_variable ocv;
+  std::map<uint64_t, Ticket> pending;            // by queue position
+  std::unordered_map<int64_t, uint64_t> pending_at;  // center -> queue position
+  uint64_t next_ticket = 0;
+  uint64_t add_ticket(int cx, int cz, int radius);  // om held; the pending one there if any
+  uint64_t covering(int cx, int cz);                 // om held; first pending ticket that decorates (cx, cz), or ~0
+  bool terrain_ready(const Ticket& t);
+  void run_until(uint64_t seq);  // runs the layers of every pending ticket up to seq, in order
+
+  std::shared_mutex gen;  // shared: generating (ensure / take); exclusive: evict
+  struct GenLock;
   ProtoPtr get_or_create(int cx, int cz);
+  ProtoPtr load(int cx, int cz);  // from the region file, null if not stored
+  void save(ProtoChunk& c);
   ProtoPtr find(int cx, int cz) const;
   void run_step(ProtoChunk& c, Status s);
   void sweep();

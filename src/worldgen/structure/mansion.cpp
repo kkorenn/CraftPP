@@ -354,12 +354,13 @@ struct MansionPiece : TemplatePiece {
       createChest(level, bb, random, pos, chest);
       return;
     }
-    int mobs;
-    if (marker == "Mage" || marker == "Warrior") mobs = 1;
-    else if (marker == "Group of Allays") mobs = level.random().nextInt(3) + 1;
+    int mobs, type;
+    if (marker == "Mage") mobs = 1, type = entity_types::evoker;
+    else if (marker == "Warrior") mobs = 1, type = entity_types::vindicator;
+    else if (marker == "Group of Allays") mobs = level.random().nextInt(3) + 1, type = entity_types::allay;
     else return;
-    // ponytail: evokers/vindicators/allays are not spawned; the marker block is still cleared like vanilla
-    if (mobs > 0) level.set(pos, blocks::air);
+    for (int i = 0; i < mobs; i++) level.addMob(type, pos, true);
+    level.set(pos, blocks::air);
   }
 };
 

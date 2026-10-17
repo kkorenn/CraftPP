@@ -806,7 +806,7 @@ inline bool place_more(int b, PlaceCtx& c, int& out) {
             return true;
         }
         case P_SMALL_DRIPLEAF:  // DoublePlantBlock.getStateForPlacement + facing + copyWaterloggedFrom
-            if (p.y >= MIN_Y + HEIGHT - 1 || !can_be_replaced_ctx(get(p.above()), c)) out = -1;
+            if (p.y >= world.max_y() - 1 || !can_be_replaced_ctx(get(p.above()), c)) out = -1;
             else out = with(withdir(s, "facing", OPP[hdir]), "waterlogged", water_source(cur));
             return true;
         case P_MANGROVE_PROPAGULE: out = with(with(s, "waterlogged", water_source(cur)), "age", 4); return true;

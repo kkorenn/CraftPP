@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
                 request_stop();  // saves on the tick thread, then exits
             }
             if (tick % 25 == 24 && !autosave_off && shutdown_requested == 0) {
-                world.save_dirty();
+                for (auto& w : worlds) w.save_dirty();
                 if (tick % 1500 == 1499) run_on_tick(save_level);  // level.dat: vanilla autosave period, 6000 ticks
             }
         }

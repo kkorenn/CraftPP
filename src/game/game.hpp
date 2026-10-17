@@ -4,6 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../level/glue.hpp"
+#include "portal.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -48,6 +49,8 @@ inline void start_game() {
     game_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
+    dimensions_init();  // after the game handlers: wraps client_command
+    portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
     start_tick_thread();
@@ -72,6 +75,7 @@ inline void request_stop() {
         log_info("Saving chunks for level 'ServerLevel[%s]'/minecraft:overworld", level.c_str());
         save_all();
         mobs_save_all();  // entity chunks (src/mobs/manager.hpp)
+        storage::close_all();  // queued region writes (entities saved after the chunks)
         save_level();  // world clocks, game rules, scoreboard (commands/state.hpp)
         log_info("ThreadedAnvilChunkStorage (%s): All chunks are saved", level.c_str());
         log_info("ThreadedAnvilChunkStorage: All dimensions are saved");

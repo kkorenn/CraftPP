@@ -174,7 +174,14 @@ inline bool load_mob_data(const std::string& path = "data/mobs.json") {
     for (auto& v : j["state_shape"].arr) state_shape_idx.push_back(uint16_t(v.asInt()));
     for (auto& v : j["state_flags"].arr) state_flag_bits.push_back(uint32_t(v.asInt()));
     for (auto& v : j["state_path"].arr) state_path_type.push_back(uint8_t(v.asInt()));
-    for (auto& v : j["state_fluid"].arr) state_fluid_bits.push_back(uint8_t(v.asInt()));
+    for (auto& v : j["state_fluid"].arr) {
+        uint8_t bits = uint8_t(v.asInt());
+        if ((bits >> 4 & 3) > FLUID_LAVA) {
+            fprintf(stderr, "mobs.json: unknown fluid type (regenerate with tools/gen_mob_data.py)\n");
+            return false;
+        }
+        state_fluid_bits.push_back(bits);
+    }
     static const char* pt_names[] = {"BLOCKED", "OPEN", "WALKABLE", "WALKABLE_DOOR", "TRAPDOOR", "POWDER_SNOW",
         "ON_TOP_OF_POWDER_SNOW", "FENCE", "LAVA", "WATER", "WATER_BORDER", "RAIL", "UNPASSABLE_RAIL", "FIRE_IN_NEIGHBOR",
         "FIRE", "DAMAGING_IN_NEIGHBOR", "DAMAGING", "DOOR_OPEN", "DOOR_WOOD_CLOSED", "DOOR_IRON_CLOSED", "BREACH", "LEAVES",

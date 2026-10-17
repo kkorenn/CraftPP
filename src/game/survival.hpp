@@ -188,19 +188,11 @@ inline void respawn(Player& p) {
         g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
         return g;
     }();
-    place_new_player(p);
-    p.send(Writer().varint(play_cb::respawn).varint(dimension_types::overworld).str("minecraft:overworld").i64(0)
-               .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63)
-               .u8(0));
-    p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
-    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
-               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
-    p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
-    send_health(p);
-    send_experience(p);
-    entities_reset_view(p);  // client dropped its entities: resend them
-    player_entity_respawned(p);  // others see the player re-added at its new position
+    World* died_in = p.level;
+    place_new_player(p);  // overworld spawn
+    World* spawn = p.level;
+    p.level = died_in;
+    move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 0);
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -293,7 +285,7 @@ inline void destroy_block_progress(const Player& p, int x, int y, int z, int sta
 
 namespace lvl {
 inline bool player_destroy(Player& p, int x, int y, int z, int state);  // level/glue.hpp: playerWillDestroy + removeBlock
-inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
+inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
 inline bool use_bucket(Player& pl, ItemStack& slot);
 }
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
@@ -366,7 +358,7 @@ inline void dig_action(Player& p, int action, int x, int y, int z) {
         return;
     }
     int state = world.get_block(x, y, z);
-    if (y > MIN_Y + HEIGHT - 1) return p.send(block_update(x, y, z, state));
+    if (y > world.max_y() - 1) return p.send(block_update(x, y, z, state));
     if (action == 0) {  // START_DESTROY_BLOCK
         if (under_spawn_protection(p, x, z)) return overlay_message(p, tr("build.spawn_protection", {short_pos(x, y, z)}));
         if (p.gamemode == 1) return destroy_and_ack(p, x, y, z);
@@ -510,7 +502,7 @@ inline void vitals_tick(Player& p) {
     auto& g = p.g;
     if (g.invulnerable > 0) g.invulnerable--;
     if (g.dead) return;
-    if (p.y < MIN_Y - 64) hurt(p, 4, "out_of_world");
+    if (p.y < p.level->min_y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
     if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
@@ -536,7 +528,7 @@ inline void swing(Player& p, int hand, bool to_self) {
 // ---------- placement ----------
 inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for players
     for (auto& q : players) {
-        if (q->gamemode == 3 || q->g.dead) continue;
+        if (q->gamemode == 3 || q->g.dead || q->level != cur_level) continue;
         if (q->x + 0.3 > x && q->x - 0.3 < x + 1 && q->y + 1.8 > y && q->y < y + 1 && q->z + 0.3 > z && q->z - 0.3 < z + 1)
             return true;
     }
@@ -560,20 +552,32 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
         return 1;
     }
     if (p.gamemode == 2) return 0;  // !mayBuild; ponytail: can_place_on (adventure predicates) not supported
-    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz) ? 1 : 0;  // block use, item useOn, BlockItem.place
+    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz);  // block use, item useOn, BlockItem.place
 }
 
-// ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
-// "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
-inline void save_player_extra(const Player& p, std::ostream& f) {
+// ---------- persistence (players/data/<uuid>.dat, vanilla LivingEntity / Player / FoodData tags) ----------
+inline void save_player_extra(const Player& p, Nbt& t) {
     auto& g = p.g;
-    f << "vitals " << g.health << ' ' << g.food << ' ' << g.saturation << ' ' << g.exhaustion << ' '
-      << g.fall_distance << ' ' << g.dead << '\n';
-    f << "xp " << g.xp_level << ' ' << g.xp_progress << ' ' << g.xp_total << '\n';
-    for (size_t i = 0; i < p.inv.size(); i++)
-        if (!p.inv[i].empty() && p.inv[i].damage) f << "dmg " << i << ' ' << p.inv[i].damage << '\n';
+    t.set("Health", Nbt::real(Nbt::Float, g.health));
+    t.set("foodLevel", Nbt::num(Nbt::Int, g.food));
+    t.set("foodSaturationLevel", Nbt::real(Nbt::Float, g.saturation));
+    t.set("foodExhaustionLevel", Nbt::real(Nbt::Float, g.exhaustion));
+    t.set("fall_distance", Nbt::real(Nbt::Double, g.fall_distance));
+    t.set("DeathTime", Nbt::num(Nbt::Short, g.dead ? 1 : 0));
+    t.set("XpLevel", Nbt::num(Nbt::Int, g.xp_level));
+    t.set("XpP", Nbt::real(Nbt::Float, g.xp_progress));
+    t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
 }
-inline void load_player_extra(Player& p, std::istream& f) {
+inline void load_player_extra(Player& p, const Nbt& t) {
+    auto D = [&](const char* k, double d) { const Nbt* n = t.get(k); return n && n->is_num() ? n->as_double() : d; };
+    auto& g = p.g;
+    g.health = float(D("Health", 20)), g.food = int(D("foodLevel", 20));
+    g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
+    g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
+    g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+}
+// Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
+inline void load_player_extra_txt(Player& p, std::istream& f) {
     f.clear();
     for (std::string key; f >> key;) {
         if (key == "vitals") f >> p.g.health >> p.g.food >> p.g.saturation >> p.g.exhaustion >> p.g.fall_distance >> p.g.dead;
@@ -657,9 +661,9 @@ inline void register_game_handlers() {
                      fmt_double(z + double(cz)).c_str(), x, y, z);
             return;
         }
-        const int max_y = MIN_Y + HEIGHT - 1;
+        const int max_y = world.max_y() - 1;
         if (y > max_y) return overlay_message(p, tr("build.tooHigh", {max_y}));
-        if (y < MIN_Y) return overlay_message(p, tr("build.tooLow", {MIN_Y}));
+        if (y < world.min_y()) return overlay_message(p, tr("build.tooLow", {world.min_y()}));
         static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
         int f = face >= 0 && face <= 5 ? face : 1;
         if (under_spawn_protection(p, x, z)) {
@@ -668,8 +672,8 @@ inline void register_game_handlers() {
             const ItemStack& used = p.inv[hand == 1 ? 40u : size_t(p.selected)];
             bool placing = !used.empty() && ITEM_TO_BLOCK[used.item] >= 0;  // wasBlockPlacementAttempt
             int result = use_item_on(p, hand, x, y, z, face, cx, cy, cz);
-            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= MIN_Y)))
-                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {MIN_Y}));
+            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= world.min_y())))
+                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {world.min_y()}));
             else if (result == 1) swing(p, hand, false);
         } else {
             overlay_message(p, tr("build.tooHigh", {max_y}));

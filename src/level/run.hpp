@@ -11,6 +11,31 @@
 namespace lvl {
 
 inline std::unordered_set<int64_t> ticking;  // this tick's ticking chunks
+
+// Per-level state (chunks, tick lists, pending post-processing, client changes, falling blocks) is cur_level's;
+// switch_level (a world.hpp level_switch_hooks entry) parks the old level's and takes the new one's.
+struct Parked {
+    std::unordered_map<int64_t, LChunk> chunks;
+    LevelTicks block_ticks, fluid_ticks;
+    std::vector<int64_t> post_pending;
+    std::unordered_map<int64_t, std::vector<uint16_t>> changed;
+    std::unordered_map<int64_t, int64_t> chunk_changed_at;
+    std::vector<FallingBlock> falling_blocks;
+    int64_t last_release = 0;
+};
+inline Parked parked[DIM_COUNT];
+inline int64_t last_release = 0;
+inline void swap_parked(Parked& p) {
+    std::swap(chunks, p.chunks), std::swap(block_ticks, p.block_ticks), std::swap(fluid_ticks, p.fluid_ticks);
+    std::swap(post_pending, p.post_pending), std::swap(changed, p.changed), std::swap(chunk_changed_at, p.chunk_changed_at);
+    std::swap(falling_blocks, p.falling_blocks), std::swap(last_release, p.last_release);
+}
+inline void switch_level(World* from, World* to) {
+    swap_parked(parked[dim_of(from)]);
+    swap_parked(parked[dim_of(to)]);
+    last_key = INT64_MIN, last_chunk = nullptr;
+    fast_lava = to == &worlds[DIM_NETHER];
+}
 inline int rand_value = int(std::random_device{}());
 
 inline bool neighbours_loaded(int cx, int cz) {
@@ -23,6 +48,7 @@ inline void compute_ticking() {
     ticking.clear();
     int r = sim_distance();
     for (auto& p : players)
+        if (p->level == cur_level)
         for (int x = p->cx - r; x <= p->cx + r; x++)
             for (int z = p->cz - r; z <= p->cz + r; z++) {
                 int64_t k = chunk_key(x, z);
@@ -49,7 +75,7 @@ inline uint32_t ticking_sections(LChunk& l) {
     std::lock_guard lock(l.c->m);
     l.seen_edits = l.c->edits;
     uint32_t bits = 0;
-    for (int s = 0; s < SECTIONS; s++) {
+    for (int s = 0; s < int(l.c->sections.size()); s++) {
         auto& b = l.c->sections[size_t(s)].blocks;
         bool any = false;
         if (b.bits <= 8) {
@@ -69,9 +95,9 @@ inline void tick_chunk(LChunk& l, int speed) {
         if (rng().nextInt(48) == 0) tick_precipitation(block_random_pos(x0, 0, z0, 15));
     if (speed <= 0) return;
     uint32_t bits = ticking_sections(l);
-    for (int s = 0; s < SECTIONS; s++) {
+    for (int s = 0; s < int(l.c->sections.size()); s++) {
         if (!(bits >> s & 1)) continue;
-        int y0 = MIN_Y + s * 16;
+        int y0 = l.c->min_y + s * 16;
         for (int i = 0; i < speed; i++) {
             Pos p = block_random_pos(x0, y0, z0, 15);
             int st;
@@ -100,7 +126,7 @@ inline void post_process(LChunk& l) {
     static const char* dump = getenv("CRAFTPP_POST_DUMP");  // "cx,cz": log that chunk's marks
     bool dumping = dump && std::to_string(l.c->cx) + "," + std::to_string(l.c->cz) == dump;
     for (uint32_t v : post) {
-        Pos p{l.c->cx * 16 + int(v & 15), MIN_Y + int(v >> 8), l.c->cz * 16 + int(v >> 4 & 15)};
+        Pos p{l.c->cx * 16 + int(v & 15), l.c->min_y + int(v >> 8), l.c->cz * 16 + int(v >> 4 & 15)};
         if (dumping) log_info("mark %d %d %d state %d", p.x, p.y, p.z, get(p));
         int s = get(p);
         if (has_fluid(s)) fluid_tick(p, s);
@@ -114,7 +140,6 @@ inline void post_process(LChunk& l) {
 }
 
 inline std::thread::id tick_thread;
-inline int64_t last_release = 0;
 
 inline void level_tick() {
     static const bool dbg = getenv("CRAFTPP_LEVEL_DEBUG");
@@ -126,7 +151,7 @@ inline void level_tick() {
         std::vector<ChunkPtr> q;
         {
             std::lock_guard lock(loaded_m);
-            q.swap(loaded_q);
+            q.swap(loaded_q[dim_of(cur_level)]);
         }
         for (auto& c : q) adopt(c);
     }
@@ -197,10 +222,36 @@ inline void init() {
     } catch (const std::exception& e) {
         log_warn("biome climates: %s", e.what());
     }
-    world.on_load = [](const ChunkPtr& c) {
-        std::lock_guard lock(loaded_m);
-        loaded_q.push_back(c);
-    };
+    for (auto& w : worlds) {
+        int d = dim_of(&w);
+        w.on_load = [d](const ChunkPtr& c) {
+            std::lock_guard lock(loaded_m);
+            loaded_q[d].push_back(c);
+        };
+    }
+    level_switch_hooks.push_back(switch_level);
+}
+
+// The level tick for every level with players or with chunks still picked up (released after 5 s unviewed).
+inline void tick_all_levels() {
+    for (auto& w : worlds) {
+        bool any = false;
+        for (auto& p : players) any |= p->level == &w;
+        InLevel in_level(&w);
+        if (any || !chunks.empty()) level_tick();
+    }
+}
+inline void broadcast_all_changes() {
+    for (auto& w : worlds) {
+        InLevel in_level(&w);
+        if (!changed.empty()) broadcast_changes();
+    }
+}
+inline void pack_all_levels() {
+    for (auto& w : worlds) {
+        InLevel in_level(&w);
+        pack_all();
+    }
 }
 
 }  // namespace lvl

@@ -361,11 +361,11 @@ inline void comparator_refresh(const Pos& p, int s) {
 enum Push { PUSH_PULL, PUSH_ONLY, POPPED, IMMOVEABLE, IGNORE_ENTITY };
 inline int push_reaction(int s) { return int(T.flags[size_t(s)] >> 50 & 7); }
 inline bool is_piston_base(int s) { int b = block(s); return b == RS.piston || b == RS.sticky_piston; }
-inline int max_y() { return MIN_Y + HEIGHT - 1; }
+inline int max_y() { return world.max_y() - 1; }  // Level.getMaxY (inclusive)
 inline bool is_pushable(int s, const Pos& p, int dir, bool allow_destroy, int conn) {  // PistonBaseBlock.isPushable
-    if (p.y < MIN_Y || p.y > max_y()) return false;
+    if (p.y < world.min_y() || p.y > max_y()) return false;
     if (is_air(s)) return true;
-    if ((dir == DOWN && p.y == MIN_Y) || (dir == UP && p.y == max_y())) return false;
+    if ((dir == DOWN && p.y == world.min_y()) || (dir == UP && p.y == max_y())) return false;
     if (!is_piston_base(s)) {
         if (block_of(s).hardness == -1.0f) return false;
         switch (push_reaction(s)) {
@@ -1226,6 +1226,25 @@ inline void be_removed(int old, const Pos& p) {  // LevelChunk.removeBlockEntity
 inline void output_signal_changed(int state, const Pos& p) {
     if (has_analog(state)) update_neighbour_for_output_signal(p, block(state));
 }
+// Per-level redstone state follows cur_level like run.hpp's Parked (world.hpp level_switch_hooks).
+struct RsParked {
+    std::list<Moving> moving_list;
+    std::unordered_map<int64_t, Moving*> moving_at;
+    std::deque<BlockEvent> block_events;
+    std::unordered_map<int64_t, int> comparator_out;
+    std::unordered_set<int64_t> daylight_detectors;
+    std::vector<Toggle> recent_toggles;
+};
+inline RsParked rs_parked[DIM_COUNT];
+inline void rs_swap(RsParked& p) {
+    std::swap(moving_list, p.moving_list), std::swap(moving_at, p.moving_at), std::swap(block_events, p.block_events);
+    std::swap(comparator_out, p.comparator_out), std::swap(daylight_detectors, p.daylight_detectors);
+    std::swap(recent_toggles, p.recent_toggles);
+}
+inline const bool rs_switch_registered = [] {
+    level_switch_hooks.push_back([](World* from, World* to) { rs_swap(rs_parked[dim_of(from)]), rs_swap(rs_parked[dim_of(to)]); });
+    return true;
+}();
 inline void rs_level_tick_end() {  // after the chunk tick: block events, then entities, then block entities
     run_block_events();
     handling_tick = false;
