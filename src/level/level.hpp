@@ -409,14 +409,14 @@ inline std::vector<Climate> climates;
 inline int64_t biome_zoom_seed = 0;
 inline void load_climates() {
     std::vector<std::string> names;
-    for (auto& e : std::filesystem::recursive_directory_iterator("vanilla/src/data/minecraft/worldgen/biome"))
+    for (auto& e : std::filesystem::recursive_directory_iterator("data/vanilla/minecraft/worldgen/biome"))
         if (e.path().extension() == ".json") {
-            auto rel = std::filesystem::relative(e.path(), "vanilla/src/data/minecraft/worldgen/biome").string();
+            auto rel = std::filesystem::relative(e.path(), "data/vanilla/minecraft/worldgen/biome").string();
             names.push_back(rel.substr(0, rel.size() - 5));
         }
     std::sort(names.begin(), names.end());
     for (auto& n : names) {
-        Json j = Json::parseFile("vanilla/src/data/minecraft/worldgen/biome/" + n + ".json");
+        Json j = Json::parseFile("data/vanilla/minecraft/worldgen/biome/" + n + ".json");
         Climate c;
         c.temperature = j["temperature"].asFloat();
         c.frozen = j.find("temperature_modifier") && j["temperature_modifier"].asString() == "frozen";

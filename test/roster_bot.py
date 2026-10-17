@@ -7,7 +7,7 @@ from bot import *
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENTITY = ids("entity_types")
-ITEMS = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/registries.json")))["minecraft:item"]["entries"]
+ITEMS = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:item"]["entries"]
 def item(n): return ITEMS["minecraft:" + n]["protocol_id"]
 CORE = {"cow", "pig", "sheep", "chicken", "zombie", "skeleton", "spider", "creeper", "player", "armor_stand", "mannequin"}
 BOSSES = {"ender_dragon", "wither", "warden", "elder_guardian"}

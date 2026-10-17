@@ -1,5 +1,5 @@
 // Block states for worldgen features: layout (properties, values) and behaviour flags from data/blocks.bin
-// (tools/gen_block_data.sh), block tags from vanilla/src/data/minecraft/tags/block. State ids are the global
+// (tools/gen_block_data.sh), block tags from data/vanilla/minecraft/tags/block. State ids are the global
 // ids of gen/ids.hpp (blocks:: constants are default states). Read-only after load(): thread-safe.
 #pragma once
 #include <cstdint>

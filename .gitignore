@@ -1,5 +1,5 @@
 build/
-vanilla/
+/vanilla/
 world/
 lib/
 logs/
@@ -15,7 +15,6 @@ whitelist.json
 usercache.json
 eula.txt
 server.properties
-data/roster.json
 cache/
 /plugins/
 /ops.json
@@ -36,3 +35,4 @@ java/.gradle/
 data/block_dump.json
 build-*/
 .cache/
+dist/

@@ -43,7 +43,8 @@ def blast(host, port, data, linger=0.2):
     try:
         s.sendall(data)
         s.settimeout(linger)
-        while s.recv(1 << 16): pass
+        end = time.time() + 2  # mobs near spawn keep the stream busy: silence alone may never come
+        while s.recv(1 << 16) and time.time() < end: pass
     except OSError:
         pass
     finally:
@@ -365,7 +366,7 @@ def random_command(tree, r):
 
 def cmdfuzz(host, port, n, seed, op):
     import json
-    tree = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/commands.json")))
+    tree = json.load(open(os.path.join(ROOT, "data/reports/commands.json")))
     r = random.Random(seed)
     sent = 0
     while sent < n:
