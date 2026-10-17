@@ -164,6 +164,7 @@ struct StructureWorld::Impl {
   TerrainView view;
   StructureManager manager;
   std::unordered_map<std::string, const worldgen::feat::Placed*> features;  // feature pool elements
+  std::once_flag featuresLoaded;
   explicit Impl(std::shared_ptr<worldgen::TerrainGenerator> t) : view(t), manager(view, possibleBiomes(*t)) {}
 };
 
@@ -203,24 +204,30 @@ StructureWorld::StructureWorld(worldgen::Overworld& ow, bool place) : impl_(std:
     ow.pipeline.set_step(worldgen::Status::FULL, [](worldgen::Region& r) { worldgen::feat::post_process(r); }, 1);
     return;
   }
-  // Feature pool elements (village trees, hay, ...): load their placed features up front (loader not thread-safe).
-  for (auto& e : std::filesystem::recursive_directory_iterator(dataRoot() + "/minecraft/worldgen/template_pool")) {
-    if (e.path().extension() != ".json") continue;
-    std::function<void(const Json&)> scan = [&](const Json& j) {
-      if (j.isObject()) {
-        if (auto* t = j.find("element_type"); t && t->isString() && t->str == "minecraft:feature_pool_element")
-          impl_->features.emplace(fullId(j["feature"].asString()), nullptr);
-        for (auto& [k, v] : j.obj) scan(v);
-      } else if (j.isArray()) {
-        for (auto& v : j.arr) scan(v);
-      }
-    };
-    scan(Json::parseFile(e.path().string()));
-  }
-  for (auto& [id, p] : impl_->features) p = features->load_placed(id);
+  // Feature pool elements (village trees, hay, ...): their placed features, loaded on the first decoration (not at
+  // startup: a restart that generates nothing never reads the template pools). Once, under call_once: the
+  // feature loader is not thread-safe.
+  Impl* impl = impl_.get();
+  auto loadPoolFeatures = [impl, features] {
+    for (auto& e : std::filesystem::recursive_directory_iterator(dataRoot() + "/minecraft/worldgen/template_pool")) {
+      if (e.path().extension() != ".json") continue;
+      std::function<void(const Json&)> scan = [&](const Json& j) {
+        if (j.isObject()) {
+          if (auto* t = j.find("element_type"); t && t->isString() && t->str == "minecraft:feature_pool_element")
+            impl->features.emplace(fullId(j["feature"].asString()), nullptr);
+          for (auto& [k, v] : j.obj) scan(v);
+        } else if (j.isArray()) {
+          for (auto& v : j.arr) scan(v);
+        }
+      };
+      scan(Json::parseFile(e.path().string()));
+    }
+    for (auto& [id, p] : impl->features) p = features->load_placed(id);
+  };
   const RegionLevel::FeatureMap* fm = &impl_->features;
   // ChunkGenerator.applyBiomeDecoration: each step's structures before that step's features, same random.
-  features->structure_placer = [m, terrain, features, fm](worldgen::Region& r, int step, WorldgenRandom& random, int64_t seed) {
+  features->structure_placer = [m, terrain, features, fm, impl, loadPoolFeatures](worldgen::Region& r, int step, WorldgenRandom& random, int64_t seed) {
+    std::call_once(impl->featuresLoaded, loadPoolFeatures);
     // One level (and region random) per decoration of a chunk, like the WorldGenRegion of the step.
     thread_local const worldgen::Region* at = nullptr;
     thread_local StructureManager::References refs;

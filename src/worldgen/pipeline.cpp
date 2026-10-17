@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <stdexcept>
 
+#include "log.hpp"
 #include "worldgen/block_state.hpp"
 
 namespace worldgen {
@@ -200,7 +201,7 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     std::lock_guard lock(p->m);
     if (!p->chunk) {  // freed after an earlier take: the World lost the chunk
       static std::once_flag warned;
-      std::call_once(warned, [] { fprintf(stderr, "worldgen: regenerating a dropped chunk without features\n"); });
+      std::call_once(warned, [] { log_warn("worldgen: regenerating a dropped chunk without features"); });
       Region region{*this, Status::TERRAIN, cx, cz, 0, 0, {p.get()}};
       p->chunk = std::make_unique<Chunk>();
       p->chunk->cx = cx, p->chunk->cz = cz;

@@ -51,11 +51,17 @@ class BiomeSource {
 public:
     BiomeSource();  // overworld preset (OverworldBiomeBuilder order), children per node 19
     explicit BiomeSource(std::vector<std::pair<ParameterPoint, int>> values, int childrenPerNode = 19);
+    BiomeSource(const BiomeSource& o);  // same tree, own lastResult cache (a separate RTree instance)
     int find(const TargetPoint& target) const;             // ParameterList.findValue (RTree + thread-local lastResult)
     const std::vector<std::pair<ParameterPoint, int>>& values() const { return values_; }
 
 private:
-    struct Node { Parameter space[7]; std::vector<int> children; int value = -1; };  // leaf <=> children empty
+    struct Node {  // leaf <=> children empty
+        Parameter space[7];
+        int64_t center[7];  // Parameter center per dimension (sort key of RTree.build)
+        std::vector<int> children;
+        int value = -1;
+    };
     int build(std::vector<int> children);
     int search(int node, const int64_t* target, int candidate) const;
     std::vector<std::pair<ParameterPoint, int>> values_;

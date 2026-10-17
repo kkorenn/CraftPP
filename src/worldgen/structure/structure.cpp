@@ -6,6 +6,8 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
+#include <thread>
+#include <atomic>
 
 #include "worldgen/json.hpp"
 
@@ -447,8 +449,10 @@ std::vector<std::string> sortedJsonIds(const std::string& folder) {
   std::vector<std::string> ids;
   std::string dir = dataRoot() + "/minecraft/worldgen/" + folder;
   for (auto& e : std::filesystem::recursive_directory_iterator(dir))
-    if (e.path().extension() == ".json")
-      ids.push_back(std::filesystem::relative(e.path(), dir).replace_extension().generic_string());
+    if (e.path().extension() == ".json") {
+      std::string p = e.path().generic_string();  // <dir>/<id>.json
+      ids.push_back(p.substr(dir.size() + 1, p.size() - dir.size() - 6));
+    }
   // Registry order: the resource TreeMap sorts full file identifiers ("<id>.json").
   std::sort(ids.begin(), ids.end(), [](const std::string& a, const std::string& b) { return a + ".json" < b + ".json"; });
   return ids;
@@ -546,34 +550,23 @@ const std::vector<std::pair<int, int>>& StructureManager::ringPositions(const St
   std::lock_guard lock(ringsLock_);
   auto it = rings_.find(&set);
   if (it != rings_.end()) return it->second;
-  // ChunkGeneratorStructureState.generateRingPositions (findBiomeHorizontal per position, in order).
+  // ChunkGeneratorStructureState.generateRingPositions: the initial positions and forked randoms in order, then
+  // one findBiomeHorizontal per position in parallel (vanilla: one supplyAsync each on the background executor).
   const Placement& p = set.placement;
-  std::vector<std::pair<int, int>> out;
   LegacyRandomSource random(0);
   random.setSeed(seed_);
   double angle = random.nextDouble() * M_PI * 2.0;
   int positionInCircle = 0, circle = 0, spread = p.spread;
+  std::vector<std::pair<int, int>> out;
+  std::vector<std::unique_ptr<RandomSource>> searches;
   for (int i = 0; i < p.count; i++) {
     double dist = (double)(4 * p.distance + p.distance * circle * 6) + (random.nextDouble() - 0.5) * (double)(p.distance * 2.5);
     auto round = [](double v) {  // Math.round: nearest, ties up (exact for 0.49999999999999994)
       double f = std::floor(v);
       return (int)Mth::d2l(v - f >= 0.5 ? f + 1 : f);
     };
-    int initialX = round(std::cos(angle) * dist);
-    int initialZ = round(std::sin(angle) * dist);
-    auto search = random.fork();
-    // BiomeSource.findBiomeHorizontal(x*16+8, 0, z*16+8, 112, preferred, search) with skipSteps 1, not closest.
-    int ncx = (initialX * 16 + 8) >> 2, ncz = (initialZ * 16 + 8) >> 2, radius = 112 >> 2;
-    std::optional<std::pair<int, int>> result;
-    int found = 0;
-    for (int z = -radius; z <= radius; z++)
-      for (int x = -radius; x <= radius; x++) {
-        int b = gen_.noiseBiome(ncx + x, 0, ncz + z);
-        if (!p.preferredBiomes[b]) continue;
-        if (!result || search->nextInt(found + 1) == 0) result = {(ncx + x) << 2, (ncz + z) << 2};
-        found++;
-      }
-    out.push_back(result ? std::pair{result->first >> 4, result->second >> 4} : std::pair{initialX, initialZ});
+    out.emplace_back(round(std::cos(angle) * dist), round(std::sin(angle) * dist));
+    searches.push_back(random.fork());
     angle += M_PI * 2 / spread;
     if (++positionInCircle == spread) {
       circle++;
@@ -583,6 +576,28 @@ const std::vector<std::pair<int, int>>& StructureManager::ringPositions(const St
       angle += random.nextDouble() * M_PI * 2.0;
     }
   }
+  std::atomic<size_t> next{0};
+  auto work = [&] {
+    for (size_t i; (i = next++) < out.size();) {
+      // BiomeSource.findBiomeHorizontal(x*16+8, 0, z*16+8, 112, preferred, search) with skipSteps 1, not closest.
+      auto [initialX, initialZ] = out[i];
+      int ncx = (initialX * 16 + 8) >> 2, ncz = (initialZ * 16 + 8) >> 2, radius = 112 >> 2;
+      std::optional<std::pair<int, int>> result;
+      int found = 0;
+      for (int z = -radius; z <= radius; z++)
+        for (int x = -radius; x <= radius; x++) {
+          int b = gen_.noiseBiome(ncx + x, 0, ncz + z);
+          if (!p.preferredBiomes[b]) continue;
+          if (!result || searches[i]->nextInt(found + 1) == 0) result = {(ncx + x) << 2, (ncz + z) << 2};
+          found++;
+        }
+      if (result) out[i] = {result->first >> 4, result->second >> 4};
+    }
+  };
+  std::vector<std::thread> threads(std::min<size_t>(out.size(), std::max(1u, std::thread::hardware_concurrency())) - 1);
+  for (auto& t : threads) t = std::thread(work);
+  work();
+  for (auto& t : threads) t.join();
   return rings_.emplace(&set, std::move(out)).first->second;
 }
 
@@ -594,6 +609,10 @@ bool StructureManager::isStructureChunk(const StructureSet& set, int x, int z) {
   } else {
     bool placeable = std::find(possibleSets_.begin(), possibleSets_.end(), &set) != possibleSets_.end();
     if (!placeable) return false;
+    // Exact shortcut (no ring computation near the origin): a ring position is the initial chunk (|v| >= 2.75 *
+    // distance - 0.71, from dist and Math.round) moved by at most 7 chunks per axis by the 112-block biome search.
+    double minR = 2.75 * p.distance - 11;
+    if (minR > 0 && double(x) * x + double(z) * z < minR * minR) return false;
     auto& r = ringPositions(set);
     if (std::find(r.begin(), r.end(), std::pair{x, z}) == r.end()) return false;
   }

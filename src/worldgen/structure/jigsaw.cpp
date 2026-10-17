@@ -9,6 +9,8 @@
 
 #include "worldgen/structure/jigsaw.hpp"
 
+#include "log.hpp"
+
 namespace structure {
 
 // ------------------------------------------------------------------------------------------- anchors / heights
@@ -90,7 +92,7 @@ const Pool* Pool::get(const std::string& id) {
       for (int i = 0; i < e["weight"].asInt(); i++) p->templates.push_back(el);
     }
   } catch (const std::exception& e) {
-    if (std::filesystem::exists(path)) fprintf(stderr, "structure: bad template pool %s: %s\n", key.c_str(), e.what());
+    if (std::filesystem::exists(path)) log_warn("structure: bad template pool %s: %s", key.c_str(), e.what());
     p = nullptr;  // missing pool
   }
   return (pools[key] = std::move(p)).get();

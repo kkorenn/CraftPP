@@ -23,6 +23,8 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Memory/data repairs: keep fluid-tag JSON alive during iteration; reacquire released initialized light-column chunk handles; bind vanilla block/fluid tags in the build-time mob extractor before querying fluid/path data. Generated mob data now distinguishes water/lava correctly; invalid type 3 is rejected at load time.
 - Regression fixtures: cauldron checks synchronize requests and filter bucket sounds; water timing is measured in server ticks; cow combat selects the intended summoned entity by position.
 
+- Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md.
+
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
@@ -33,7 +35,6 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
-| startup-perf | parallel spawn-region generation, fast restart (worldgen data cache), startup log hygiene |
 | feature-parity | 0 stable-block worldgen mismatches vs vanilla: sculk, lush caves, decoration order, untested biomes |
 
 ## Left

@@ -8,6 +8,7 @@
 #include <map>
 #include <set>
 
+#include "log.hpp"
 #include "worldgen/material.hpp"
 #include "worldgen/noise.hpp"
 #include "worldgen/overworld.hpp"
@@ -712,7 +713,7 @@ const Feature* Loader::feature(const Json& j) {
       bool place(Level&, RandomSource&, const P&) const override { return false; }
     };
     static std::set<std::string> warned;
-    if (warned.insert(t).second) fprintf(stderr, "worldgen: feature type %s not implemented\n", t.c_str());
+    if (warned.insert(t).second) log_warn("worldgen: feature type %s not implemented", t.c_str());
     return make<Missing>();
   }
   return it->second(*this, j);
