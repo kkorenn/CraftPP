@@ -142,7 +142,7 @@ struct Border {  // WorldBorder; lerps over game ticks like vanilla's MovingBord
     double cx = 0, cz = 0, from = 59999968, to = 59999968;
     int64_t lerp_total = 0, lerp_left = 0;
     double damage = 0.2, buffer = 5;
-    int warn_dist = 5, warn_time = 15;
+    int warn_dist = 5, warn_time = 300;  // 26.3 warning time is ticks
     double size() const { return lerp_left <= 0 ? to : from + (to - from) * (1.0 - double(lerp_left) / double(lerp_total)); }
     int64_t remaining_ms() const { return lerp_left; }  // packet field is ticks in 26.3
     void tick() { if (lerp_left > 0 && --lerp_left == 0) from = to; }
@@ -449,7 +449,7 @@ inline void level_from_nbt(const Nbt& r) {
         border.damage = D(b->get("damage_per_block"), 0.2);
         border.buffer = D(b->get("safe_zone"), 5);
         border.warn_dist = int(I(b->get("warning_blocks"), 5));
-        border.warn_time = int(I(b->get("warning_time"), 15));
+        border.warn_time = int(I(b->get("warning_time"), 300));
     }
     if (auto* objs = r.get("objectives"))
         for (auto& e : objs->list) {

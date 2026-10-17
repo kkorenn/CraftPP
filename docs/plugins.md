@@ -198,8 +198,11 @@ The next lever is loading fewer API classes eagerly (registries and
 - **Server.** `Bukkit.getServer`, `getLogger`, `getOnlinePlayers`,
   `getPlayer(name|UUID)`, `broadcastMessage`, `getVersion`, `getBukkitVersion`,
   `getName` (returns "Paper", so Paper-gated plugins run),
-  `dispatchCommand` (plugin commands first, then CraftPP's), ops, MOTD, and
-  `shutdown`.
+  `dispatchCommand` (plugin commands first, then CraftPP's), ops, MOTD read/write,
+  default game mode read/write, and `shutdown`. MOTD changes appear on the next
+  status ping. Default game mode applies to new players (and online players when
+  `force-gamemode=true`). Both setters change runtime properties; they do not
+  rewrite `server.properties`.
 - **Player.**
   - Identity and lookup: `getName`, `getUniqueId`, `isOp`/`setOp`, and
     `hasPermission` through a real `PermissibleBase` (plugin.yml permission
@@ -212,8 +215,25 @@ The next lever is loading fewer API classes eagerly (registries and
     held slot, `sendBlockChange`, `chat`/`performCommand`.
 - **World and Block.** `getName`, `getBlockAt(x,y,z).getType()`/`setType()`,
   `getBlockData`/`setBlockData` with typed `BlockData`, `createBlockData`,
-  `getHighestBlockYAt`, spawn, light (always 15, matching what CraftPP sends),
-  and border (the vanilla default).
+  `getHighestBlockYAt`, spawn, and actual sky/block light from the lighting engine.
+  Light queries initialize unlit chunks; queued lighting changes settle at the
+  end of the tick, as for normal chunk updates.
+  World border reads/writes now use live server state: center, size, timed size
+  changes, damage settings, warning distance/time, reset and containment queries.
+  Mutations validate inputs and send client updates; border settings persist
+  through restart. Millisecond resizing rounds up to simulation ticks (50 ms),
+  and warning time retains tick precision. The command path also uses 26.3 tick
+  units for warning time. Border change events are not emitted. Border state
+  remains shared across dimensions; damage behavior follows the existing server
+  border implementation.
+  Overworld time (`getTime`, `setTime`, `getFullTime`, `setFullTime`) uses the actual
+  day clock; `getGameTime` reads independent elapsed game ticks. `setTime` normalizes
+  to 0–23999 and moves forward to the requested time. Full time preserves Java long
+  precision, including negative values. Difficulty reads/writes and spawn setters
+  (including yaw) update clients and use existing world persistence. Spawn writes
+  outside build height or the horizontal world bounds return false. These setters
+  do not yet emit `TimeSkipEvent` or `SpawnChangeEvent`; the bridge still exposes
+  only the overworld.
 - **Events.**
   - `PlayerJoinEvent` and `PlayerQuitEvent`: message editable or
     suppressible.
@@ -248,10 +268,32 @@ The next lever is loading fewer API classes eagerly (registries and
 | Player inventory | read and write of item + count; **item meta (name, lore, enchants) is dropped** on writes |
 | Custom inventories / GUIs (`openInventory`) | throws (`player.openInventory` not implemented) |
 | Entities (`spawnEntity`, `getEntities`) | `getEntities` returns players only; spawning throws |
-| Scoreboards, boss bars, sounds, particles, biomes, game rules, world time | throw `IllegalStateException("CraftPP does not implement plugin API call ...")`. World time reads 0 |
+| Overworld time, elapsed game ticks, difficulty, spawn location | implemented; client updates and restart persistence covered by plugin tests |
+| World border | live reads/writes, timed resize, validation, client packets and persistence; change events missing, server border shared across dimensions |
+| Block sky/block light | actual engine values; updates settle at end of tick |
+| Scoreboards, boss bars, sounds, particles, biomes, game rules | throw `IllegalStateException("CraftPP does not implement plugin API call ...")` |
 | Persistent data containers | in memory for the session only |
 | Registries, `Material` facts | bundled 26.3 registry report. `material-properties-26.3.json` still holds the 26.2 values (regenerate with PrismMC's `tools/jar-truth/MaterialTruth.java` against the 26.3 jar) |
 | NMS (`CraftPlayer.getHandle`, packets, Netty pipeline) | boots (see below). Plugin-sent packets reach the client. Clientbound filtering and serverbound interception through plugin pipelines are not wired yet |
+
+### Measured bridge coverage
+
+After the border/light/server-settings batch, **51 of 74 native JSON bridge
+routes are wired (68.9%)**, up from **46 of 74 (62.2%)** at `ee3279c`.
+Of the 51 wired routes, 16 have explicitly listed partial behavior; 35 have no
+listed gaps in this audit. Seven routes remain constant/no-op placeholders and
+16 have no native handler.
+
+This is **dispatch coverage, not the percentage of the full Bukkit/Paper API
+implemented**. The denominator counts unique literal `Main.rpc.api("route")`
+calls in the shipped Java bridge. It excludes Java-only methods, overloads,
+events, direct JNI fast paths and NMS. A route with a handler is not proof of
+vanilla behavior or compatibility with a particular plugin.
+
+Run `python3 tools/plugin_api_coverage.py` for counts and the remaining-route
+list, `--json` for machine-readable output, or `--revision ee3279c` to reproduce
+the previous batch. Runtime tests cover the new behavior independently of this
+source-based audit.
 
 Anything not listed throws with the method name. Run the plugin and read the
 console to see what it needs next.
