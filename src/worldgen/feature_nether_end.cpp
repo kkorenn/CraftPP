@@ -1,6 +1,7 @@
 // Nether and End feature types: delta_feature, stepped_column_cluster, netherrack_replace_blobs, huge_fungus,
 // single_block_pillar, projected_random_patchy_square, random_neighbor_spread, end_spike, end_island,
 // chorus_plant, end_platform, end_gateway. Ports of levelgen/feature/*Feature.java (26.3).
+#include <algorithm>
 #include <cmath>
 #include <optional>
 
