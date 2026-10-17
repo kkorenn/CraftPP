@@ -1,6 +1,7 @@
 #pragma once
 // Per-player game state and network queues (embedded in Player, see server.hpp). Threading: see game/tick.hpp.
 #include "../protocol.hpp"
+#include "../effects/instance.hpp"
 
 #include <array>
 #include <bitset>
@@ -112,6 +113,9 @@ struct PlayerGame {
     float health = 20, saturation = 5, exhaustion = 0, last_hurt = 0;
     int food = 20, food_timer = 0, invulnerable = 0;
     int xp_level = 0, xp_total = 0;
+    int last_level_up = 0;                // Player.lastLevelUpTime (game_ticks)
+    std::vector<EffectInstance> effects;  // active mob effects (src/effects); cleared by respawn like a new ServerPlayer
+    uint8_t effect_flags = 0;             // shared flags from effects: 0x20 invisible, 0x40 glowing
     float xp_progress = 0;
     double fall_distance = 0;
     bool dead = false, sprinting = false, sneaking = false, loaded = false;
