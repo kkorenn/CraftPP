@@ -194,7 +194,7 @@ tags = {t: items("#minecraft:" + t) for t in (
     "enchantable/armor", "enchantable/sword", "enchantable/sharp_weapon", "enchantable/mace", "enchantable/fire_aspect",
     "enchantable/weapon", "enchantable/mining", "enchantable/mining_loot", "enchantable/fishing", "enchantable/trident",
     "enchantable/durability", "enchantable/bow", "enchantable/equippable", "enchantable/crossbow", "enchantable/vanishing",
-    "enchantable/melee_weapon", "enchantable/lunge", "loom_dyes", "loom_patterns", "banners", "wool", "planks", "saplings", "dyes")
+    "enchantable/melee_weapon", "enchantable/lunge", "loom_dyes", "loom_patterns", "banners", "brewing_potion_inputs", "wool", "planks", "saplings", "dyes")
     if "minecraft:" + t in item_tags}
 reg_ids = lambda r: {k.split(":")[-1]: v["protocol_id"] for k, v in registries["minecraft:" + r]["entries"].items()}
 
@@ -203,7 +203,8 @@ out = {"cooking": cooking, "fuel": fuel, "stonecutting": stonecutting, "smithing
        "block_entity_types": reg_ids("block_entity_type"), "menus": reg_ids("menu"),
        "recipe_display": reg_ids("slot_display"), "trim_pattern": json_ids("trim_pattern"),
        "trim_material": json_ids("trim_material"), "brewing": brewing, "enchantments": enchantments,
-       "enchantment_tags": ench_tag_out, "items": item_extra, "banner": banner, "potions": potion_ids}
+       "enchantment_tags": ench_tag_out, "items": item_extra, "banner": banner, "potions": potion_ids,
+       "effects": reg_ids("mob_effect")}
 os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
 with open(os.path.join(ROOT, "data", "containers.json"), "w") as fp:
     json.dump(out, fp, separators=(",", ":"))

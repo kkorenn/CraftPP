@@ -2,7 +2,7 @@
 // Block entities and container menus: entry point. containers_init() (game_init) loads data/containers.json,
 // registers block entity types and installs the hooks in world.hpp / survival.hpp / loot.hpp / server.hpp.
 #include "hopper.hpp"
-#include "stations.hpp"
+#include "brewing.hpp"
 
 namespace cont {
 
@@ -13,7 +13,7 @@ inline bool use_block(Player& p, int hand, int x, int y, int z, int) {
     if (p.g.sneaking && have_items) return false;  // secondary use: place against it instead
     if (hand != 0) return false;                   // useWithoutItem is main hand only
     return use_container(p, state, x, y, z) || use_furnace(p, state, x, y, z) || use_hopper(p, state, x, y, z) ||
-           use_station(p, state, x, y, z);
+           use_station(p, state, x, y, z) || use_brewing_or_beacon(p, state, x, y, z);
 }
 
 // getStateForPlacement for the blocks of this module; other states pass through.
@@ -97,6 +97,8 @@ inline void containers_init() {
     cont::register_furnaces();
     cont::register_hoppers();
     cont::load_enchant_data(cont::data_json);
+    cont::load_brewing_data(cont::data_json);
+    cont::register_brewing_beacon();
     cont::data_json = Json();
     static const Writer recipes = cont::update_recipes_packet();
     on_player_join([](Player& p) {
