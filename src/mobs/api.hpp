@@ -35,4 +35,8 @@ void load_player_effects(Player& p, const Nbt& tag);
 void effects_player_respawned(Player& p);  // drop the old effects' modifiers and absorption
 void world_sound(const std::string& sound, int source, double x, double y, double z, float vol, float pitch);  // Level.playSound(null, ...)
 void player_block_experience(Player& p, int state, int x, int y, int z);  // ores, sculk, spawners
+int item_durability_change(const ItemStack& s, int amount);  // EnchantmentHelper.processDurabilityChange (unbreaking)
+bool item_vanishes(const ItemStack& s);                     // curse of vanishing (prevent_equipment_drop)
+int repair_player_items(Player& p, int amount);             // mending: experience left after repairs
+bool player_throw_item(Player& p, int hand);  // thrown potions / experience bottles (Item.use)
 void player_consume_effects(Player& p, int item, const ItemStack& stack);  // Consumable.onConsume effects (food, potions, milk)

@@ -124,6 +124,14 @@ inline void tick_effects(LivingEntity& e);
 inline void trigger_on_death_effects(LivingEntity& e);
 inline void effects_on_hurt(LivingEntity& e);
 inline void save_effects(const LivingEntity& e, Nbt& o);
+inline float enchant_armor_effectiveness(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline bool enchant_damage_immune(LivingEntity& victim, const DamageSource& s);
+inline float enchant_modify_damage(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline float enchant_modify_knockback(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline void enchant_post_attack(Entity& victim, const DamageSource& s, const ItemStack* weapon);
+inline void enchant_location_changed(LivingEntity& e);
+inline bool item_has_comp(const ItemStack&);
+template <class F> inline void enchant_attribute_mods(const ItemStack& it, int slot, F f);
 inline void load_effects(LivingEntity& e, const Nbt& in);
 inline bool has_water_breathing(const LivingEntity& e);
 inline bool effects_refill_air(const LivingEntity& e);
@@ -148,6 +156,7 @@ struct LivingEntity : Entity {
     int64_t last_damage_stamp = 0;
     // ---- mob effects (src/effects/effects.hpp) ----
     std::vector<EffectInstance> own_effects;
+    std::array<int, 3> last_block{INT32_MIN, 0, 0};  // lastPos (onChangedBlock)
     bool effects_dirty = true;
     virtual std::vector<EffectInstance>& effects() { return own_effects; }
     const std::vector<EffectInstance>& effects() const { return const_cast<LivingEntity*>(this)->effects(); }
@@ -188,6 +197,8 @@ struct LivingEntity : Entity {
         for (int s = 0; s < 8; s++) {
             const ItemStack& it = item_in_slot(s);
             if (it.empty()) continue;
+            if (item_has_comp(it))  // enchantment minecraft:attributes (efficiency, respiration, sweeping edge...)
+                enchant_attribute_mods(it, s, [&](int ea, double amount, int op) { if (ea == a) apply(amount, op); });
             auto c = item_combat.find(it.item);
             if (c == item_combat.end()) continue;
             for (auto& m : c->second.mods)
@@ -316,7 +327,10 @@ struct LivingEntity : Entity {
         float armor = float(armor_value()), tough = float(attr(attr::armor_toughness));
         float t = 2.0f + tough / 4.0f;
         float real = std::clamp(armor - dmg / t, armor * 0.2f, 20.0f);
-        return dmg * (1.0f - real / 25.0f);  // ponytail: no breach enchantment (armor effectiveness)
+        float frac = real / 25.0f;  // CombatRules.getDamageAfterAbsorb: the weapon's armor_effectiveness (breach)
+        if (LivingEntity* w = s.direct ? s.direct->as_living() : nullptr)
+            frac = std::clamp(enchant_armor_effectiveness(w->main_hand(), this, s, frac), 0.0f, 1.0f);
+        return dmg * (1.0f - frac);
     }
     virtual void hurt_armor(const DamageSource&, float) {}
     virtual void knockback(double power, double xd, double zd);
@@ -351,7 +365,9 @@ struct LivingEntity : Entity {
     }
     void set_last_hurt_mob(Entity& e) { last_hurt_mob = e.id; last_hurt_mob_time = tick_count; }
     virtual bool do_hurt_target(Entity& target) { set_last_hurt_mob(target); return false; }
-    virtual float attack_knockback(Entity&) { return float(attr(attr::attack_knockback)) / 2.0f; }
+    virtual float attack_knockback(Entity& t) {  // getKnockback: the weapon's knockback enchantment
+        return enchant_modify_knockback(main_hand(), &t, DamageSource::of("mob_attack", this), float(attr(attr::attack_knockback))) / 2.0f;
+    }
     void cause_extra_knockback(Entity& target, float kb) {
         if (kb > 0 && target.as_living()) {
             target.as_living()->knockback(kb, mth::sin(yaw * mth::DEG), -mth::cos(yaw * mth::DEG));
@@ -411,6 +427,7 @@ inline void LivingEntity::deal_default_knockback(const DamageSource& s) {
 
 inline bool LivingEntity::hurt_server(const DamageSource& s, float dmg) {  // LivingEntity.hurtServer
     if (is_invulnerable_to(s) || is_dead_or_dying()) return false;
+    if (enchant_damage_immune(*this, s)) return false;  // isInvulnerableTo: damage_immunity enchantments
     if (s.is(DT_IS_FIRE) && has_effect(eff::fire_resistance)) return false;
     no_action_time = 0;
     if (dmg < 0) dmg = 0;
@@ -522,7 +539,8 @@ inline void LivingEntity::base_tick() {  // LivingEntity.baseTick
     if (is_alive()) {
         if (is_in_wall()) hurt_server(DamageSource::of("in_wall"), 1.0f);
         if (was_eye_in_water && !can_breathe_underwater() && !has_water_breathing(*this) && !(as_player() && is_creative())) {
-            int a = air_supply() - 1;  // decreaseAirSupply (no respiration)
+            double ob = attr(attr::oxygen_bonus);  // decreaseAirSupply: respiration
+            int a = ob > 0.0 && rand_double() >= 1.0 / (ob + 1.0) ? air_supply() : air_supply() - 1;
             if (a <= -20) {
                 a = 0;
                 broadcast_event(67);
@@ -532,6 +550,10 @@ inline void LivingEntity::base_tick() {  // LivingEntity.baseTick
         } else if (air_supply() < 300 && (!was_eye_in_water || effects_refill_air(*this))) {
             set_air_supply(std::min(air_supply() + 4, 300));
         }
+    }
+    if (is_alive() && (block_x() != last_block[0] || block_y() != last_block[1] || block_z() != last_block[2])) {
+        last_block = {block_x(), block_y(), block_z()};
+        enchant_location_changed(*this);  // onChangedBlock: frost walker, soul speed
     }
     if (hurt_time > 0) hurt_time--;
     if (damage_cooldown > 0 && !as_player()) damage_cooldown--;

@@ -69,7 +69,7 @@ struct ExperienceOrb : Entity {
         w.varint(play_cb::take_item_entity).varint(id).varint(p.eid).varint(1);
         broadcast(w);
         p.send(w);
-        give_experience_points(p, value());  // ponytail: mending repair not applied (no enchantments)
+        if (int left = repair_player_items(p, value()); left > 0) give_experience_points(p, left);
         if (--count == 0) discard();
     }
     void save_extra(Nbt& o) const override {

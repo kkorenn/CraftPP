@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tool-time extractor for src/effects: data/effects.json.
 
-  potions      minecraft:potion registry order: [name, [[effect, duration, amplifier], ...]] (Potions.java)
+  potions      minecraft:potion registry order: [key, name, [[effect, duration, amplifier], ...]] (Potions.java)
   consume      item id -> on_consume_effects of its default consumable component (items report)
   block_xp     block -> [min, max] experience (DropExperienceBlock & co.) or "spawner"
   enchantments minecraft:enchantment registry order (sorted ids, as synced): the datapack JSON (effects, slots, ...)
@@ -30,7 +30,7 @@ for m in re.finditer(r'register\(\s*PotionIds\.(\w+),\s*new Potion\("(\w+)"(.*?)
     effects = []
     for e in re.finditer(r'new MobEffectInstance\(MobEffects\.(\w+),\s*(\d+)(?:,\s*(\d+))?\)', m.group(3)):
         effects.append([e.group(1).lower(), int(e.group(2)), int(e.group(3) or 0)])
-    potions[potion_ids[const_to_key[m.group(1)]]] = [m.group(2), effects]
+    potions[potion_ids[const_to_key[m.group(1)]]] = [const_to_key[m.group(1)][10:], m.group(2), effects]
 assert all(potions), "unparsed potion"
 
 # ---------- consumables ----------
@@ -66,5 +66,25 @@ for f in sorted(os.listdir(os.path.join(DATA, "enchantment"))):  # datapack regi
     ench.append({"name": name, "max_level": j["max_level"], "slots": j["slots"], "effects": j.get("effects", {}),
                  "supported": j.get("supported_items"), "exclusive": j.get("exclusive_set")})
 
-json.dump({"potions": potions, "consume": consume, "enchantments": ench, "block_xp": block_xp}, open(OUT, "w"), separators=(",", ":"))
+# ---------- tags the enchantment effects refer to (resolved, nested tags expanded) ----------
+def load_tag(kind, name, seen=None):
+    p = os.path.join(DATA, "tags", kind, name.split(":")[1] + ".json")
+    out = []
+    for v in json.load(open(p))["values"]:
+        v = v["id"] if isinstance(v, dict) else v
+        out += load_tag(kind, v[1:]) if v.startswith("#") else [v]
+    return out
+def refs(o, key):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == key and isinstance(v, str) and v.startswith("#"): yield v[1:]
+            yield from refs(v, key)
+    elif isinstance(o, list):
+        for v in o: yield from refs(v, key)
+effects_only = [e["effects"] for e in ench]
+item_tags = {t: sorted(item_ids[i] for i in load_tag("item", t) if i in item_ids) for t in set(refs(effects_only, "items"))}
+block_tags = {t: load_tag("block", t) for t in set(refs(effects_only, "blocks"))}
+
+json.dump({"potions": potions, "consume": consume, "enchantments": ench, "block_xp": block_xp,
+           "item_tags": item_tags, "block_tags": block_tags}, open(OUT, "w"), separators=(",", ":"))
 print(f"effects.json: {len(potions)} potions, {len(consume)} consumables, {len(ench)} enchantments, {len(block_xp)} xp blocks")

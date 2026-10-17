@@ -474,4 +474,5 @@ inline void load_effects(LivingEntity& e, const Nbt& in) {
     e.effects_dirty = true;
     // attribute modifiers are saved with the attributes (vanilla does the same), nothing to reapply
 }
+#include "components.hpp"
 #include "enchant.hpp"

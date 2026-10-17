@@ -156,9 +156,9 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
 }
 inline bool hurt(Player& p, float amount, const std::string& type) { return hurt(p, DamageSource::of(type), amount); }
 
-inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off)
+inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off); destroyVanishingCursedItems first
     for (auto& s : p.inv)
-        if (!s.empty()) { player_drop(p, s, true); s = {}; }
+        if (!s.empty()) { if (!item_vanishes(s)) player_drop(p, s, true); s = {}; }
     for (auto* s : {&p.g.carried}) if (!s->empty()) { player_drop(p, *s, true); *s = {}; }
     for (auto& s : p.g.craft2) if (!s.empty()) { player_drop(p, s, true); s = {}; }
     for (auto& s : p.g.craft3) if (!s.empty()) { player_drop(p, s, true); s = {}; }
@@ -296,11 +296,12 @@ inline float destroy_progress(Player& p, int state) {
     return speed / h / (correct_tool(p, state) ? 30.0f : 100.0f);
 }
 
-inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak (no unbreaking yet)
+inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak
     ItemStack& t = held(p);
     if (t.empty() || !survival_like(p)) return;
     int maxd = item_info[size_t(t.item)].max_damage;
     if (maxd <= 0) return;
+    if ((amount = item_durability_change(t, amount)) <= 0) return;  // unbreaking
     if ((t.damage += amount) >= maxd) {
         t = {};
         broadcast_near(p.x, p.z, entity_event_packet(p.eid, 47));  // main hand break animation + sound
@@ -596,7 +597,6 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
         open_crafting_table(p, x, y, z);
         return 2;
     }
-    ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
     bool have_items = !held(p).empty() || !p.inv[40].empty();
     if (is_table && !(p.g.sneaking && have_items) && hand == 0) {  // useWithoutItem
         open_crafting_table(p, x, y, z);
@@ -745,6 +745,7 @@ inline void register_game_handlers() {
         if (in.i + 8 <= in.n) p.yaw = in.f32(), p.pitch = in.f32();  // the view the client used the item with
         ack_block_changes(p, seq);
         if (p.gamemode != 3 && !p.g.dead && lvl::use_bucket(p, p.inv[hand ? 40u : size_t(p.selected)])) return;
+        if (p.gamemode != 3 && player_throw_item(p, hand)) return swing(p, hand, false);  // splash/lingering potions, xp bottles
         start_using(p, hand);
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });

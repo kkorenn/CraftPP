@@ -613,21 +613,27 @@ inline SpawnGroupData* Mob::finalize_spawn(SpawnReason, SpawnGroupData* g) {  //
 }
 inline bool Mob::do_hurt_target(Entity& target) {  // Mob.doHurtTarget
     float dmg = float(attr(attr::attack_damage));
+    const ItemStack weapon = main_hand();
     DamageSource s = DamageSource::of("mob_attack", this);
-    // ponytail: weapon enchantments / item attack damage bonus (mace) not applied
+    dmg = enchant_modify_damage(weapon, &target, s, dmg);  // ponytail: item attack damage bonus (mace) not applied
     bool hurt = target.hurt_server(s, dmg);
     if (hurt) {
         cause_extra_knockback(target, attack_knockback(target));
+        enchant_post_attack(target, s, &weapon);  // doPostAttackEffects (fire aspect, the victim's thorns)
         set_last_hurt_mob(target);
     }
     return hurt;
 }
-inline void Mob::drop_custom_death_loot(const DamageSource&, bool player_killed) {  // Mob.dropCustomDeathLoot
+inline float enchant_equipment_drop_chance(LivingEntity& victim, const DamageSource& s, float chance);
+inline bool enchant_prevents_drop(const ItemStack& it);
+inline void Mob::drop_custom_death_loot(const DamageSource& src, bool player_killed) {  // Mob.dropCustomDeathLoot
     for (int s = 0; s < 8; s++) {
         ItemStack& it = equipment[size_t(s)];
         float ch = drop_chances[size_t(s)];
-        if (it.empty() || ch == 0.0f) continue;
+        if (ch == 0.0f) continue;
         bool preserve = ch > 1.0f;
+        if (src.causing && src.causing->as_living()) ch = enchant_equipment_drop_chance(*this, src, ch);  // looting
+        if (it.empty() || enchant_prevents_drop(it)) continue;
         if ((player_killed || preserve) && rand_float() < ch) {
             ItemStack d = it;
             int maxd = item_info[size_t(d.item)].max_damage;

@@ -105,5 +105,15 @@ time.sleep(1.2)
 c.send(PLAY_SB["player_action"], varint(3) + struct.pack(">q", (3 & 0x3FFFFFF) << 38 | (3 & 0x3FFFFFF) << 12 | (-61 & 0xFFF)) + b"\x01" + varint(2))
 wait(c, PLAY_CB["add_entity"], lambda b: (b.varint(), b.take(16), b.varint())[2] == ORB)
 print("experience ok")
+
+# 5. Bottle o' enchanting: thrown (ThrownExperienceBottle), bursts into 3-11 xp on landing.
+BOTTLE = ids("entity_types")["experience_bottle"]
+cmd(c, "clear @s")
+cmd(c, "give @s experience_bottle")
+wait(c, PLAY_CB["container_set_slot"])
+c.send(PLAY_SB["use_item"], varint(0) + varint(3) + struct.pack(">ff", 0, 90))
+wait(c, PLAY_CB["add_entity"], lambda b: (b.varint(), b.take(16), b.varint())[2] == BOTTLE)
+wait(c, PLAY_CB["add_entity"], lambda b: (b.varint(), b.take(16), b.varint())[2] == ORB)
+print("experience bottle ok")
 cmd(c, "gamemode creative")
 c.close() if hasattr(c, "close") else None

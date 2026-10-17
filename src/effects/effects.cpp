@@ -1,10 +1,7 @@
 // Effects module TU: data (data/effects.json, tools/gen_effect_data.py), player effect ticking and sync, consume
 // effects (food, milk, potions), the player API in mobs/api.hpp and /effect. Effect logic: effects.hpp.
 #include "../mobs/mobs.hpp"
-
-// ---------- potions (Potions.java; minecraft:potion registry order) ----------
-struct Potion { std::string name; std::vector<EffectInstance> effects; };
-static std::vector<Potion> potions;
+#include "potion_entities.hpp"
 
 // ---------- consume effects (net.minecraft.world.item.consume_effects) ----------
 struct ConsumeEffect {
@@ -33,8 +30,8 @@ static bool load_effect_data() {
     }
     for (auto& p : j["potions"].arr) {
         Potion pot;
-        pot.name = p[0].asString();
-        for (auto& e : p[1].arr) pot.effects.emplace_back(effect_id(e[0].asString()), e[1].asInt(), e[2].asInt());
+        pot.name = p[0].asString();  // registry key (Potion.name, p[1], is the translation suffix)
+        for (auto& e : p[2].arr) pot.effects.emplace_back(effect_id(e[0].asString()), e[1].asInt(), e[2].asInt());
         potions.push_back(std::move(pot));
     }
     for (auto& [k, v] : j["block_xp"].obj)
@@ -65,6 +62,7 @@ static bool load_effect_data() {
             out.push_back(std::move(ce));
         }
     }
+    load_enchantment_data(j);
     return true;
 }
 
@@ -111,7 +109,12 @@ static bool teleport_randomly(Player& p, PlayerEntity& pe, float diameter) {
 void player_consume_effects(Player& p, int item, const ItemStack& stack) {
     PlayerEntity* pe = player_entity(p);
     if (!pe) return;
-    (void)stack;
+    if (item == item_id("potion")) {  // PotionContents.onConsume -> applyToLivingEntity(potion_duration_scale)
+        for (auto& e : potion_contents(stack).scaled_effects(potion_duration_scale(stack))) {
+            if (mob_effects[size_t(e.id)].instant) apply_instant(*pe, e.id, e.amp, 1.0, pe, pe);
+            else add_effect(*pe, e, pe);
+        }
+    }
     auto it = consume_effects.find(item);
     if (it == consume_effects.end()) return;
     for (auto& c : it->second) {
@@ -140,8 +143,59 @@ void player_block_experience(Player& p, int state, int x, int y, int z) {
     if (n > 0 && rule("block_drops")) award_xp_orbs(x + 0.5, y + 0.5, z + 0.5, n);  // popExperience
 }
 
+bool player_throw_item(Player& p, int hand) { return throw_item(p, hand); }
 void world_sound(const std::string& sound, int source, double x, double y, double z, float vol, float pitch) {
     play_sound(sound, source, x, y, z, vol, pitch);
+}
+
+// ---------- items worn by living entities ----------
+static ItemStack* slot_stack(LivingEntity& e, int slot) {  // getItemBySlot, writable
+    if (Player* p = e.as_player()) {
+        static const int inv[] = {-1, 40, 36, 37, 38, 39};
+        if (slot == ES_MAINHAND) return &p->inv[size_t(p->selected)];
+        return slot < 6 ? &p->inv[size_t(inv[slot])] : nullptr;
+    }
+    return &e.equipment[size_t(slot)];
+}
+// ItemStack.hurtAndBreak(amount, entity, slot): unbreaking, creative players, break event + sound
+static void hurt_and_break(LivingEntity& owner, int slot, int amount) {
+    ItemStack* s = slot_stack(owner, slot);
+    if (!s || s->empty() || item_info[size_t(s->item)].max_damage <= 0) return;
+    if (Player* p = owner.as_player(); p && !survival_like(*p)) return;
+    if (amount > 0) amount = enchant_durability_change(*s, amount);
+    if (amount <= 0) return;
+    if ((s->damage += amount) >= item_info[size_t(s->item)].max_damage) {
+        *s = {};
+        static const int ev[] = {47, 48, 52, 51, 50, 49, 65, 68};  // EntityEvent: break per slot
+        if (Player* p = owner.as_player()) broadcast_near(p->x, p->z, entity_event_packet(p->eid, ev[slot]));
+        else owner.broadcast_event(ev[slot]);
+        if (!owner.as_player()) owner.equip_dirty |= uint8_t(1 << slot);
+    } else if (!owner.as_player()) {
+        owner.equip_dirty |= uint8_t(1 << slot);
+    }
+}
+void hurt_item_in_slot(LivingEntity& owner, int slot, int amount) { hurt_and_break(owner, slot, amount); }
+
+// ExperienceOrb.repairPlayerItems (mending): returns the experience left over.
+int repair_player_items(Player& p, int amount) {
+    PlayerEntity* pe = player_entity(p);
+    if (!pe) return amount;
+    std::vector<int> slots;  // getRandomItemWith(REPAIR_WITH_XP, isDamaged)
+    for (int slot = 0; slot < 8; slot++) {
+        const ItemStack& it = pe->item_in_slot(slot);
+        if (it.empty() || it.damage <= 0) continue;
+        each_item_enchant(it, [&](const EnchantDef& d, int) { if (!d.repair_xp.empty() && d.matching_slot(slot)) slots.push_back(slot); });
+    }
+    if (slots.empty()) return amount;
+    ItemStack& it = *slot_stack(*pe, slots[size_t(rand_int(int(slots.size())))]);
+    int to_repair = enchant_repair_with_xp(it, amount);
+    int repair = std::min(to_repair, it.damage);
+    it.damage -= repair;
+    if (repair > 0) {
+        int remaining = amount - repair * amount / to_repair;
+        if (remaining > 0) return repair_player_items(p, remaining);
+    }
+    return 0;
 }
 
 // ---------- player API ----------
@@ -163,7 +217,13 @@ double player_attribute(const Player& p, const char* attribute) {
     PlayerEntity* pe = player_entity(p);
     return pe ? attr_by_name(*pe, attribute) : 0;
 }
-bool player_effect_blocks_damage(Player& p, const DamageSource& s) { return s.is(DT_IS_FIRE) && player_has_effect(p, "fire_resistance"); }
+bool player_effect_blocks_damage(Player& p, const DamageSource& s) {  // fire resistance, damage_immunity enchantments
+    if (s.is(DT_IS_FIRE) && player_has_effect(p, "fire_resistance")) return true;
+    PlayerEntity* pe = player_entity(p);
+    return pe && enchant_damage_immune(*pe, s);
+}
+int item_durability_change(const ItemStack& s, int amount) { return enchant_durability_change(s, amount); }
+bool item_vanishes(const ItemStack& s) { return enchant_prevents_drop(s); }
 float player_damage_after_effects(Player& p, const DamageSource& s, float dmg) {
     PlayerEntity* pe = player_entity(p);
     if (!pe) return dmg;
@@ -223,6 +283,10 @@ static void player_effects_tick(Player& p) {
     }
     if (!p.g.dead) tick_effects(*pe);
     else update_dirty_effects(*pe);
+    if (!p.g.dead && (pe->block_x() != pe->last_block[0] || pe->block_y() != pe->last_block[1] || pe->block_z() != pe->last_block[2])) {
+        pe->last_block = {pe->block_x(), pe->block_y(), pe->block_z()};
+        enchant_location_changed(*pe);  // LivingEntity.onChangedBlock (frost walker, soul speed)
+    }
     const auto* d = pe->data.find(edata::LivingEntity::EFFECT_PARTICLES);
     std::vector<uint8_t> parts = d ? pe->data.objs[size_t(d->v)] : std::vector<uint8_t>{0};
     bool amb = pe->data.get(edata::LivingEntity::EFFECT_AMBIENCE, 0) != 0;
@@ -324,4 +388,8 @@ static MobRegistration effects_registration([] {
     on_player_tick(player_effects_tick);
     on_player_leave(player_effects_leave);
     register_effect_command();
+    cont::beacon_effect_hook = [](Player& p, int effect, int amp, int duration) {  // BeaconBlockEntity.applyEffects
+        if (PlayerEntity* pe = player_entity(p); pe && effect >= 0 && size_t(effect) < mob_effects.size())
+            add_effect(*pe, EffectInstance(effect, duration, amp, true, true));
+    };
 });

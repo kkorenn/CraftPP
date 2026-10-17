@@ -132,7 +132,10 @@ inline void skip_value(Reader& r, int id) {
     } else if (id == comp::potion_contents()) {
         if (r.u8()) r.varint();
         if (r.u8()) r.i32();
-        if (r.varint() != 0) throw std::runtime_error("potion effects");
+        for (int n = r.varint(); n > 0; n--) {  // custom effects: MobEffectInstance.STREAM_CODEC (details may nest)
+            r.varint();
+            for (bool more = true; more;) { r.varint(), r.varint(), r.u8(), r.u8(), r.u8(); more = r.u8(); }
+        }
         if (r.u8()) r.str();
     } else if (id == comp::writable_book_content()) {
         for (int n = r.varint(); n > 0; n--) { r.str(); if (r.u8()) r.str(); }
