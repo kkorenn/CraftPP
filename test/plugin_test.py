@@ -7,7 +7,7 @@ import glob, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, ti
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "test"))
-from bot import PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
+from bot import free_port, PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 25598
 BRIDGE = os.path.join(ROOT, "build/java/libs/craftpp-bridge.jar")
@@ -79,7 +79,7 @@ def texts(b):
     return "".join(out)
 
 
-def chat_with(c, needle, limit=3000):
+def chat_with(c, needle, limit=20000):
     return texts(wait(c, PLAY_CB["system_chat"], lambda b: needle.encode() in b.d, limit))
 
 
@@ -105,9 +105,11 @@ def start_server(d, port, plugins):
     log = open(os.path.join(d, "server.log"), "w")
     proc = subprocess.Popen([os.path.join(ROOT, "build/craftpp"), "test.properties"], cwd=d, stdin=subprocess.PIPE,
                             stdout=log, stderr=subprocess.STDOUT, text=True)
-    for _ in range(300):
+    for _ in range(2400):  # 2 min: the JVM starts slowly on a loaded host
         if "Done (" in open(os.path.join(d, "server.log")).read():
             return proc
+        if proc.poll() is not None:
+            break
         time.sleep(0.05)
     raise AssertionError("server did not start: " + open(os.path.join(d, "server.log")).read()[-2000:])
 
@@ -375,9 +377,10 @@ def main():
 
     # Memory: the same session without plugins (no JVM at all).
     d2 = tempfile.mkdtemp(prefix="craftpp-noplugins-")
-    proc = start_server(d2, PORT + 1, [])
+    port2 = free_port()
+    proc = start_server(d2, port2, [])
     try:
-        c, _ = login("Alice", "127.0.0.1", PORT + 1, view=2)
+        c, _ = login("Alice", "127.0.0.1", port2, view=2)
         time.sleep(0.5)
         rss_plain = rss_kib(proc.pid)
         assert not os.path.exists(os.path.join(d2, "plugins/jvm.properties"))

@@ -231,7 +231,6 @@ inline void setup_dimensions(int64_t seed) {
         w.open(std::string("minecraft:") + d.name, d.type, 0, 256, world_dir + "/dimensions/minecraft/" + d.name, d.dim);
         w.coordinate_scale = d.scale, w.skylight = d.sky, w.ceiling = d.ceiling, w.sea_level = d.sea;
         w.logical_height = d.logical;
-        w.fullbright = true;  // ponytail: the light engine is overworld-only (fixed layout); full light here
         auto gen = std::make_shared<std::unique_ptr<worldgen::Overworld>>();
         auto once = std::make_shared<std::once_flag>();
         auto initialized = std::make_shared<std::atomic<bool>>(false);
@@ -243,6 +242,7 @@ inline void setup_dimensions(int64_t seed) {
                 *gen = std::make_unique<worldgen::Overworld>(seed, stages, "data/vanilla", pack, settings, 0, 256);
                 (*gen)->pipeline.dimension = dim;
                 (*gen)->pipeline.persist = true;
+                light::attach(worlds[dim], (*gen)->pipeline);
                 if (structures) std::atomic_store(&structure_worlds[dim], std::make_shared<structure::StructureWorld>(**gen, true, dim, folder));
                 initialized->store(true, std::memory_order_release);
             });
@@ -573,18 +573,22 @@ inline void deliver_chunks(Player& p) {
 // Tick hook: light changed by block edits -> light_update to players that have the chunk on their view border
 // (ChunkHolder.broadcastChanges: clients relight edits themselves, except where a neighbour chunk is missing).
 inline void broadcast_light() {
-    auto changes = light::take_changes();
-    if (changes.empty()) return;
     int v = view_distance();
-    auto ps = snapshot();
-    for (auto& ch : changes) {
-        Writer w;
-        for (auto& p : ps) {
-            if (p->level != &worlds[DIM_OVERWORLD]) continue;  // the light engine lights the overworld only
-            int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
-            if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
-            if (w.b.empty()) light::write_update(w.varint(play_cb::light_update), ch);
-            p->send(w);
+    std::vector<PlayerPtr> ps;
+    for (World& level : worlds) {
+        if (level.fullbright) continue;
+        auto changes = light::take_changes(level);
+        if (changes.empty()) continue;
+        if (ps.empty()) ps = snapshot();
+        for (auto& ch : changes) {
+            Writer w;
+            for (auto& p : ps) {
+                if (p->level != &level) continue;
+                int dx = std::abs(ch.cx - p->cx), dz = std::abs(ch.cz - p->cz);
+                if (dx > v || dz > v || (dx < v && dz < v && !ch.all)) continue;
+                if (w.b.empty()) light::write_update(level, w.varint(play_cb::light_update), ch);
+                p->send(w);
+            }
         }
     }
 }
@@ -679,9 +683,10 @@ inline Writer& write_spawn_info(Writer& w, const Player& p) {
 
 // Moves a player into `to` with a respawn packet (game/dimensions.hpp): ServerPlayer.teleport across levels
 // (keep = 3, all data) and PlayerList.respawn (keep = 0 after death, 1 after the end credits).
-inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep);
-inline void change_dimension(Player& p, World* to, double x, double y, double z, float yaw, float pitch) {
-    move_to_level(p, to, x, y, z, yaw, pitch, 3);
+// `rel`: the teleport's Relative flags (8 Y_ROT, 16 X_ROT: yaw/pitch are deltas; 32..256 DELTA: velocity kept).
+inline void move_to_level(Player& p, World* to, double x, double y, double z, float yaw, float pitch, uint8_t keep, int rel = 0);
+inline void change_dimension(Player& p, World* to, double x, double y, double z, float yaw, float pitch, int rel = 0) {
+    move_to_level(p, to, x, y, z, yaw, pitch, 3, rel);
 }
 
 inline void teleport(Player& p, double x, double y, double z) {

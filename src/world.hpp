@@ -186,6 +186,7 @@ struct Chunk {
     std::chrono::steady_clock::time_point saved_at{};  // last save (World::save_dirty's 10 s cooldown)
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
+    std::atomic<bool> light_ready{false};  // its 3x3 is lit (light::ensure_lit needs no light lock)
     std::vector<uint8_t> saved_light;  // read by load_chunk, consumed by light::produced
 
     explicit Chunk(int min_y = MIN_Y, int height = HEIGHT) : min_y(min_y), sections(size_t(height / 16)) {}
@@ -494,15 +495,31 @@ struct World {
         return c->get(x & 15, y, z & 15);
     }
 
-    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded.
+    // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded and its 3x3 is lit.
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
-        auto f = find_or_claim(cx, cz, job);
+        auto f = find_or_claim(cx, cz, job, true);
         if (job)
-            pool.submit([this, cx, cz, job] {
-                if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
-                produce(cx, cz, *job, true);
+            pool.submit([this, cx, cz] {
+                auto j = take_unstarted(cx, cz);
+                if (!j) return;  // claimed synchronously by get_ptr before a worker reached it
+                if (cancel_unviewed(cx, cz, *j)) return;  // player moved on before a worker got to it
+                produce(cx, cz, *j, true);
             });
+        else if (ChunkPtr c = get_if_loaded(cx, cz); c && !fullbright && !c->light_ready) {
+            // Loaded by a synchronous get_ptr (only the chunk itself lit): light its 3x3 on the pool, not on
+            // the tick thread that sends it.
+            auto lit = std::make_shared<std::promise<ChunkPtr>>();
+            f = lit->get_future().share();
+            pool.submit([this, c, lit] {
+                try {
+                    light::ensure_lit(*this, *c);
+                    lit->set_value(c);
+                } catch (...) {
+                    lit->set_exception(std::current_exception());
+                }
+            });
+        }
         return f;
     }
     // Sync: loads/generates on the calling thread unless another thread already is.
@@ -512,7 +529,7 @@ struct World {
             if (auto it = chunks.find({cx, cz}); it != chunks.end()) return it->second;
         }
         std::shared_ptr<std::promise<ChunkPtr>> job;
-        auto f = find_or_claim(cx, cz, job);
+        auto f = find_or_claim(cx, cz, job, false);
         if (job) produce(cx, cz, *job, false);
         return f.get();
     }
@@ -539,7 +556,7 @@ struct World {
         ChunkPtr c = get_ptr(x >> 4, z >> 4);
         uint16_t old;
         {
-            std::unique_lock light_lock(light::mutex(), std::defer_lock);  // the light engine reads chunks under it
+            std::unique_lock light_lock(light::mutex(*this), std::defer_lock);  // the light engine reads chunks under it
             if (!fullbright) light_lock.lock();
             {
                 std::lock_guard lock(c->m);
@@ -547,7 +564,7 @@ struct World {
                 c->set(x & 15, y, z & 15, state);
                 c->dirty = true;
             }
-            if (!fullbright) light::block_changed(x, y, z, old, state);
+            if (!fullbright) light::block_changed(*this, x, y, z, old, state);
         }
         note_block(x, y, z, old, state);
         return true;
@@ -568,7 +585,9 @@ struct World {
     // chunk is written at most every 10 s while it keeps changing; `all` (save-all, shutdown) writes everything.
     std::function<void()> on_saved;          // after the dirty chunks are written (structure piece state)
     std::function<void(bool all)> on_flush;  // before the region writes (proto chunk eviction, worldgen)
+    std::mutex save_m;                       // autosave thread vs /save-all and stop on the tick thread
     int save_dirty(bool all = false) {
+        std::lock_guard save_lock(save_m);
         std::vector<ChunkPtr> dirty, idle;
         auto now = std::chrono::steady_clock::now();
         {
@@ -589,9 +608,20 @@ struct World {
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(dir, *c), c->saved_at = now;
         if (on_flush) on_flush(all);
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %s %zu chunks loaded, %zu idle candidates, %zu viewed\n", id.c_str(), loaded(), idle.size(), viewers.size());
         storage::flush();
         {
             std::lock_guard lock(m);
+            if (portals_dirty) {  // ponytail: whole set rewritten; fine for hundreds of portal blocks
+                portals_dirty = false;
+                std::filesystem::create_directories(dir);
+                {
+                    std::ofstream f(dir + "/portals.txt.tmp");
+                    for (auto& [x, y, z] : portals) f << x << ' ' << y << ' ' << z << '\n';
+                }
+                std::filesystem::rename(dir + "/portals.txt.tmp", dir + "/portals.txt");
+            }
             for (auto& c : dirty) idle.push_back(std::move(c));
             for (auto& c : idle) {
                 Key k{c->cx, c->cz};
@@ -650,15 +680,35 @@ private:
         return true;
     }
 
-    std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job) {
+    std::map<Key, std::shared_ptr<std::promise<ChunkPtr>>> unstarted;
+
+    std::shared_ptr<std::promise<ChunkPtr>> take_unstarted(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = unstarted.find({cx, cz});
+        if (it == unstarted.end()) return nullptr;
+        auto j = std::move(it->second);
+        unstarted.erase(it);
+        return j;
+    }
+
+    std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job, bool defer = false) {
         std::lock_guard lock(m);
         if (auto it = chunks.find({cx, cz}); it != chunks.end()) {
             std::promise<ChunkPtr> p;
             p.set_value(it->second);
             return p.get_future().share();
         }
-        if (auto it = inflight.find({cx, cz}); it != inflight.end()) return it->second;
+        if (auto it = inflight.find({cx, cz}); it != inflight.end()) {
+            if (!defer) {
+                if (auto u = unstarted.find({cx, cz}); u != unstarted.end()) {
+                    job = std::move(u->second);
+                    unstarted.erase(u);
+                }
+            }
+            return it->second;
+        }
         job = std::make_shared<std::promise<ChunkPtr>>();
+        if (defer) unstarted[{cx, cz}] = job;
         return inflight[{cx, cz}] = job->get_future().share();
     }
     void produce(int cx, int cz, std::promise<ChunkPtr>& job, bool encode);
@@ -743,10 +793,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
             c->level.post_processed = false;
-            generator(*c);
-            // Pipeline::on_take has already exposed this chunk to lighting readers.
-            std::lock_guard light_lock(light::mutex());
-            for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
+            generator(*c);  // Pipeline::take compacts the palettes before lighting can read them
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);
         if (chunk_loaded_hook) chunk_loaded_hook(this, c);

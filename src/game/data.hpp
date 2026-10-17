@@ -19,6 +19,7 @@ struct BlockInfo {
     std::string name;
     int first = 0, count = 1;
     float hardness = 0;  // destroyTime; -1 = unbreakable
+    float resistance = 0;  // explosionResistance
     bool requires_tool = false, collision = true, replaceable = false;
     std::vector<BlockProp> props;  // in state order: last property varies fastest
     int loot = -1;                 // index into loot_tables (loot.hpp)
@@ -44,6 +45,7 @@ struct ItemInfo {
     float consume_seconds = -1;  // < 0: not consumable
     int use_remainder = -1, craft_remainder = -1;
     int equip = -1;  // Inventory armor index (36 feet .. 39 head), 40 offhand, -1 none
+    float attack_damage = 0, attack_speed = 0;  // mainhand attribute modifiers (add_value)
     float armor = 0, toughness = 0;  // attribute modifiers in the equip slot
     bool damage_on_hurt = true;      // equippable.damage_on_hurt
 };
@@ -62,7 +64,7 @@ inline std::vector<uint16_t> state_block;  // block state -> block index
 inline std::map<std::string, int> item_by_name, block_by_name;
 inline std::map<std::string, DamageType> damage_types;
 inline std::map<std::string, int> menu_ids, component_ids;
-inline std::vector<uint16_t> tag_climbable, tag_fall_reset;
+inline std::vector<uint16_t> tag_climbable, tag_fall_reset, tag_dragon_immune, tag_dragon_transparent, tag_wither_immune, tag_wither_summon_base;
 
 inline const BlockInfo& block_of(int state) { return block_info[state_block[size_t(state)]]; }
 inline int block_index(int state) { return state_block[size_t(state)]; }
@@ -134,6 +136,7 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
         bi.first = b["f"].asInt();
         bi.count = b["c"].asInt();
         bi.hardness = b["h"].asFloat();
+        bi.resistance = b["er"].asFloat();
         bi.requires_tool = b["t"].asBool();
         bi.collision = b["col"].asBool();
         bi.replaceable = b["r"].asBool();
@@ -177,6 +180,8 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
         if (auto* c = it.find("cs")) ii.consume_seconds = c->asFloat();
         ii.use_remainder = it.getInt("ur", -1);
         ii.craft_remainder = it.getInt("cr", -1);
+        if (auto* a = it.find("ad")) ii.attack_damage = a->asFloat();
+        if (auto* a = it.find("as")) ii.attack_speed = a->asFloat();
         if (auto* e = it.find("eq"))
             if (auto s = equip_slots.find(e->asString()); s != equip_slots.end()) ii.equip = s->second;
         if (auto* a = it.find("ar")) ii.armor = (*a)[0].asFloat(), ii.toughness = (*a)[1].asFloat();
@@ -192,6 +197,10 @@ inline bool load_game_data(const std::string& path = "data/game.json") {
     for (auto& [k, v] : reg["data_component_type"].obj) component_ids[k] = v.asInt();
     tag_climbable = u16list(j["block_tags"]["climbable"]);
     tag_fall_reset = u16list(j["block_tags"]["fall_damage_resetting"]);
+    tag_dragon_immune = u16list(j["block_tags"]["dragon_immune"]);
+    tag_dragon_transparent = u16list(j["block_tags"]["dragon_transparent"]);
+    tag_wither_immune = u16list(j["block_tags"]["wither_immune"]);
+    tag_wither_summon_base = u16list(j["block_tags"]["wither_summon_base_blocks"]);
     load_loot_tables(j["loot"]);
     load_recipes(j["recipes"]);
     return true;

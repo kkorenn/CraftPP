@@ -6,6 +6,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 
@@ -86,7 +87,18 @@ static void handle(int fd) {
         if (!valid_player_name(name)) throw std::runtime_error("Invalid characters in username");
         int64_t uuid_hi = hello.i64(), uuid_lo = hello.i64();
         if (auto msg = login_check(name, uuid_hi, uuid_lo, fd); !msg.empty()) return disconnect_login(fd, msg, name);
-        if (find_player(name)) return disconnect_login(fd, "You are already logged in", name);
+        // PlayerList.disconnectAllPlayersWithProfile, then WAITING_FOR_DUPE_DISCONNECT (600 ticks) until they are
+        // saved and gone. Offline uuids come from the client, so the same name counts as the same profile too.
+        for (int t = 0;; t++) {
+            std::vector<PlayerPtr> dupes;
+            for (auto& q : snapshot())
+                if ((q->uuid_hi == uuid_hi && q->uuid_lo == uuid_lo) || q->name == name) dupes.push_back(q);
+            if (dupes.empty()) break;
+            if (t == 0)
+                run_on_tick([dupes] { for (auto& q : dupes) disconnect(*q, tr("multiplayer.disconnect.duplicate_login")); });
+            if (t == 600) return disconnect_login(fd, "Took too long to log in", name);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         if (int(snapshot().size()) >= std::stoi(props["max-players"])) return disconnect_login(fd, "The server is full!", name);
         start_compression(fd, login_cb::login_compression);  // net.hpp, network-compression-threshold
         send_packet(fd, Writer()
@@ -153,6 +165,13 @@ int main(int argc, char** argv) {
     load_properties(props_path);
     if (!check_eula(server_dir)) return 0;
     ensure_paper_files(server_dir);
+    if (!std::filesystem::exists("data/vanilla/minecraft")) {  // Mojang's game data is fetched at runtime, never shipped
+        log_info("Downloading Minecraft %s server data from Mojang (tools/setup_vanilla.sh)", GAME_VERSION);
+        if (std::system("sh tools/setup_vanilla.sh") != 0 || !std::filesystem::exists("data/vanilla/minecraft")) {
+            log_error("Could not set up data/vanilla: run tools/setup_vanilla.sh (needs curl and unzip)");
+            return 1;
+        }
+    }
 
     log_info("Starting minecraft server version %s", GAME_VERSION);
     log_info("Loading properties");

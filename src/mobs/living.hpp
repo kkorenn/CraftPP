@@ -116,6 +116,25 @@ struct AttrOverride { uint16_t attr; double base; std::vector<AttrModifier> mods
 
 struct LivingEntity;
 struct PlayerEntity;
+struct DamageSource;
+// src/effects/effects.hpp
+namespace eff { inline int levitation = -1, slow_falling = -1, dolphins_grace = -1, fire_resistance = -1, jump_boost = -1; }
+inline float damage_after_magic_absorb(LivingEntity& e, const DamageSource& s, float dmg);
+inline void tick_effects(LivingEntity& e);
+inline void trigger_on_death_effects(LivingEntity& e);
+inline void effects_on_hurt(LivingEntity& e);
+inline void save_effects(const LivingEntity& e, Nbt& o);
+inline float enchant_armor_effectiveness(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline bool enchant_damage_immune(LivingEntity& victim, const DamageSource& s);
+inline float enchant_modify_damage(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline float enchant_modify_knockback(const ItemStack& w, Entity* victim, const DamageSource& s, float v);
+inline void enchant_post_attack(Entity& victim, const DamageSource& s, const ItemStack* weapon);
+inline void enchant_location_changed(LivingEntity& e);
+inline bool item_has_comp(const ItemStack&);
+template <class F> inline void enchant_attribute_mods(const ItemStack& it, int slot, F f);
+inline void load_effects(LivingEntity& e, const Nbt& in);
+inline bool has_water_breathing(const LivingEntity& e);
+inline bool effects_refill_air(const LivingEntity& e);
 inline LivingEntity* living_of(Entity* e) { return e ? e->as_living() : nullptr; }
 
 struct LivingEntity : Entity {
@@ -135,6 +154,19 @@ struct LivingEntity : Entity {
     int last_hurt_mob = 0, last_hurt_mob_time = 0;
     int last_damage_type = -1;
     int64_t last_damage_stamp = 0;
+    // ---- mob effects (src/effects/effects.hpp) ----
+    std::vector<EffectInstance> own_effects;
+    std::array<int, 3> last_block{INT32_MIN, 0, 0};  // lastPos (onChangedBlock)
+    bool effects_dirty = true;
+    virtual std::vector<EffectInstance>& effects() { return own_effects; }
+    const std::vector<EffectInstance>& effects() const { return const_cast<LivingEntity*>(this)->effects(); }
+    const EffectInstance* effect(int id) const {
+        for (auto& e : effects()) if (e.id == id) return &e;
+        return nullptr;
+    }
+    bool has_effect(int id) const { return effect(id) != nullptr; }
+    double effective_gravity() const;  // getEffectiveGravity (slow falling)
+    float jump_boost_power() const;
 
     LivingEntity* as_living() override { return this; }
     void init() override { Entity::init(); set_health(max_health()); }
@@ -165,6 +197,8 @@ struct LivingEntity : Entity {
         for (int s = 0; s < 8; s++) {
             const ItemStack& it = item_in_slot(s);
             if (it.empty()) continue;
+            if (item_has_comp(it))  // enchantment minecraft:attributes (efficiency, respiration, sweeping edge...)
+                enchant_attribute_mods(it, s, [&](int ea, double amount, int op) { if (ea == a) apply(amount, op); });
             auto c = item_combat.find(it.item);
             if (c == item_combat.end()) continue;
             for (auto& m : c->second.mods)
@@ -232,7 +266,7 @@ struct LivingEntity : Entity {
         int here = block_at(block_x(), block_y(), block_z());
         float jf = phys_of(here).jump;
         if (jf == 1.0f) jf = phys_of(block_below_affecting_movement()).jump;
-        return float(attr(attr::jump_strength)) * jf;
+        return float(attr(attr::jump_strength)) * jf + jump_boost_power();
     }
     virtual void jump_from_ground() {
         float jp = jump_power();
@@ -293,7 +327,10 @@ struct LivingEntity : Entity {
         float armor = float(armor_value()), tough = float(attr(attr::armor_toughness));
         float t = 2.0f + tough / 4.0f;
         float real = std::clamp(armor - dmg / t, armor * 0.2f, 20.0f);
-        return dmg * (1.0f - real / 25.0f);  // ponytail: no breach enchantment (armor effectiveness)
+        float frac = real / 25.0f;  // CombatRules.getDamageAfterAbsorb: the weapon's armor_effectiveness (breach)
+        if (LivingEntity* w = s.direct ? s.direct->as_living() : nullptr)
+            frac = std::clamp(enchant_armor_effectiveness(w->main_hand(), this, s, frac), 0.0f, 1.0f);
+        return dmg * (1.0f - frac);
     }
     virtual void hurt_armor(const DamageSource&, float) {}
     virtual void knockback(double power, double xd, double zd);
@@ -328,7 +365,9 @@ struct LivingEntity : Entity {
     }
     void set_last_hurt_mob(Entity& e) { last_hurt_mob = e.id; last_hurt_mob_time = tick_count; }
     virtual bool do_hurt_target(Entity& target) { set_last_hurt_mob(target); return false; }
-    virtual float attack_knockback(Entity&) { return float(attr(attr::attack_knockback)) / 2.0f; }
+    virtual float attack_knockback(Entity& t) {  // getKnockback: the weapon's knockback enchantment
+        return enchant_modify_knockback(main_hand(), &t, DamageSource::of("mob_attack", this), float(attr(attr::attack_knockback))) / 2.0f;
+    }
     void cause_extra_knockback(Entity& target, float kb) {
         if (kb > 0 && target.as_living()) {
             target.as_living()->knockback(kb, mth::sin(yaw * mth::DEG), -mth::cos(yaw * mth::DEG));
@@ -388,6 +427,8 @@ inline void LivingEntity::deal_default_knockback(const DamageSource& s) {
 
 inline bool LivingEntity::hurt_server(const DamageSource& s, float dmg) {  // LivingEntity.hurtServer
     if (is_invulnerable_to(s) || is_dead_or_dying()) return false;
+    if (enchant_damage_immune(*this, s)) return false;  // isInvulnerableTo: damage_immunity enchantments
+    if (s.is(DT_IS_FIRE) && has_effect(eff::fire_resistance)) return false;
     no_action_time = 0;
     if (dmg < 0) dmg = 0;
     if (s.is(DT_IS_FREEZING) && in_tag("freeze_hurts_extra_types")) dmg *= 5.0f;
@@ -428,12 +469,13 @@ inline bool LivingEntity::hurt_server(const DamageSource& s, float dmg) {  // Li
     }
     last_damage_type = s.type;
     last_damage_stamp = server_tick;
+    effects_on_hurt(*this);
     return true;
 }
 inline void LivingEntity::actually_hurt(const DamageSource& s, float dmg) {
     if (is_invulnerable_to(s)) return;
     dmg = damage_after_armor(s, dmg);
-    // ponytail: no mob effects (resistance) / protection enchantments yet (getDamageAfterMagicAbsorb)
+    dmg = damage_after_magic_absorb(*this, s, dmg);
     float rest = std::max(dmg - absorption, 0.0f);
     absorption -= dmg - rest;
     if (rest != 0.0f) set_health(health() - rest);
@@ -452,6 +494,7 @@ inline void LivingEntity::die(const DamageSource& s) {  // LivingEntity.die
 inline void LivingEntity::tick_death() {
     if (++death_time >= 20 && !removed) {
         broadcast_event(60);
+        trigger_on_death_effects(*this);
         remove(Removal::KILLED);
     }
 }
@@ -498,17 +541,22 @@ inline void LivingEntity::base_tick() {  // LivingEntity.baseTick
     Entity::base_tick();
     if (is_alive()) {
         if (is_in_wall()) hurt_server(DamageSource::of("in_wall"), 1.0f);
-        if (was_eye_in_water && !can_breathe_underwater() && !(as_player() && is_creative())) {
-            int a = air_supply() - 1;  // decreaseAirSupply (no respiration)
+        if (was_eye_in_water && !can_breathe_underwater() && !has_water_breathing(*this) && !(as_player() && is_creative())) {
+            double ob = attr(attr::oxygen_bonus);  // decreaseAirSupply: respiration
+            int a = ob > 0.0 && rand_double() >= 1.0 / (ob + 1.0) ? air_supply() : air_supply() - 1;
             if (a <= -20) {
                 a = 0;
                 broadcast_event(67);
                 hurt_server(DamageSource::of("drown"), 2.0f);
             }
             set_air_supply(a);
-        } else if (air_supply() < 300) {
+        } else if (air_supply() < 300 && (!was_eye_in_water || effects_refill_air(*this))) {
             set_air_supply(std::min(air_supply() + 4, 300));
         }
+    }
+    if (is_alive() && (block_x() != last_block[0] || block_y() != last_block[1] || block_z() != last_block[2])) {
+        last_block = {block_x(), block_y(), block_z()};
+        enchant_location_changed(*this);  // onChangedBlock: frost walker, soul speed
     }
     if (hurt_time > 0) hurt_time--;
     if (damage_cooldown > 0 && !as_player()) damage_cooldown--;
@@ -520,6 +568,7 @@ inline void LivingEntity::base_tick() {  // LivingEntity.baseTick
         Entity* h = entity_by_id(last_hurt_by_mob);
         if (!h || !h->is_alive() || tick_count - last_hurt_by_mob_time > 100) last_hurt_by_mob = 0;
     }
+    tick_effects(*this);
     y_head_rot_o = y_head_rot, y_body_rot_o = y_body_rot;
 }
 
@@ -572,6 +621,7 @@ inline void LivingEntity::ai_step() {  // LivingEntity.aiStep
     } else {
         no_jump_delay = 0;
     }
+    if (has_effect(eff::slow_falling) || has_effect(eff::levitation)) reset_fall_distance();
     travel({xxa, yya, zza});
     push_entities();
     if (is_sensitive_to_water() && is_in_water_or_rain()) hurt_server(DamageSource::of("drown"), 1.0f);
@@ -593,7 +643,9 @@ inline void LivingEntity::travel_in_air(const Vec3& input) {  // LivingEntity.tr
     move(SELF, vel);
     Vec3 m = vel;
     if ((horizontal_collision || jumping) && on_climbable()) m.y = 0.2;
-    double my = m.y - gravity();  // no levitation / slow falling (no mob effects yet)
+    double my = m.y;
+    if (const EffectInstance* lev = effect(eff::levitation)) my += (0.05 * (lev->amp + 1) - m.y) * 0.2;
+    else my -= effective_gravity();
     float drag_mod = float(attr(attr::air_drag_modifier));
     float air = modified_friction(0.91f, drag_mod);
     float fr = bf * air;
@@ -603,7 +655,7 @@ inline void LivingEntity::travel_in_air(const Vec3& input) {  // LivingEntity.tr
 inline void LivingEntity::travel_in_fluid(const Vec3& input) {  // LivingEntity.travelInFluid
     bool falling = vel.y <= 0.0;
     double oy = pos.y;
-    double g = gravity();
+    double g = effective_gravity();
     if (is_in_water()) {
         float slow = shared_flag(3) ? 0.9f : water_slow_down();
         float sp = 0.02f;
@@ -613,6 +665,7 @@ inline void LivingEntity::travel_in_fluid(const Vec3& input) {  // LivingEntity.
             slow += (0.54600006f - slow) * ww;
             sp += (speed - sp) * ww;
         }
+        if (has_effect(eff::dolphins_grace)) slow = 0.96f;
         move_relative(sp, input);
         move(SELF, vel);
         Vec3 m = vel;
@@ -670,6 +723,7 @@ inline void LivingEntity::save_extra(Nbt& o) const {
     o.set("HurtTime", Nbt::num(Nbt::Short, hurt_time));
     o.set("DeathTime", Nbt::num(Nbt::Short, death_time));
     o.set("AbsorptionAmount", Nbt::real(Nbt::Float, absorption));
+    save_effects(*this, o);
     if (!attrs.empty()) {
         Nbt l = Nbt::make_list();
         for (auto& a : attrs) {
@@ -699,6 +753,7 @@ inline void LivingEntity::save_extra(Nbt& o) const {
 }
 inline void LivingEntity::load_extra(const Nbt& in) {
     absorption = float(nbt_num(in, "AbsorptionAmount", 0));
+    load_effects(*this, in);
     if (const Nbt* l = in.get("attributes"); l && l->t == Nbt::List)
         for (auto& c : l->list) {
             const Nbt* id = c.get("id");
@@ -775,6 +830,7 @@ inline void LivingEntity::send_extra_changes() {
     if (attr_dirty) {
         Writer a = attributes_packet(attr_dirty, false);
         if (!a.b.empty()) broadcast(a);
+        if (Player* self = as_player(); self && !a.b.empty()) self->send(a);  // ServerEntity: a player's own attributes
         attr_dirty = 0;
     }
     if (equip_dirty) {
@@ -794,7 +850,8 @@ struct PlayerEntity : LivingEntity {
     bool is_creative() const override { return p->gamemode == 1; }
     bool is_alive() const override { return !removed && !p->g.dead && p->g.health > 0; }
     float health() const override { return p->g.health; }
-    void set_health(float h) override { p->g.health = std::clamp(h, 0.0f, 20.0f); }
+    void set_health(float h) override { p->g.health = std::clamp(h, 0.0f, max_health()); }
+    std::vector<EffectInstance>& effects() override { return p->g.effects; }
     const ItemStack& item_in_slot(int slot) const override {
         static const ItemStack none;
         switch (slot) {
@@ -843,3 +900,5 @@ inline PlayerEntity* player_entity(const Player& p) {
         if (e->as_player() == &p) return static_cast<PlayerEntity*>(e);
     return nullptr;
 }
+
+#include "../effects/effects.hpp"

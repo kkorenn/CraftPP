@@ -12,7 +12,7 @@ After every phase the server must still answer a status ping and accept a fresh 
 import argparse, math, os, random, shutil, socket, struct, subprocess, sys, threading, time, uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bot import CFG_SB, PLAY_CB, PLAY_SB, PROTO, VERSION, login, string, text_of, varint, wait
+from bot import free_port, CFG_SB, PLAY_CB, PLAY_SB, PROTO, VERSION, login, string, text_of, varint, wait
 
 T0 = time.time()
 socket.setdefaulttimeout(30)  # every socket (bot.py's too): a stuck server fails the run instead of hanging it
@@ -43,7 +43,8 @@ def blast(host, port, data, linger=0.2):
     try:
         s.sendall(data)
         s.settimeout(linger)
-        while s.recv(1 << 16): pass
+        end = time.time() + 2  # mobs near spawn keep the stream busy: silence alone may never come
+        while s.recv(1 << 16) and time.time() < end: pass
     except OSError:
         pass
     finally:
@@ -397,7 +398,7 @@ def spawn(binary, world, view):
     d = os.path.join(os.path.dirname(os.path.abspath(binary)), "stress")
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d)
-    s = socket.socket(); s.bind(("", 0)); port = s.getsockname()[1]; s.close()
+    port = free_port()
     open(os.path.join(d, "server.properties"), "w").write(
         f"server-port={port}\nlevel-name={d}/world\nlevel-type={world}\ngamemode=creative\nview-distance={view}\n"
         "max-players=500\nwhite-list=false\npause-when-empty-seconds=3600\n")
