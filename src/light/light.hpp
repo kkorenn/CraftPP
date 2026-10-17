@@ -27,7 +27,9 @@ namespace worldgen { class Pipeline; }
 namespace light {
 void attach(World& world, worldgen::Pipeline& pipeline);  // before the first chunk is generated
 std::mutex& mutex();  // guards the engine and every block write to a chunk the engine may read
-void produced(World& world, Chunk& c, bool loaded);      // World::produce, before the chunk is published (worker thread)
+// World::produce, before the chunk is published. neighbours = false (a synchronous get_ptr, not a chunk headed
+// for a client): only the chunk itself is lit, like vanilla's getChunk(FULL); ensure_lit does the 3x3 before a send.
+void produced(World& world, Chunk& c, bool loaded, bool neighbours = true);
 void ensure_lit(World& world, Chunk& c);    // before sending; any thread, without mutex() or c.m held
 uint32_t write(Writer& w, Chunk& c);
 std::vector<uint8_t> save(Chunk& c, uint32_t& version);  // light to store with the chunk (-> Chunk::saved_light)        // light tail of level_chunk_with_light; returns c.light_version
@@ -35,6 +37,7 @@ void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state);
 // Light level at a block (LevelLightEngine.getLayerListener(...).getLightValue); -1 when the column isn't lit yet.
 // Takes mutex(); call without it held.
 int get(int x, int y, int z, bool sky);
+int level(bool sky, int x, int y, int z);  // get() with unlit columns read as sky 15 / block 0
 
 struct Change {
     int cx, cz;

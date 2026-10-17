@@ -97,7 +97,7 @@ Registry::Registry() {
   std::unordered_map<std::string, std::vector<std::string>> fraw;
   for (auto& e : std::filesystem::directory_iterator(froot))
     if (e.path().extension() == ".json") {
-      Json j = Json::parseFile(e.path().string());  // kept alive: a range-for over a temporary's member dangles
+      Json j = Json::parseFile(e.path().string());  // keep the array owner alive throughout iteration
       for (auto& x : j["values"].arr) fraw["minecraft:" + e.path().stem().string()].push_back(x.isString() ? x.str : x["id"].str);
     }
   std::function<uint8_t(const std::string&, int)> fres = [&](const std::string& t, int depth) -> uint8_t {

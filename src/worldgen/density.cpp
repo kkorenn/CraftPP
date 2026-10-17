@@ -615,6 +615,51 @@ struct SliceS : Sampler {  // axis 0 X, 1 Y, 2 Z, 3 XZ
   }
 };
 
+struct DistanceS : Sampler {  // DistanceToPointFunction.Sampler + DistanceMetric.compute(float, float, float)
+  int px, py, pz, metric;
+  DistanceS(int x, int y, int z, int m) : px(x), py(y), pz(z), metric(m) {}
+  float sampleValue(Ctx&, int x, int y, int z) const override {
+    float dx = (float)(px - x), dy = (float)(py - y), dz = (float)(pz - z);
+    switch (metric) {
+      case 0: return (float)std::sqrt((double)(dx * dx + dy * dy + dz * dz));
+      case 1: return dx * dx + dy * dy + dz * dz;
+      case 2: return std::abs(dx) + std::abs(dy) + std::abs(dz);
+      default: return jmax(jmax(std::abs(dx), std::abs(dy)), std::abs(dz));
+    }
+  }
+  void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
+    int i = 0;
+    for (int z = 0; z < v.sizeZ; z++)
+      for (int x = 0; x < v.sizeX; x++)
+        for (int y = 0; y < v.sizeY; y++) o.set(i++, sampleValue(c, v.blockX(x), v.blockY(y), v.blockZ(z)));
+  }
+};
+
+struct EndIslandS : Sampler {  // EndIslandFunction.Sampler
+  std::shared_ptr<const SimplexNoise> noise;
+  explicit EndIslandS(std::shared_ptr<const SimplexNoise> n) : noise(std::move(n)) {}
+  float height(int sectionX, int sectionZ) const {  // getHeightValue
+    int chunkX = sectionX / 2, chunkZ = sectionZ / 2, subX = sectionX % 2, subZ = sectionZ % 2;
+    float doffs = -100.0f;
+    for (int xo = -12; xo <= 12; xo++)
+      for (int zo = -12; zo <= 12; zo++) {
+        int64_t tx = chunkX + xo, tz = chunkZ + zo;
+        if (tx * tx + tz * tz > 4096 && noise->get((double)tx, (double)tz) < -0.9f) {
+          float size = std::fmod(std::abs((float)tx) * 3439.0f + std::abs((float)tz) * 147.0f, 13.0f) + 9.0f;
+          float xd = (float)(subX - xo * 2), zd = (float)(subZ - zo * 2);
+          float d = 100.0f - (float)std::sqrt((double)(xd * xd + zd * zd)) * size;
+          doffs = jmax(doffs, clampf(d, -100.0f, 80.0f));
+        }
+      }
+    return doffs;
+  }
+  float sampleValue(Ctx&, int x, int, int z) const override { return (height(x / 8, z / 8) - 8.0f) / 128.0f; }
+  void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
+    for (int z = 0; z < v.sizeZ; z++)
+      for (int x = 0; x < v.sizeX; x++) setRange(o, idx(v, x, 0, z), v.sizeY, sampleValue(c, v.blockX(x), 0, v.blockZ(z)));
+  }
+};
+
 struct FindTopSurfaceS : Sampler {
   S density, upper;
   int lower, cellHeight;
@@ -882,7 +927,8 @@ float SamplerContext::sampleValueCached(int id, const Sampler& input, int x, int
 }
 
 // ---------------------------------------------------------------- DensityFunctions
-DensityFunctions::DensityFunctions(int64_t seed, std::string dataRoot) : rs(seed, false, dataRoot), root(std::move(dataRoot)) {
+DensityFunctions::DensityFunctions(int64_t seed, std::string dataRoot, bool legacyRandom)
+    : rs(seed, legacyRandom, dataRoot), root(std::move(dataRoot)) {
   std::lock_guard l(noiseRangeMutex);
   noiseDataRoot = root;
 }
@@ -1022,6 +1068,14 @@ NodeP DensityFunctions::parseLocked(const Json& j) {
   if (type == "blend_alpha") return mk(K::BlendAlpha);
   if (type == "blend_offset") return mk(K::BlendOffset);
   if (type == "beardifier") return mk(K::Beardifier);
+  if (type == "distance_to_point") {  // i = point, op = metric (euclidean, euclidean_squared, manhattan, chebyshev)
+    auto n = mk(K::DistanceToPoint);
+    for (auto& c : j["point"].arr) n->i.push_back(c.asInt());
+    std::string m = j["metric"].asString();
+    n->op = m == "euclidean" ? 0 : m == "euclidean_squared" ? 1 : m == "manhattan" ? 2 : 3;
+    return n;
+  }
+  if (type == "end_outer_islands") return mk(K::EndIslands);
   if (type == "old_blended_noise") {
     auto n = mk(K::OldBlendedNoise);
     n->d = {j["xz_scale"].asDouble(), j["y_scale"].asDouble(), j["xz_factor"].asDouble(), j["y_factor"].asDouble(),
@@ -1042,7 +1096,8 @@ int DensityFunctions::domainAxes(const NodeP& n) {
       if (n->d[0] == 0.0) a &= ~5;
       break;
     case K::ShiftA: case K::ShiftB: case K::BlendAlpha: case K::BlendOffset: return 5;
-    case K::Shift: case K::Beardifier: case K::OldBlendedNoise: return 7;
+    case K::Shift: case K::Beardifier: case K::OldBlendedNoise: case K::DistanceToPoint: return 7;
+    case K::EndIslands: return 5;
     case K::Gradient: return 1 << n->op;
     case K::Slice: return domainAxes(n->kids[0]) & ~(1 << n->op);
     case K::Prepared: return n->axes;
@@ -1114,6 +1169,8 @@ Iv DensityFunctions::range(const NodeP& n) {
     case K::Spline: return splineRange(*n->spline);
     case K::BlendAlpha: return of(0.0f, 1.0f);
     case K::BlendOffset: case K::Beardifier: return of(-INF, INF);
+    case K::DistanceToPoint: return of(0.0f, INF);
+    case K::EndIslands: return of(-0.84375f, 0.5625f);
     case K::OldBlendedNoise: {
       BlendedNoise bn{n->d[0], n->d[1], n->d[2], n->d[3], n->d[4]};
       Interval i = bn.range();
@@ -1301,6 +1358,12 @@ SamplerP DensityFunctions::compile(const NodeP& n) {
       s->first = std::make_shared<NoiseS>(fbm.minLimitNoise, fbm.xzMultiplier, fbm.yMultiplier);
       s->second = std::make_shared<NoiseS>(fbm.maxLimitNoise, fbm.xzMultiplier, fbm.yMultiplier);
       return s;
+    }
+    case K::DistanceToPoint: return std::make_shared<DistanceS>(n->i[0], n->i[1], n->i[2], n->op);
+    case K::EndIslands: {
+      LegacyRandomSource r(rs.seed());  // CompileContext.createEndIslandRandom
+      r.consumeCount(17292);
+      return std::make_shared<EndIslandS>(std::make_shared<SimplexNoise>(r, true));
     }
     case K::Prepared: return n->sampler;
   }

@@ -20,6 +20,8 @@ namespace ent_detail {
 struct ChunkEnts { std::vector<Entity*> list; bool ticking = false; };
 struct PlayerView { int cx = INT32_MIN, cz = INT32_MIN; std::vector<Entity*> seen; };
 inline std::unordered_map<int, std::unique_ptr<Entity>> by_id;
+// Per-level state (by_chunk, ticking_keys, ticking_dirty, loaded) is that of cur_level: switch_level swaps the
+// other levels' copies in and out (world.hpp level_switch_hooks), so the code below indexes one level at a time.
 inline std::unordered_map<int64_t, ChunkEnts> by_chunk;
 inline std::vector<int64_t> ticking_keys;
 inline bool ticking_dirty = true;
@@ -28,6 +30,23 @@ inline std::vector<Entity*> to_tick, extra_sync, free_queue;
 inline std::unordered_set<int64_t> loaded;  // chunks whose entity storage is in memory
 inline std::vector<EntityFactory> factories;
 inline std::unordered_map<Player*, PlayerView> views;
+struct LevelState {
+    std::unordered_map<int64_t, ChunkEnts> by_chunk;
+    std::vector<int64_t> ticking_keys;
+    bool ticking_dirty = true;
+    std::unordered_set<int64_t> loaded;
+};
+inline LevelState parked[DIM_COUNT];  // levels that are not cur_level (the cur_level slot is an empty spare)
+inline void swap_state(LevelState& s) {
+    std::swap(by_chunk, s.by_chunk), std::swap(ticking_keys, s.ticking_keys);
+    std::swap(ticking_dirty, s.ticking_dirty), std::swap(loaded, s.loaded);
+}
+inline void block_cache_reset();
+inline void switch_level(World* from, World* to) {
+    swap_state(parked[dim_of(from)]);  // park `from`, take the spare
+    swap_state(parked[dim_of(to)]);    // take `to`, leave the spare
+    block_cache_reset();
+}
 inline int64_t section_key(const Entity& e) {
     return mth::block_key(mth::floor(e.pos.x) >> 4, mth::floor(e.pos.y) >> 4, mth::floor(e.pos.z) >> 4);
 }
@@ -37,9 +56,9 @@ inline int simulation_distance() {
     static int s = props.count("simulation-distance") ? std::stoi(props["simulation-distance"]) : view_distance();
     return std::min(s, view_distance());
 }
-inline bool near_any_player_chunk(int cx, int cz, int r) {
+inline bool near_any_player_chunk(int cx, int cz, int r) {  // players in cur_level
     for (auto& p : players)
-        if (std::abs(cx - p->cx) <= r && std::abs(cz - p->cz) <= r) return true;
+        if (p->level == cur_level && std::abs(cx - p->cx) <= r && std::abs(cz - p->cz) <= r) return true;
     return false;
 }
 
@@ -128,6 +147,10 @@ inline void track_remove(Entity& e, Player& p, bool send = true) {
 }
 inline void update_player(Entity& e, Player& p) {  // TrackedEntity.updatePlayer
     if (e.as_player() == &p) return;
+    if (p.level != e.level()) {  // other dimension: never paired
+        if (std::find(e.trk.watchers.begin(), e.trk.watchers.end(), &p) != e.trk.watchers.end()) track_remove(e, p);
+        return;
+    }
     double dx = p.x - e.pos.x, dz = p.z - e.pos.z;
     double range = std::min(e.info().range * 16, view_dist_cached() * 16);
     int cx = mth::floor(e.pos.x) >> 4, cz = mth::floor(e.pos.z) >> 4;
@@ -237,6 +260,7 @@ inline void entity_moved_chunk(Entity& e, int ocx, int ocz) {
 inline Entity* add_entity(std::unique_ptr<Entity> up) {
     if (!up) return nullptr;
     Entity& e = *up;
+    e.home = cur_level;
     if (!e.id) e.id = next_entity_id++;
     if (!e.uuid_hi && !e.uuid_lo) {
         e.uuid_hi = int64_t((game_rng() & ~0xF000ull) | 0x4000);
@@ -268,6 +292,7 @@ template <class T> inline T* add_entity_t(std::unique_ptr<T> up) { return static
 
 // Frees one removed entity: remove packets, unindex.
 inline void free_entity(Entity& e) {
+    InLevel in_level(e.level());  // its level's chunk index
     e.on_removed();
     if (!e.trk.watchers.empty()) {
         Writer w = remove_entities_packet({e.id});
@@ -326,7 +351,7 @@ inline Nbt read_nbt_payload(Reader& r, int t, int depth = 0) {
     return n;
 }
 inline std::string entity_chunk_path(int cx, int cz) {
-    return world_dir + "/entities/e." + std::to_string(cx) + "." + std::to_string(cz) + ".nbt";
+    return cur_level->dir + "/entities/e." + std::to_string(cx) + "." + std::to_string(cz) + ".nbt";
 }
 inline void save_entity_chunk(int cx, int cz) {
     Nbt list = Nbt::make_list();
@@ -344,7 +369,7 @@ inline void save_entity_chunk(int cx, int cz) {
     root.set("Entities", std::move(list));
     Writer w;
     write_nbt(w, root);
-    std::filesystem::create_directories(world_dir + "/entities", ec);
+    std::filesystem::create_directories(cur_level->dir + "/entities", ec);
     {
         std::ofstream f(path + ".tmp", std::ios::binary);
         f.write(reinterpret_cast<const char*>(w.b.data()), std::streamsize(w.b.size()));
@@ -393,7 +418,12 @@ inline void unload_far_entity_chunks(bool all = false) {
         std::erase(ent_detail::ticking_keys, k);
     }
 }
-inline void save_all_entities() { unload_far_entity_chunks(true); }
+inline void save_all_entities() {
+    for (auto& w : worlds) {
+        InLevel in_level(&w);
+        unload_far_entity_chunks(true);
+    }
+}
 
 // ---------- per player ----------
 inline void entities_forget_player(Player& p) {  // left: drop as a watcher (client is gone, nothing to send)
@@ -406,7 +436,8 @@ inline void entities_forget_player(Player& p) {  // left: drop as a watcher (cli
 inline void entities_reset_view(Player& p) {  // respawn: the client dropped all entities; resend on the next tick
     entities_forget_player(p);
 }
-inline void update_player_view(Player& p) {
+inline void update_player_view(Player& p) {  // p in cur_level
+    if (p.level != cur_level) return;
     auto& v = ent_detail::views[&p];
     if (v.cx == p.cx && v.cz == p.cz) return;
     v.cx = p.cx, v.cz = p.cz;
@@ -451,12 +482,11 @@ inline void entity_common_tick(Entity& e) {  // Entity.commonTick
 inline std::vector<void (*)()> entity_pre_tick_hooks, entity_post_tick_hooks;  // before/after the entity loop
 
 // One server tick for all entities (ServerLevel.tick entity part + ChunkMap.tick tracker part).
-inline void tick_world_entities() {
+inline void tick_level_entities() {  // cur_level
     using namespace ent_detail;
     block_cache_clear();
     for (auto& p : players) update_player_view(*p);
     if (ticking_dirty) recompute_ticking();
-    for (auto f : entity_pre_tick_hooks) f();
     to_tick.clear();
     for (int64_t k : ticking_keys) {
         auto it = by_chunk.find(k);
@@ -484,6 +514,7 @@ inline void tick_world_entities() {
         send_changes(*e);
     }
     for (Entity* e : player_ents) {  // players are tracked like any entity (their own ticks run elsewhere)
+        if (e->level() != cur_level) continue;
         int64_t sec = section_key(*e);
         if (sec != e->trk.section) {
             e->trk.section = sec;
@@ -496,7 +527,25 @@ inline void tick_world_entities() {
     extra_sync.clear();
     flush_free_queue();  // entities removed this tick are freed now; pointers stay valid within the tick
     if (server_tick % 100 == 0) unload_far_entity_chunks();
-    if (server_tick % 6000 == 0) save_all_entities();  // vanilla autosave interval
+    if (server_tick % 6000 == 0) unload_far_entity_chunks(true);  // vanilla autosave interval
+}
+inline bool level_has_players(const World* w) {
+    for (auto& p : players)
+        if (p->level == w) return true;
+    return false;
+}
+// One server tick for every level: a level without players only unloads (saves) what it still holds.
+inline void tick_world_entities() {
+    for (auto f : entity_pre_tick_hooks) f();
+    for (int d : {DIM_NETHER, DIM_END, DIM_OVERWORLD}) {  // overworld last: spawning reads its to_tick
+        World* w = &worlds[d];
+        InLevel in_level(w);
+        if (d != DIM_OVERWORLD && !level_has_players(w)) {
+            if (!ent_detail::loaded.empty()) unload_far_entity_chunks();
+            continue;
+        }
+        tick_level_entities();
+    }
 }
 // Entities changed outside their own tick (summoned/teleported/hurt while not ticking) get a tracker update.
 inline void mark_entity_sync(Entity& e) { e.needs_sync = true; ent_detail::extra_sync.push_back(&e); }

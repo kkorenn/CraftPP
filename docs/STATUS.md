@@ -16,31 +16,44 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Parity audit: real 26.3 client stays connected (set_entity_data fix), keep-alive timeout, teleport confirm, vanilla movement checks, block acks, spawn protection, game modes, armor, 10 damage game rules, fall-damage modifiers, unsigned player chat, inventory click parity. Findings: side-session notes parity-audit.md.
 - Bug hunt: ASan/UBSan/TSan builds (`./build.sh [test] asan|tsan`), test/stress.py (fuzz, cmdfuzz, 50+ bots, reconnect storms, soak), 15 crash/DoS/race fixes (NaN moves, unbounded inbox, 2 MiB per-connection prealloc, socket timeouts, deep SNBT, int-overflow UB → -fwrapv, ghost players).
 - Mobs core (src/mobs/): entity manager, vanilla TrackedEntity tracking (players too), A* pathfinding, GoalSelector + Brain, NaturalSpawner, explosions, combat (cooldown/crits/sweep/PvP/armour/killer death messages), XP orbs, /summon + @e selectors; cow, pig, sheep, chicken, zombie, skeleton, spider, creeper. ~0.45 ms mspt at 100 mobs. Tool-time extractor: tools/gen_mob_data.py + MobDump.java → data/mob_dump.json.
+- Block ticks (src/level/): Level.setBlock + CollectingNeighborUpdater (vanilla update order), scheduled ticks (persisted), exact water/lava flow + worldgen fluid post-processing (vanilla-vs-CraftPP fluid diffs at vanilla-vs-vanilla level), random ticks (crops, grass, leaves, ice, snow, fire, copper), pop-offs, two-part blocks, buckets, bone meal, hoe, flint and steel, falling blocks. Tool-time extractor: tools/gen_level_data.py → data/level.json.
+- Placement (src/level/place_rules.hpp): vanilla getStateForPlacement + updateShape/canSurvive for walls, chests, wire shape, rails (RailState), rotation-16 signs/banners/skulls, wall/hanging variants, attached blocks, count increments, per-class facing, waterlogging. Fixed state-id ordering for 12 blocks in data/game.json and item→block mapping for redstone/string/seeds.
+
+- Coordinator integration: structure edge-shape updates, fortress/end-city pieces, bounded structure caches and structure mob queues. Fluid post-processing is preserved alongside mob queues when transferring generated chunks.
+- Memory/data repairs: keep fluid-tag JSON alive during iteration; reacquire released initialized light-column chunk handles; bind vanilla block/fluid tags in the build-time mob extractor before querying fluid/path data. Generated mob data now distinguishes water/lava correctly; invalid type 3 is rejected at load time.
+- Regression fixtures: cauldron checks synchronize requests and filter bucket sounds; water timing is measured in server ticks; cow combat selects the intended summoned entity by position.
+
+- Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md.
+
+- Client selectors: resend permission status and command tree after death/respawn, in vanilla packet order; regression covers `@s` and `@a`.
+
+- Feature ordering: FIFO generation tickets and x-major decoration layers, failed-prefetch recovery, synchronized palette writes visible to lighting. Surface-only comparison seed 12345/radius 1 matched all blocks and biomes.
+
+- Dimensions: recovered Nether/End pipelines and portal travel, per-world scheduled/random ticks and structure managers; repaired Nether-fossil column bounds, world-specific lava rules and cross-world caches. Sampled Nether/End surface and Nether structure stages match vanilla; see docs/coordinator-integration.md for scope and remaining gaps.
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| structures-2 | structure edge shape updates, nether fortress/bastion/end city pieces, bounded structure caches, structure entities hooks |
-| dimensions | Nether, End, portals |
+| dimensions | Core travel/generation integrated; remaining Nether features, lighting and environment attributes |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
-| blockticks | scheduled/random ticks, fluids, falling blocks, door/bed physics |
-| placement | block placement states (facing/axis/half/slab/stairs/doors/beds/waterlogging), BlockItem.useOn parity |
+| effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
+| redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
-| startup-perf | parallel spawn-region generation, fast restart (worldgen data cache), startup log hygiene |
-| feature-parity | 0 stable-block worldgen mismatches vs vanilla: sculk, lush caves, decoration order, untested biomes |
+| feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
 
 ## Left
-- Redstone (wire, repeaters, comparators, pistons, observers, hoppers, droppers/dispensers, rails/minecarts)
-- Potions/effects, enchantments, XP, advancements, recipe book, statistics, maps
+- Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
+- Advancements, recipe book, statistics, maps
 - Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
 - Online-mode auth + encryption + compression, signed chat, resource packs, server-list favicon, query, RCON
 - Pi deployment guide (systemd), plugin API coverage
 
 ## Known issues
-- light::Engine::state() reads chunks while worldgen workers write them (TSan, possible use-after-free) — needs chunk locking.
-- No vanilla "moved too quickly" check; pick_item_from_block has no reach check (chunk-generation DoS).
+- Nether/End lighting still uses full-light placeholders; several Nether generation features and dimension environment attributes remain incomplete.
+- Movement speed checks are covered by parity_test.py; pick_item_from_block reach handling still needs audit.
 - Duplicate UUID with two names can be online at once.
 - Flaky: plugin_test second start under heavy load; test-server.log occasionally misses lines after restart.
 - vanilla/client (real client for tools/run_client.py) was lost on 2026-10-17 and is not restored; vanilla/ server data was rebuilt from the verified server.jar.
+- Light: tick thread waits on the light mutex in light::ensure_lit (113 ms spike with 400 fluid sources).

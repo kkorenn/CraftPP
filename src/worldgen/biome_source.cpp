@@ -47,6 +47,18 @@ BiomeSource::BiomeSource() : BiomeSource([] {
     return v;
 }()) {}
 
+BiomeSource BiomeSource::nether() {
+    auto point = [](float t, float h, float offset, int biome) {  // Climate.parameters(t, h, 0, 0, 0, 0, offset)
+        ParameterPoint p{};
+        int64_t qt = quantize_coord(t), qh = quantize_coord(h), qo = quantize_coord(offset);
+        p.space[0] = {qt, qt}, p.space[1] = {qh, qh}, p.space[6] = {qo, qo};
+        return std::pair{p, biome};
+    };
+    return BiomeSource({point(0.0F, 0.0F, 0.0F, biomes::nether_wastes), point(0.0F, -0.5F, 0.0F, biomes::soul_sand_valley),
+                        point(0.4F, 0.0F, 0.0F, biomes::crimson_forest), point(0.0F, 0.5F, 0.375F, biomes::warped_forest),
+                        point(-0.5F, 0.0F, 0.175F, biomes::basalt_deltas)});
+}
+
 BiomeSource::BiomeSource(std::vector<std::pair<ParameterPoint, int>> values, int childrenPerNode)
     : values_(std::move(values)), childrenPerNode_(childrenPerNode), id_(next_id++) {
     std::vector<int> leaves;

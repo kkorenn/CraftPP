@@ -261,6 +261,23 @@ inline void spawn_for_chunk_generation(int cx, int cz) {
         }
     }
 }
+// Mobs that structure pieces placed while generating the chunk (structure::Level::addMob): witch hut witch + cat,
+// monument elder guardians, mansion illagers + allays, ocean ruin drowned, end city shulkers.
+inline void spawn_structure_mobs(Chunk& c) {
+    std::vector<Chunk::StructureMob> list;
+    list.swap(c.structure_mobs);
+    for (auto& m : list) {
+        auto e = create_entity(m.type);
+        if (!e) continue;  // type not implemented yet
+        e->snap_to(m.x, m.y, m.z, 0.0f, 0.0f);
+        if (Mob* mob = e->as_mob()) {
+            if (m.persistent) mob->set_persistence_required();
+            if (m.heal) mob->heal(mob->max_health());
+            if (m.finalize) mob->finalize_spawn(SpawnReason::STRUCTURE, nullptr);
+        }
+        add_entity(std::move(e));
+    }
+}
 inline void tick_fresh_chunks() {
     std::vector<std::pair<int, int>> list;
     {
@@ -277,6 +294,7 @@ inline void tick_fresh_chunks() {
         if (!ready) { later.emplace_back(cx, cz); continue; }
         ensure_entity_chunk_loaded(cx, cz);
         spawn_for_chunk_generation(cx, cz);
+        if (Chunk* c = loaded_chunk(cx, cz)) spawn_structure_mobs(*c);
     }
     if (!later.empty()) {
         std::lock_guard lock(fresh_chunks_mtx);

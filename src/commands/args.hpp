@@ -208,6 +208,7 @@ inline Source source_for(const PlayerPtr& p) {
     s.x = p->x; s.y = p->y; s.z = p->z;
     s.yaw = p->yaw; s.pitch = p->pitch;
     s.level = perm_level(*p);
+    s.dimension = p->level->id;
     return s;
 }
 inline Source console_source() {
@@ -772,6 +773,7 @@ inline std::vector<PlayerPtr> select(const Selector& sel, const Source& src) {  
 // Non-player entities matching the selector's filters (no sort/limit); defined in src/mobs/mobs.cpp.
 void select_entity_candidates(const Selector& sel, const Source& src, double ox, double oy, double oz, std::vector<Entity*>& out);
 Vec3 entity_position(const Entity* e);
+World* entity_level(const Entity* e);
 struct Target {  // a selected entity: a player or another entity
     PlayerPtr p;
     Entity* e = nullptr;

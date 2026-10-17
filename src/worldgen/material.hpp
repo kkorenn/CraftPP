@@ -42,10 +42,25 @@ struct MaterialContext {
   virtual int noiseBiome(int quartX, int quartY, int quartZ) = 0;
 };
 
-// Xoroshiro PositionalRandomFactory by value: at() builds the RandomSource on the stack (no per-block heap).
+// Xoroshiro or Legacy (legacy_random_source: nether, end) PositionalRandomFactory by value: at() builds the
+// RandomSource on the stack (no per-block heap).
+struct PosRng {
+  bool legacy;
+  XoroshiroRandomSource x;
+  LegacyRandomSource l;
+  RandomSource& r() { return legacy ? static_cast<RandomSource&>(l) : x; }
+  int64_t nextLong() { return r().nextLong(); }
+  int nextInt(int bound) { return r().nextInt(bound); }
+  float nextFloat() { return r().nextFloat(); }
+  double nextDouble() { return r().nextDouble(); }
+};
 struct PosRandom {
-  int64_t lo = 0, hi = 0;
-  XoroshiroRandomSource at(int x, int y, int z) const { return XoroshiroRandomSource(Mth::getSeed(x, y, z) ^ lo, hi); }
+  int64_t lo = 0, hi = 0;  // legacy: lo = LegacyPositionalRandomFactory seed
+  bool legacy = false;
+  PosRng at(int x, int y, int z) const {
+    int64_t s = Mth::getSeed(x, y, z) ^ lo;
+    return PosRng{legacy, XoroshiroRandomSource(s, hi), LegacyRandomSource(s)};
+  }
 };
 
 struct Node;  // parsed rule / condition (material.cpp)

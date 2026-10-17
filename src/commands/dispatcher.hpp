@@ -188,7 +188,7 @@ struct Cmd {
     void block_pos(const char* name, int& x, int& y, int& z) const {
         get<Coords>(name).block(src, x, y, z);
         // Level.isInWorldBounds
-        if (y < MIN_Y || y >= MIN_Y + HEIGHT || x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
+        if (y < world.min_y() || y >= world.max_y() || x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
             throw err("argument.pos.outofworld");
     }
     // ScoreHolderArgument.getNames
@@ -286,6 +286,7 @@ inline int run_chain(const Parse& p, const Source& origin, const std::string& li
     auto it = command_handlers().find(last.cmd);
     for (auto& [s, stores] : sources) {
         Source src = s;
+        InLevel in_level(level_by_id(src.dimension));  // commands act in the source's level
         Cmd c{src, last, line};
         int result = 0;
         bool ok = true;
@@ -307,6 +308,7 @@ inline int run_chain(const Parse& p, const Source& origin, const std::string& li
 // Commands.performCommand. `line` has no leading slash.
 inline int perform(const Source& src, const std::string& line) {
     std::lock_guard lock(cmd_mtx);
+    InLevel in_level(level_by_id(src.dimension));
     Parse p = parse_command(line, 0, src);
     if (auto e = parse_error(p, line)) {
         send_error(src, *e, line);
@@ -432,8 +434,8 @@ inline const std::vector<uint8_t>& commands_packet_for(int level) {
 inline void send_commands(Player& p) {
     int level = perm_level(p);
     std::lock_guard lock(cmd_mtx);
+    p.send(pkt(play_cb::entity_event).i32(p.eid).u8(uint8_t(24 + level)));  // PlayerList sends permissions before the tree
     p.send_raw_bytes(commands_packet_for(level));
-    p.send(pkt(play_cb::entity_event).i32(p.eid).u8(uint8_t(24 + level)));  // op permission level status
 }
 inline void resend_all_commands() {
     std::lock_guard lock(cmd_mtx);
