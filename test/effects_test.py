@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mob effects, potions and enchantments: /effect -> update_mob_effect + speed attribute, golden apple, milk,
 resistance. Usage: python3 test/effects_test.py host port  (flat test world, Sam is op)"""
-import json, os, struct, sys, uuid
+import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +39,12 @@ def health(c):
     return struct.unpack(">f", wait(c, PLAY_CB["set_health"]).take(4))[0]
 
 host, port = sys.argv[1], int(sys.argv[2])
-c, _ = login("Sam", host, port, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Sam"))
+for attempt in range(50):  # the previous test's Sam may still be disconnecting
+    try:
+        c, _ = login("Sam", host, port, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Sam"))
+        break
+    except AssertionError:
+        time.sleep(0.2)
 
 # 1. /effect give: update_mob_effect (blend flag on first add) + the speed attribute modifier (0.2F * 2).
 cmd(c, "effect clear @s")  # a rerun on the same world: effects persist in the player file
@@ -78,5 +83,27 @@ cmd(c, "damage @s 6 minecraft:generic")
 while abs((h := health(c)) - 15.2) > 1e-4 and h == 20.0: pass
 assert abs(h - 15.2) < 1e-4, h
 print("resistance ok")
+
+# 4. XP: levels saturate at 0 and reset progress/total (giveExperienceLevels); diamond ore drops 3-7 xp in orbs.
+def experience(c):
+    b = wait(c, PLAY_CB["set_experience"])
+    return struct.unpack(">f", b.take(4))[0], b.varint(), b.varint()
+cmd(c, "experience add @s -100 levels")  # level 0, progress 0, total 0
+cmd(c, "experience add @s 20 points")
+while experience(c)[1:] != (2, 20): pass  # 7 to level 1, 9 to level 2, 4/11 into level 2
+cmd(c, "experience add @s -5 levels")
+while experience(c) != (0.0, 0, 0): pass
+ORB = ids("entity_types")["experience_orb"]
+cmd(c, "clear @s")
+cmd(c, "give @s iron_pickaxe")
+wait(c, PLAY_CB["container_set_slot"])
+cmd(c, "setblock 3 -61 3 minecraft:diamond_ore")
+walk(c, 3.5, -60, 2.5, True)
+time.sleep(0.3)
+c.send(PLAY_SB["player_action"], varint(0) + struct.pack(">q", (3 & 0x3FFFFFF) << 38 | (3 & 0x3FFFFFF) << 12 | (-61 & 0xFFF)) + b"\x01" + varint(1))
+time.sleep(1.2)
+c.send(PLAY_SB["player_action"], varint(3) + struct.pack(">q", (3 & 0x3FFFFFF) << 38 | (3 & 0x3FFFFFF) << 12 | (-61 & 0xFFF)) + b"\x01" + varint(2))
+wait(c, PLAY_CB["add_entity"], lambda b: (b.varint(), b.take(16), b.varint())[2] == ORB)
+print("experience ok")
 cmd(c, "gamemode creative")
 c.close() if hasattr(c, "close") else None

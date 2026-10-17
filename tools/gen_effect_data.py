@@ -3,6 +3,7 @@
 
   potions      minecraft:potion registry order: [name, [[effect, duration, amplifier], ...]] (Potions.java)
   consume      item id -> on_consume_effects of its default consumable component (items report)
+  block_xp     block -> [min, max] experience (DropExperienceBlock & co.) or "spawner"
   enchantments minecraft:enchantment registry order (sorted ids, as synced): the datapack JSON (effects, slots, ...)
 Sources: vanilla/src (Potions.java, PotionIds.java, data/minecraft/enchantment), vanilla/generated/reports.
 """
@@ -43,6 +44,20 @@ for name, iid in item_ids.items():
     if c and c.get("on_consume_effects"):
         consume[str(iid)] = c["on_consume_effects"]
 
+# ---------- block experience (Block.spawnAfterBreak overrides) ----------
+blocks_src = open(os.path.join(SRC, "world", "level", "block", "Blocks.java")).read()
+class_xp = {"RedStoneOreBlock": [1, 5], "SculkBlock": [1, 1], "SculkSensorBlock": [5, 5], "CalibratedSculkSensorBlock": [5, 5],
+            "SculkShriekerBlock": [5, 5], "SculkCatalystBlock": [5, 5], "SpawnerBlock": "spawner"}
+block_xp = {}
+for m in re.finditer(r'register\(\s*BlockItemIds\.(\w+),\s*(?:p -> new DropExperienceBlock\((ConstantInt|UniformInt)\.of\(([-\d, ]+)\)|(\w+)::new)', blocks_src):
+    name = "minecraft:" + m.group(1).lower()
+    if m.group(2):
+        v = [int(x) for x in m.group(3).split(",")]
+        r = [v[0], v[0]] if m.group(2) == "ConstantInt" else v
+        if r != [0, 0]: block_xp[name] = r
+    elif m.group(4) in class_xp:
+        block_xp[name] = class_xp[m.group(4)]
+
 # ---------- enchantments ----------
 ench = []
 for f in sorted(os.listdir(os.path.join(DATA, "enchantment"))):  # datapack registry: sorted ids
@@ -51,5 +66,5 @@ for f in sorted(os.listdir(os.path.join(DATA, "enchantment"))):  # datapack regi
     ench.append({"name": name, "max_level": j["max_level"], "slots": j["slots"], "effects": j.get("effects", {}),
                  "supported": j.get("supported_items"), "exclusive": j.get("exclusive_set")})
 
-json.dump({"potions": potions, "consume": consume, "enchantments": ench}, open(OUT, "w"), separators=(",", ":"))
-print(f"effects.json: {len(potions)} potions, {len(consume)} consumables, {len(ench)} enchantments")
+json.dump({"potions": potions, "consume": consume, "enchantments": ench, "block_xp": block_xp}, open(OUT, "w"), separators=(",", ":"))
+print(f"effects.json: {len(potions)} potions, {len(consume)} consumables, {len(ench)} enchantments, {len(block_xp)} xp blocks")

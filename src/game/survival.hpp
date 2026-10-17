@@ -33,6 +33,48 @@ inline void send_health(Player& p) {
 inline void send_experience(Player& p) {
     p.send(Writer().varint(play_cb::set_experience).f32(p.g.xp_progress).varint(p.g.xp_level).varint(p.g.xp_total));
 }
+// ---------- experience (Player / ServerPlayer) ----------
+inline int xp_needed_for_next_level(int level) {  // Player.getXpNeededForNextLevel
+    return level >= 30 ? 112 + (level - 30) * 9 : level >= 15 ? 37 + (level - 15) * 5 : 7 + level * 2;
+}
+inline void give_experience_levels(Player& p, int amount) {  // Player.giveExperienceLevels (no packet)
+    auto& g = p.g;
+    int64_t l = int64_t(g.xp_level) + amount;  // IntMath.saturatedAdd
+    g.xp_level = int(std::clamp<int64_t>(l, INT32_MIN, INT32_MAX));
+    if (g.xp_level < 0) g.xp_level = 0, g.xp_progress = 0.0f, g.xp_total = 0;
+    if (amount > 0 && g.xp_level % 5 == 0 && float(g.last_level_up) < float(g.game_ticks) - 100.0f) {
+        float vol = g.xp_level > 30 ? 1.0f : float(g.xp_level) / 30.0f;
+        world_sound("minecraft:entity.player.levelup", 7 /*players*/, p.x, p.y, p.z, vol * 0.75f, 1.0f);
+        g.last_level_up = g.game_ticks;
+    }
+}
+inline void give_experience_points(Player& p, int i) {  // Player.giveExperiencePoints
+    auto& g = p.g;
+    g.xp_progress = g.xp_progress + float(i) / float(xp_needed_for_next_level(g.xp_level));
+    g.xp_total = int(std::clamp<int64_t>(int64_t(g.xp_total) + i, 0, INT32_MAX));
+    while (g.xp_progress < 0.0f) {
+        float rem = g.xp_progress * float(xp_needed_for_next_level(g.xp_level));
+        if (g.xp_level > 0) {
+            give_experience_levels(p, -1);
+            g.xp_progress = 1.0f + rem / float(xp_needed_for_next_level(g.xp_level));
+        } else {
+            give_experience_levels(p, -1);
+            g.xp_progress = 0.0f;
+        }
+    }
+    while (g.xp_progress >= 1.0f) {
+        g.xp_progress = (g.xp_progress - 1.0f) * float(xp_needed_for_next_level(g.xp_level));
+        give_experience_levels(p, 1);
+        g.xp_progress = g.xp_progress / float(xp_needed_for_next_level(g.xp_level));
+    }
+    send_experience(p);
+}
+inline void set_experience_points(Player& p, int amount) {  // ServerPlayer.setExperiencePoints
+    float limit = float(xp_needed_for_next_level(p.g.xp_level));
+    float mx = (limit - 1.0f) / limit;
+    p.g.xp_progress = std::clamp(float(amount) / limit, 0.0f, mx);
+}
+
 inline void add_exhaustion(Player& p, float a) {
     if (survival_like(p)) p.g.exhaustion = std::min(p.g.exhaustion + a, 40.0f);
 }
@@ -305,6 +347,7 @@ inline bool destroy_block(Player& p, int x, int y, int z) {
         drops.clear();
         block_drops(state, x, y, z, held(p), drops);
         for (auto& d : drops) pop_resource(x, y, z, d);
+        player_block_experience(p, state, x, y, z);
     }
     if (block_of(state).hardness != 0) {
         if (item >= 0 && item_info[size_t(item)].tool >= 0) hurt_tool(p, tools[size_t(item_info[size_t(item)].tool)].damage_per_block);

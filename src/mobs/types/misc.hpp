@@ -4,29 +4,7 @@
 #include "../../commands/vanilla.hpp"
 
 // ---------- experience ----------
-inline int xp_needed_for_next_level(int level) {  // Player.getXpNeededForNextLevel
-    return level >= 30 ? 112 + (level - 30) * 9 : level >= 15 ? 37 + (level - 15) * 5 : 7 + level * 2;
-}
-inline void give_experience_points(Player& p, int i) {  // Player.giveExperiencePoints
-    auto& g = p.g;
-    g.xp_progress += float(i) / float(xp_needed_for_next_level(g.xp_level));
-    g.xp_total = std::clamp(g.xp_total + i, 0, INT32_MAX);
-    while (g.xp_progress < 0.0f) {
-        float rem = g.xp_progress * float(xp_needed_for_next_level(g.xp_level));
-        if (g.xp_level > 0) {
-            g.xp_level--;
-            g.xp_progress = 1.0f + rem / float(xp_needed_for_next_level(g.xp_level));
-        } else {
-            g.xp_level = 0, g.xp_progress = 0.0f;
-        }
-    }
-    while (g.xp_progress >= 1.0f) {
-        g.xp_progress = (g.xp_progress - 1.0f) * float(xp_needed_for_next_level(g.xp_level));
-        g.xp_level++;
-        g.xp_progress /= float(xp_needed_for_next_level(g.xp_level));
-    }
-    send_experience(p);
-}
+// xp_needed_for_next_level / give_experience_points: game/survival.hpp
 inline std::unordered_map<const Player*, int> take_xp_delay;
 
 struct ExperienceOrb : Entity {

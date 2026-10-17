@@ -33,4 +33,6 @@ float player_destroy_speed(Player& p, float tool_speed, bool eye_in_water);  // 
 void save_player_effects(const Player& p, Nbt& tag);  // "active_effects" in the player file
 void load_player_effects(Player& p, const Nbt& tag);
 void effects_player_respawned(Player& p);  // drop the old effects' modifiers and absorption
+void world_sound(const std::string& sound, int source, double x, double y, double z, float vol, float pitch);  // Level.playSound(null, ...)
+void player_block_experience(Player& p, int state, int x, int y, int z);  // ores, sculk, spawners
 void player_consume_effects(Player& p, int item, const ItemStack& stack);  // Consumable.onConsume effects (food, potions, milk)

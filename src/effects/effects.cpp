@@ -15,6 +15,7 @@ struct ConsumeEffect {
     std::string sound;
 };
 static std::unordered_map<int, std::vector<ConsumeEffect>> consume_effects;  // item id -> on_consume_effects
+static std::unordered_map<std::string, std::array<int, 2>> block_xp;           // block -> UniformInt [min, max]; {-1,-1} spawner
 
 static EffectInstance effect_from_json(const Json& j) {  // MobEffectInstance.CODEC
     EffectInstance x(effect_id(j["id"].asString()), j.getInt("duration", 0), j.getInt("amplifier", 0),
@@ -36,6 +37,8 @@ static bool load_effect_data() {
         for (auto& e : p[1].arr) pot.effects.emplace_back(effect_id(e[0].asString()), e[1].asInt(), e[2].asInt());
         potions.push_back(std::move(pot));
     }
+    for (auto& [k, v] : j["block_xp"].obj)
+        block_xp[k] = v.isString() ? std::array<int, 2>{-1, -1} : std::array<int, 2>{v[0].asInt(), v[1].asInt()};
     for (auto& [k, list] : j["consume"].obj) {
         auto& out = consume_effects[std::stoi(k)];
         for (auto& c : list.arr) {
@@ -125,6 +128,20 @@ void player_consume_effects(Player& p, int item, const ItemStack& stack) {
             case ConsumeEffect::SOUND: play_sound(c.sound, SRC_PLAYERS, p.x, p.y, p.z, 1.0f, 1.0f); break;
         }
     }
+}
+
+// Block.spawnAfterBreak with dropExperience (ServerPlayerGameMode.destroyBlock -> playerDestroy -> dropResources).
+void player_block_experience(Player& p, int state, int x, int y, int z) {
+    auto it = block_xp.find(block_of(state).name);
+    if (it == block_xp.end()) return;
+    int n;
+    if (it->second[0] < 0) n = 15 + rand_int(15) + rand_int(15);  // SpawnerBlock: no enchantment processing
+    else n = enchant_block_experience(held(p), rand_between(it->second[0], it->second[1]));  // tryDropExperience
+    if (n > 0 && rule("block_drops")) award_xp_orbs(x + 0.5, y + 0.5, z + 0.5, n);  // popExperience
+}
+
+void world_sound(const std::string& sound, int source, double x, double y, double z, float vol, float pitch) {
+    play_sound(sound, source, x, y, z, vol, pitch);
 }
 
 // ---------- player API ----------
