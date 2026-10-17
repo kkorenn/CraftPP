@@ -46,3 +46,21 @@ All nine full-feature block fingerprints matched between versions. The 32-chunk
 noise/surface fingerprint remained `e4e3969b1fe85d8b`. Biome parity hash, RNG/noise
 references, material checks, and the full server suite passed. These are host
 measurements, not Raspberry Pi measurements.
+
+## Feature ordering and lighting writes
+
+Recovered the feature branch's FIFO view tickets and x-major decoration layers,
+and its comparison tool's isolated run directories. The comparison tool also
+accepts `--craftpp` to select a binary. Terrain-prefetch exceptions now remove
+failed tickets and wake waiters; the regression reproduces the previous timeout
+and confirms a retry completes.
+
+Generation writes and final palette compaction now hold the light engine mutex
+once palettes are visible to lighting readers. This completes the unfinished
+storage branch's lighting-lock change without its malformed draft callback.
+
+Seed 12345, radius 1, two generation workers matched a real vanilla surface-only
+run: 884736 blocks and 13824 biome cells, zero mismatches. A separate full-feature
+pipeline probe measured 30.4 ms/chunk and 22 MiB peak RSS on macOS arm64, excluding
+runtime lighting and structures. Fossil/template features and possible Java
+HashSet tree-bin iteration differences remain known limitations.

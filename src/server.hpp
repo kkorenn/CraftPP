@@ -241,6 +241,7 @@ inline void setup_world() {
         world.on_saved = [sw = structure_world] { sw->manager().saveDirty(); };
     }
     world.generator = [ow](Chunk& c) { ow->pipeline.take(c.cx, c.cz, c); };
+    world.ticket = [ow](int cx, int cz, bool add) { add ? ow->pipeline.ticket(cx, cz) : ow->pipeline.cancel(cx, cz); };
     light::attach(world, ow->pipeline);
     level = read_level_data();
     if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z")) {
@@ -443,6 +444,15 @@ inline void update_view(Player& p, int ncx, int ncz, bool initial) {
         int dx = k.first - ncx, dz = k.second - ncz;
         return dx * dx + dz * dz;
     };
+    // Decoration order: vanilla generates by ticket level (chessboard distance from the player), FIFO within a
+    // level; the view square's chunks plus the ring the client needs as neighbours (v + 1).
+    if (world.ticket) {
+        auto cheb = [&](int x, int z) { return std::max(std::abs(x - ncx), std::abs(z - ncz)); };
+        for (int r = 0; r <= v + 1; r++)
+            for (int x = ncx - r; x <= ncx + r; x++)
+                for (int z = ncz - r; z <= ncz + r; z++)
+                    if (cheb(x, z) == r && (initial || std::max(std::abs(x - ocx), std::abs(z - ocz)) > v + 1)) world.ticket(x, z, true);
+    }
     std::vector<std::pair<int, int>> add;
     for (int x = ncx - v; x <= ncx + v; x++)
         for (int z = ncz - v; z <= ncz + v; z++)

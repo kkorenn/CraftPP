@@ -25,6 +25,8 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 - Startup performance: parallel spawn terrain and stronghold-ring searches, compiled-data reuse and lazy feature-pool loading. Warm generator init 94→36 ms and peak RSS 46→22 MiB on macOS arm64, unchanged terrain/feature fingerprints; see docs/coordinator-integration.md.
 
+- Feature ordering: FIFO generation tickets and x-major decoration layers, failed-prefetch recovery, synchronized palette writes visible to lighting. Surface-only comparison seed 12345/radius 1 matched all blocks and biomes.
+
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
@@ -35,7 +37,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 | redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
 | containers | block entities + container menus |
 | storage | vanilla Anvil region files, proto-chunk eviction |
-| feature-parity | 0 stable-block worldgen mismatches vs vanilla: sculk, lush caves, decoration order, untested biomes |
+| feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening

@@ -13,7 +13,7 @@ from bot import login, play_step, PLAY_SB
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
 MIN_Y = -64
-RUN = f"{ROOT}/vanilla/compare_run"
+RUN = f"{ROOT}/build/compare/vanilla"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--seed", required=True)
@@ -35,6 +35,8 @@ ap.add_argument("--timeout", type=float, default=300)
 ap.add_argument("--light", action="store_true", help="also compare sky + block light")
 ap.add_argument("--edits", help="';'-separated console commands run after the chunks arrived ({x} {y} {z} = spawn), "
                 "e.g. \"fill {x} {y-30} {z} {x+6} {y-24} {z+6} air;setblock {x+3} {y-27} {z+3} torch\" (tests incremental light); 'wait' settles in between")
+ap.add_argument("--jfr", help="run vanilla with --jfrProfile and copy run 1's recording here (minecraft.ChunkGeneration events = vanilla's generation order)")
+ap.add_argument("--craftpp", default="build/craftpp", help="CraftPP binary for before/after comparisons")
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
 ap.add_argument("--fluids", action="store_true", help="also settle without --light: apply the block updates of fluids "
                 "that flow after post-processing (vanilla sends chunks right after it)")
@@ -56,7 +58,7 @@ def settle(c):  # both servers send time / keep-alive packets, so this returns
 
 def collect(port, center, proc, edited=False):
     """Join, walk to center (block pos; None = stay at spawn) and gather the chunk square around it."""
-    c, _ = login("Cmp2" if edited else "Cmp", "127.0.0.1", port, view=view, decode=True)
+    c, _ = login("Cmp2" if edited else "Cmp", "127.0.0.1", port, view=view, decode=True, uid=CMP_UUID)
     c.s.settimeout(args.timeout)
     while not (center or c.spawn): play_step(c)
     center = center or c.spawn
@@ -82,7 +84,12 @@ def collect(port, center, proc, edited=False):
     if args.light: LIGHT.append({k: c.light[k] for k in need})
     return {k: c.chunks[k] for k in need}, c.biomes, center
 
+import uuid
+CMP_UUID = uuid.uuid3(uuid.NAMESPACE_DNS, "craftpp-compare")  # fixed, so CraftPP finds the playerdata file below
+JOIN = []  # vanilla run 1's join position: CraftPP's player starts there too (same decoration order)
 LIGHT = []  # per run: {(cx, cz): {"sky"|"block": {section index: 2048 bytes}}}
+
+GEN_STRUCTURES = "false" if (args.vanilla_datapack and not os.path.basename(os.path.normpath(args.vanilla_datapack)).startswith("structures")) or args.no_structures else "true"
 
 def run_vanilla(n, center):
     os.makedirs(RUN, exist_ok=True)
@@ -92,29 +99,43 @@ def run_vanilla(n, center):
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures="false" if (args.vanilla_datapack and not os.path.basename(os.path.normpath(args.vanilla_datapack)).startswith("structures")) or args.no_structures else "true", sync_chunk_writes="false")
+                 generate_structures=GEN_STRUCTURES, sync_chunk_writes="false")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
-    p = subprocess.Popen([JAVA, "-Xmx2G", "-jar", f"{ROOT}/vanilla/server.jar", "nogui"], cwd=RUN,
+    shutil.rmtree(f"{RUN}/debug", ignore_errors=True)
+    p = subprocess.Popen([JAVA, "-Xmx2G", "-jar", f"{ROOT}/vanilla/server.jar", "nogui"] + (["--jfrProfile"] if args.jfr else []), cwd=RUN,
                          stdin=subprocess.PIPE, stdout=open(log, "w"), stderr=subprocess.STDOUT)
     try:
         wait_log(log, "Done (", p, 600)
-        return collect(args.port, center, p)
+        r = collect(args.port, center, p)
+        if n == 1:  # where vanilla placed the player (PlayerSpawnFinder picks a random column near the world spawn)
+            import re
+            m = re.search(r"Cmp\[.*logged in with entity id \d+ at \(([-\d.]+), ([-\d.]+), ([-\d.]+)\)", open(log).read())
+            JOIN[:] = [float(v) for v in m.groups()] if m else []
+        return r
     finally:
         p.stdin.write(b"stop\n"); p.stdin.flush()
         try: p.wait(120)
         except subprocess.TimeoutExpired: p.kill()
+        if args.jfr:  # run 2 (--stable) goes to <file>.2
+            import glob
+            for f in glob.glob(f"{RUN}/debug/*.jfr"): shutil.copy(f, args.jfr if n == 1 else args.jfr.replace(".jfr", f"_{n}.jfr"))
 
 def run_craftpp(center):
     pack = os.path.basename(os.path.normpath(args.vanilla_datapack)) if args.vanilla_datapack else ""
     stage = next((s for s in ("noise", "surface", "carvers", "structures") if pack.startswith(s + "_")), "features")
-    props = f"{ROOT}/build/compare.properties"
-    shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
+    sdir = f"{RUN}/craftpp"  # per --run-dir, so parallel compares in one worktree don't share a world
+    os.makedirs(sdir, exist_ok=True)
+    props = f"{sdir}/compare.properties"
+    shutil.rmtree(f"{sdir}/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + (2 if args.fluids else 1)}\n"  # --fluids: neighbours must tick too
-                           f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
+                           f"level-name={sdir}/compare-world\nlevel-type=normal\nwhite-list=false\ngenerate-structures={GEN_STRUCTURES}\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
-    open(f"{ROOT}/build/eula.txt", "w").write("eula=true\n")  # server dir = build/ (beside the properties file)
-    p = subprocess.Popen([f"{ROOT}/build/craftpp", props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{ROOT}/build/compare-server.log", "w"), stderr=subprocess.STDOUT)
+    open(f"{sdir}/eula.txt", "w").write("eula=true\n")  # server dir = beside the properties file
+    if JOIN:  # a saved player file (playerdata/<offline uuid>.txt, see load_player) skips the random spawn column
+        os.makedirs(f"{sdir}/compare-world/playerdata", exist_ok=True)
+        open(f"{sdir}/compare-world/playerdata/{CMP_UUID.hex}.txt", "w").write(f"{JOIN[0]} {JOIN[1]} {JOIN[2]} 0 0 1 0\n")
+    p = subprocess.Popen([os.path.join(ROOT, args.craftpp), props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{sdir}/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(100):
             try: socket.create_connection(("127.0.0.1", args.port)).close(); break
@@ -139,7 +160,8 @@ key = f"{args.seed}_{args.radius}_{args.center}_{os.path.basename(os.path.normpa
 cache = args.cache and os.path.join(args.cache, key + ".pickle")
 A2 = None
 if cache and os.path.exists(cache):
-    A, bioA, center, A2 = pickle.load(open(cache, "rb"))
+    A, bioA, center, A2, *join = pickle.load(open(cache, "rb"))
+    JOIN[:] = join[0] if join else []
     print(f"vanilla run from {cache}", flush=True)
 else:
     print(f"vanilla run (seed {args.seed}, radius {args.radius}, view {view}) ...", flush=True)
@@ -149,7 +171,7 @@ if args.stable and A2 is None:
     A2 = run_vanilla(2, center)[0]
 if cache:
     os.makedirs(args.cache, exist_ok=True)
-    pickle.dump((A, bioA, center, A2), open(cache, "wb"))
+    pickle.dump((A, bioA, center, A2, JOIN), open(cache, "wb"))
 print(f"spawn {center}, chunk {center[0] >> 4},{center[2] >> 4}; {args.against} run ...", flush=True)
 B, bioB, _ = run_vanilla(2, center) if args.against == "vanilla" else run_craftpp(center)
 if args.dump: pickle.dump((A, A2, B, center), open(args.dump, "wb"))

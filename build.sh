@@ -29,6 +29,8 @@ if [ -n "$TEST" ]; then
     fail "no '$1' in $LOG"
   }
 
+  ./$B/pipeline_test --failure-recovery
+
   # Structures: template loading, persistence round trip, /locate of 8 structure types (asserts inside).
   ./$B/structure_test > $B/structure_test.log 2>&1 || { tail -5 $B/structure_test.log; echo "FAIL: structure_test"; exit 1; }
 

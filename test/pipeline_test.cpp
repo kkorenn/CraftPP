@@ -10,11 +10,29 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <future>
+#include <stdexcept>
+#include <cstring>
 
 #include "world.hpp"
 #include "worldgen/overworld.hpp"
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "--failure-recovery") == 0) {
+    worldgen::Pipeline pipeline;
+    bool failed = false;
+    pipeline.set_step(worldgen::Status::TERRAIN, [&](worldgen::Region&) {
+      if (!failed) { failed = true; throw std::runtime_error("injected terrain failure"); }
+    });
+    try { pipeline.ensure(0, 0, worldgen::Status::FULL); assert(false); }
+    catch (const std::runtime_error&) {}
+    auto retry = std::async(std::launch::async, [&] { pipeline.ensure(0, 0, worldgen::Status::FULL); });
+    // A failed prefetch must not leave a ticket that waits forever for its abandoned worker.
+    assert(retry.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    retry.get();
+    puts("pipeline failure recovery ok");
+    return 0;
+  }
   int64_t seed = argc > 1 ? std::stoll(argv[1]) : 12345;
   int r = argc > 2 ? std::stoi(argv[2]) : 3;
   std::string stages = argc > 3 ? argv[3] : "features";
@@ -54,5 +72,10 @@ int main(int argc, char** argv) {
   }
   rusage u{};
   getrusage(RUSAGE_SELF, &u);
-  printf("peak RSS %.0f MB, protos held %zu\n", u.ru_maxrss / (1024.0 * 1024.0), ow.pipeline.loaded());
+#ifdef __APPLE__
+  double peak_mib = u.ru_maxrss / (1024.0 * 1024.0);
+#else
+  double peak_mib = u.ru_maxrss / 1024.0;  // Linux reports KiB, macOS reports bytes.
+#endif
+  printf("peak RSS %.0f MiB, protos held %zu\n", peak_mib, ow.pipeline.loaded());
 }

@@ -471,6 +471,9 @@ struct World {
     bool cache_generated = true;  // write generated chunks to disk on unload (docs/performance.md)
 
     std::function<void(Chunk&)> generator = generate_flat;  // set before serving; called without the map lock
+    // Worldgen decoration order (worldgen::Pipeline::ticket / cancel), set with the generator: update_view
+    // queues tickets in vanilla ticket-level order; a job cancelled before it ran drops its ticket.
+    std::function<void(int cx, int cz, bool add)> ticket;
     std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
 
     // The chunk if loaded, else null (never loads or generates).
@@ -595,6 +598,7 @@ private:
             if (viewed({cx, cz})) return false;
             inflight.erase({cx, cz});
         }
+        if (ticket) ticket(cx, cz, false);
         job.set_exception(std::make_exception_ptr(ChunkCancelled()));
         return true;
     }
@@ -645,9 +649,11 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         if (!loaded) {
             c->level.post_processed = false;
             generator(*c);
+            // Pipeline::on_take has already exposed this chunk to lighting readers.
+            std::lock_guard light_lock(light::mutex());
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
-        light::produced(*this, *c, loaded);  // light the 3x3 (generated worlds) before the frame is encoded
+        light::produced(*this, *c, loaded, encode);  // light the 3x3 (generated worlds) before the frame is encoded
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
