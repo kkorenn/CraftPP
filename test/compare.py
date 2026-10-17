@@ -122,9 +122,9 @@ def run_vanilla(n, center):
         shutil.copytree(args.vanilla_datapack, f"{RUN}/world/datapacks/{os.path.basename(os.path.normpath(args.vanilla_datapack))}")
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
     open(f"{RUN}/ops.json", "w").write(OPS)
-    props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
+    props = dict(online_mode="false", allow_flight="true", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures=GEN_STRUCTURES, sync_chunk_writes="false", allow_flight="true")
+                 generate_structures=GEN_STRUCTURES, sync_chunk_writes="false")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
     shutil.rmtree(f"{RUN}/debug", ignore_errors=True)
