@@ -63,6 +63,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/level_test.py 127.0.0.1 $PORT
+  python3 -u test/redstone_test.py 127.0.0.1 $PORT
   python3 -u test/placement_test.py 127.0.0.1 $PORT
   python3 -u test/cauldron_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
