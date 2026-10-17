@@ -181,6 +181,16 @@ for b in biome_ids:
                          "temp": j.get("temperature", 0.5)})
 
 
+# ---------- structure spawn_overrides (StructureSpawnOverride): {id, cats: [[cat, piece?, spawners]]} ----------
+structure_spawns = []
+for f in sorted(glob.glob(os.path.join(DATA, "worldgen", "structure", "*.json"))):
+    ov = json.load(open(f)).get("spawn_overrides", {})
+    if ov:
+        structure_spawns.append({"id": "minecraft:" + os.path.basename(f)[:-5], "cats": [
+            [cat_index[c], o["bounding_box"] == "piece", [[etype_id[short(s["type"])], s["weight"]] + count_range(s["count"]) for s in o["spawns"]]]
+            for c, o in sorted(ov.items())]})
+
+
 # ---------- entity loot tables: entity predicates pre-compiled ----------
 def type_set(spec):
     if isinstance(spec, list):
@@ -311,7 +321,7 @@ out = {
     "shapes": dump["shapes"], "state_shape": dump["state_shape"], "state_flags": dump["state_flags"],
     "state_path": dump["state_path"], "state_fluid": dump["state_fluid"], "path_types": dump["path_types"],
     "block_phys": block_phys, "attributes": attributes, "entity_types": types, "categories": categories,
-    "biome_spawns": biome_spawns, "entity_tags": entity_tags, "damage_tags": damage_tags, "damage_scaling": [damage_scaling[n] for n in damage_type_names], "block_tags": block_tags, "biome_tags": biome_tags,
+    "biome_spawns": biome_spawns, "structure_spawns": structure_spawns, "entity_tags": entity_tags, "damage_tags": damage_tags, "damage_scaling": [damage_scaling[n] for n in damage_type_names], "block_tags": block_tags, "biome_tags": biome_tags,
     "registry_ids": {r.split(":")[1]: {short(k): v["protocol_id"] for k, v in registries[r]["entries"].items()}
                      for r in ("minecraft:particle_type", "minecraft:sound_event")},
     "item_tags": item_tags, "loot": loot, "item_mods": sorted([k, v["m"], v["w"]] for k, v in item_mods.items()), "smelt": sorted([k, v] for k, v in smelt.items()),

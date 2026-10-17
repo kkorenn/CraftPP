@@ -241,6 +241,12 @@ void register_basic_features(ParserMap& out);  // feature_basic.cpp
 void register_tree_features(ParserMap& out);   // feature_tree.cpp
 void register_cave_features(ParserMap& out);   // feature_cave.cpp
 void register_misc_features(ParserMap& out);   // feature_misc.cpp
+void register_nether_end_features(ParserMap& out);  // feature_nether_end.cpp
+// EndSpikeFeature.EndSpike / getSpikesForLevel (dragon fight: crystal respawn) and the end gateway block entity
+// NBT with an exit (EndGatewayFeature.knownExit; mobs-bosses places gateways on dragon death).
+struct EndSpike { int x, z, radius, height; bool guarded; };
+std::vector<EndSpike> end_spikes(int64_t seed);
+std::vector<uint8_t> end_gateway_nbt(int x, int y, int z, bool exact);
 // Extra feature types registered by other subsystems before the Overworld is built (static init or setup):
 // e.g. the structures agent adds "template" and "fossil" (StructureTemplate.placeInWorld + processors), which
 // this branch leaves unimplemented (they place nothing and are reported once at load).
