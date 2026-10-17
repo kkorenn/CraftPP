@@ -208,8 +208,8 @@ bool can_survive(Level& l, int state, const P& p) {
       if (in(below, "minecraft:cannot_support_snow_layer")) return false;
       if (in(below, "minecraft:support_override_snow_layer")) return true;
       return R().collision_face_full(below, bs::UP) || (is(below, blocks::snow) && R().int_value(below, "layers") == 8);
-    case MUSHROOM:  // raw brightness is 15 in an unlit proto chunk: only the override tag allows it
-      return in(below, "minecraft:overrides_mushroom_light_requirement");
+    case MUSHROOM:  // raw brightness in an unlit proto chunk: 15 with skylight (only the override tag allows it), else 0
+      return in(below, "minecraft:overrides_mushroom_light_requirement") || (!gen_context.skylight && (R().flags(below) & bs::SOLID_RENDER));
     default: return true;
   }
 }

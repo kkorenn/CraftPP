@@ -46,7 +46,8 @@ add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_so
   src/worldgen/density.cpp src/worldgen/terrain.cpp src/worldgen/block_state.cpp src/worldgen/pipeline.cpp
   src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp
   src/worldgen/block_behavior.cpp src/worldgen/feature_basic.cpp src/worldgen/feature_tree.cpp src/worldgen/feature_cave.cpp
-  src/worldgen/feature_misc.cpp)
+  src/worldgen/feature_misc.cpp
+  src/worldgen/feature_nether_end.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
 find_package(ZLIB REQUIRED)  # chunk files (world.hpp)

@@ -11,7 +11,7 @@ Overworld::Overworld(int64_t seed, const std::string& stages, const std::string&
     : seed(seed), pack(pack),
       terrain(std::make_shared<TerrainGenerator>(seed, root, stages != "noise", settings, chunkMinY, chunkHeight)) {
   pipeline.min_y = chunkMinY, pipeline.height = chunkHeight;
-  pipeline.context = {terrain->MIN_Y, terrain->HEIGHT, terrain->SEA_LEVEL};  // WorldGenerationContext
+  pipeline.context = {terrain->MIN_Y, terrain->HEIGHT, terrain->SEA_LEVEL, settings != "nether" && settings != "end"};  // WorldGenerationContext
   if (stages == "carvers" || stages == "features") carvers = std::make_unique<Carvers>(root, pack);
   if (stages == "features") features = std::make_unique<Features>(*this, root);
 
