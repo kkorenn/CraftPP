@@ -20,10 +20,9 @@ STUBS = {
     "server.hasWhitelist": "Constant false",
     "server.whitelist": "Constant empty list",
     "server.registries": "Null; Java falls back to bundled registry report",
-    "world.gameRule": "Constant null",
-    "world.gameRules": "Constant empty list",
 }
 PARTIAL = {
+    "world.setGameRule": "Shared rule state across dimensions; command changes do not emit Bukkit events",
     "entity.setPluginData": "Session only; entity IDs not included in storage key",
     "player.inventory": "Item metadata omitted",
     "player.setSlot": "Item metadata omitted",

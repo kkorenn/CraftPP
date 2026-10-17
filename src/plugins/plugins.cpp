@@ -806,8 +806,36 @@ std::string api(const std::string& m, const Json& a) {
         broadcast(border_init_packet());
         return "null";
     }
-    if (m == "world.gameRules") return "[]";
-    if (m == "world.gameRule") return "null";
+    if (m == "world.gameRules") {
+        std::string names = "[";
+        for (auto& rule : gen::GAME_RULES) names += (names.size() > 1 ? "," : "") + q(rule.id);
+        return names + "]";
+    }
+    if (m == "world.gameRule" || m == "world.gameRuleInfo" || m == "world.setGameRule") {
+        int index = game_rule_index(text_arg(a, "rule"));
+        if (index < 0) return m == "world.setGameRule" ? "false" : "null";
+        const auto& rule = gen::GAME_RULES[index];
+        auto value_json = [&](int value) { return rule.is_int ? std::to_string(value) : std::string(value ? "true" : "false"); };
+        if (m == "world.gameRuleInfo")
+            return "{\"integer\":" + std::string(rule.is_int ? "true" : "false") + ",\"default\":" + value_json(rule.def) +
+                   ",\"min\":" + std::to_string(rule.min) + ",\"max\":" + std::to_string(rule.max) + "}";
+        if (m == "world.gameRule") return q(value_json(game_rule_values[size_t(index)]));
+        std::string text = text_arg(a, "value");
+        int value;
+        if (rule.is_int) {
+            auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+            if (error != std::errc{} || end != text.data() + text.size() || value < rule.min || value > rule.max) return "false";
+        } else if (text == "true" || text == "false") value = text == "true";
+        else return "false";
+        game_rule_values[size_t(index)] = value;
+        std::string id = rule.id;
+        if (id == "advance_time") broadcast(set_time_packet());
+        if (id == "reduced_debug_info")
+            for (auto& p : snapshot()) p->send(pkt(play_cb::entity_event).i32(p->eid).u8(value ? 22 : 23));
+        if (id == "immediate_respawn") broadcast(game_event(11, value ? 1.f : 0.f));
+        if (id == "limited_crafting") broadcast(game_event(12, value ? 1.f : 0.f));
+        return "true";
+    }
     if (m == "entity.list") return "[]";  // CraftPP has no non-player entities yet
     throw std::runtime_error("CraftPP does not implement plugin API call " + m + " yet");
 }

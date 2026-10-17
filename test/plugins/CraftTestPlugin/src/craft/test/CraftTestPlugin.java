@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class CraftTestPlugin extends JavaPlugin implements Listener {
     private final AtomicInteger ticks = new AtomicInteger();
+    private boolean cancelRuleChange, rewriteRuleChange;
 
     private static void rejects(Runnable action) {
         try { action.run(); } catch (IllegalArgumentException expected) { return; }
@@ -147,6 +148,49 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
                         }, 2);
                     }, 2);
                 }
+                if (args.length > 0 && args[0].equals("rulesapi")) {
+                    org.bukkit.World world = Bukkit.getWorlds().getFirst();
+                    check(world.getGameRules().length == 59 && org.bukkit.GameRule.values().length == 59, "59 real registry rules");
+                    for (org.bukkit.GameRule<?> rule : org.bukkit.GameRule.values()) {
+                        check(rule.getDefaultValue() != null && world.getGameRuleValue(rule) != null, "typed rule readable: " + rule);
+                        check(world.getGameRuleDefault(rule).equals(rule.getDefaultValue()), "default matches registry: " + rule);
+                    }
+                    check(world.isGameRule("random_tick_speed") && world.isGameRule("minecraft:random_tick_speed")
+                            && !world.isGameRule("not_a_rule"), "canonical and namespaced lookup");
+                    check(!world.setGameRuleValue("not_a_rule", "true") && !world.setGameRuleValue("random_tick_speed", "-1")
+                            && !world.setGameRuleValue("random_tick_speed", "2147483648")
+                            && !world.setGameRuleValue("random_tick_speed", "1junk")
+                            && !world.setGameRuleValue("random_tick_speed", " 1")
+                            && !world.setGameRuleValue("keep_inventory", "banana"), "invalid rule writes rejected");
+                    check(world.getGameRuleValue(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 3, "invalid writes unchanged");
+                    check(world.setGameRule(org.bukkit.GameRules.RANDOM_TICK_SPEED, 7), "typed integer setter");
+                    check(world.getGameRuleValue(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 7
+                            && world.getGameRuleDefault(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 3, "default independent of current value");
+                    cancelRuleChange = true;
+                    check(!world.setGameRule(org.bukkit.GameRules.KEEP_INVENTORY, true)
+                            && !world.getGameRuleValue(org.bukkit.GameRules.KEEP_INVENTORY), "event cancels mutation");
+                    cancelRuleChange = false;
+                    rewriteRuleChange = true;
+                    check(world.setGameRule(org.bukkit.GameRules.RANDOM_TICK_SPEED, 9)
+                            && world.getGameRuleValue(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 11, "event rewrites value");
+                    rewriteRuleChange = false;
+                    check(world.setGameRule(org.bukkit.GameRule.DISABLE_RAIDS, true)
+                            && !world.getGameRuleValue(org.bukkit.GameRules.RAIDS)
+                            && world.getGameRuleValue(org.bukkit.GameRule.DISABLE_RAIDS), "legacy inverted boolean conversion");
+                    check(world.setGameRule(org.bukkit.GameRule.DO_FIRE_TICK, false)
+                            && world.getGameRuleValue(org.bukkit.GameRules.FIRE_SPREAD_RADIUS_AROUND_PLAYER) == 0,
+                            "legacy boolean-to-integer conversion");
+                    check(world.setGameRule(org.bukkit.GameRules.ADVANCE_TIME, false), "pause clock rule");
+                    check(world.setGameRule(org.bukkit.GameRules.IMMEDIATE_RESPAWN, true), "respawn client sync");
+                    check(world.setGameRule(org.bukkit.GameRules.LIMITED_CRAFTING, true), "crafting client sync");
+                    check(world.setGameRule(org.bukkit.GameRules.REDUCED_DEBUG_INFO, true), "debug client sync");
+                    long full = world.getFullTime(), age = world.getGameTime();
+                    getServer().getScheduler().runTaskLater(this, () -> {
+                        check(world.getFullTime() == full && world.getGameTime() > age, "paused daylight keeps game age ticking");
+                        check(world.setGameRule(org.bukkit.GameRules.ADVANCE_TIME, true), "resume clock rule");
+                        sender.sendMessage("rulesapi ok");
+                    }, 3);
+                }
                 if (args.length > 0 && args[0].equals("worldverify")) {
                     org.bukkit.World world = Bukkit.getWorlds().getFirst();
                     Location spawn = world.getSpawnLocation();
@@ -160,6 +204,10 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
                             "border position and size persisted");
                     check(border.getWarningTimeTicks() == 37 && border.getWarningDistance() == 9
                             && border.getDamageAmount() == 0.125 && border.getDamageBuffer() == 3.5, "border settings persisted");
+                    check(world.getGameRuleValue(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 11
+                            && !world.getGameRuleValue(org.bukkit.GameRules.RAIDS)
+                            && world.getGameRuleValue(org.bukkit.GameRules.IMMEDIATE_RESPAWN), "game rules persisted");
+                    check(world.getGameRuleDefault(org.bukkit.GameRules.RANDOM_TICK_SPEED) == 3, "registry default survives restart");
                     sender.sendMessage("worldverify ok");
                 }
                 if (sender instanceof Player p && args.length > 0 && args[0].equals("creative")) {
@@ -225,6 +273,12 @@ public final class CraftTestPlugin extends JavaPlugin implements Listener {
         return command.getName().equals("crafttest") && args.length == 1
                 ? List.of("creative", "tp", "lookup", "broadcast", "kick").stream().filter(s -> s.startsWith(args[0])).toList()
                 : List.of();
+    }
+
+    @EventHandler
+    public void onGameRule(io.papermc.paper.event.world.WorldGameRuleChangeEvent event) {
+        if (cancelRuleChange) event.setCancelled(true);
+        if (rewriteRuleChange && event.getGameRule().getKey().getKey().equals("random_tick_speed")) event.setValue("11");
     }
 
     @EventHandler

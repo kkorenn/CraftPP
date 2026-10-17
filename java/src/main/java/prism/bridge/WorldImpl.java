@@ -602,8 +602,14 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public boolean setGameRuleValue(String rule, String value) {
-        Main.rpc.api("world.setGameRule", "rule", rule, "value", value);
-        return true;
+        java.util.Objects.requireNonNull(rule, "rule");
+        java.util.Objects.requireNonNull(value, "value");
+        org.bukkit.GameRule<?> typed = org.bukkit.GameRule.getByName(rule);
+        if (!GameRulesBridge.valid(typed, value)) return false;
+        var event = new io.papermc.paper.event.world.WorldGameRuleChangeEvent(proxy, null, typed, value);
+        Main.pluginManager.callEvent(event);
+        if (event.isCancelled() || !GameRulesBridge.valid(typed, event.getValue())) return false;
+        return Main.rpc.api("world.setGameRule", "rule", typed.getKey().asString(), "value", event.getValue()).getAsBoolean();
     }
 
     public String getGameRuleValue(String rule) {
@@ -623,24 +629,16 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
         return getGameRuleValue(rule) != null;
     }
 
-    @SuppressWarnings("unchecked")
     public <T> T getGameRuleValue(org.bukkit.GameRule<T> rule) {
-        String value = getGameRuleValue(rule.getName());
-        if (value == null) {
-            return null;
-        }
-        if (rule.getType() == Boolean.class) {
-            return (T) Boolean.valueOf(value);
-        }
-        return (T) Integer.valueOf(value);
+        return GameRulesBridge.get(this, rule);
     }
 
     public <T> T getGameRuleDefault(org.bukkit.GameRule<T> rule) {
-        return getGameRuleValue(rule);
+        return java.util.Objects.requireNonNull(rule, "rule").getDefaultValue();
     }
 
     public <T> boolean setGameRule(org.bukkit.GameRule<T> rule, T value) {
-        return setGameRuleValue(rule.getName(), String.valueOf(value));
+        return GameRulesBridge.set(this, rule, value);
     }
 
     public double getHumidity(int x, int y, int z) {

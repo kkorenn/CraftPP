@@ -37,6 +37,10 @@ def bridge_stale():
     if not os.path.exists(BRIDGE):
         return True
     built = os.path.getmtime(BRIDGE)
+    for source in ("java/build.gradle.kts", "java/settings.gradle.kts", "tools/build_bridge.sh"):
+        path = os.path.join(ROOT, source)
+        if os.path.exists(path) and os.path.getmtime(path) > built:
+            return True
     for d, _, files in os.walk(os.path.join(ROOT, "java/src")):
         if any(os.path.getmtime(os.path.join(d, f)) > built for f in files):
             return True
@@ -188,6 +192,14 @@ def main():
         assert chat_with(a, "lightapi ok") == "lightapi ok"
         print("WorldBorder settings, validation, packets, timed resize; MOTD ping/default login; live lighting ok")
 
+        a.send(PLAY_SB["chat_command"], string("crafttest rulesapi"))
+        wait(a, PLAY_CB["game_event"], lambda q: q.d[q.i] == 11)
+        wait(a, PLAY_CB["game_event"], lambda q: q.d[q.i] == 12)
+        debug = wait(a, PLAY_CB["entity_event"], lambda q: q.d[-1] == 22)
+        assert debug.d[-1] == 22
+        assert chat_with(a, "rulesapi ok") == "rulesapi ok"
+        print("59 typed game rules, defaults, legacy conversions, validation, events and client sync ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))
@@ -290,7 +302,7 @@ def main():
             if "worldverify ok" in log(): break
             time.sleep(0.05)
         assert "worldverify ok" in log(), log()[-2000:]
-        print("plugin world clock, difficulty, spawn and border persistence ok")
+        print("plugin world clock, difficulty, spawn, border and game rule persistence ok")
     finally:
         stop(proc)
 
