@@ -88,6 +88,7 @@ if [ -n "$TEST" ]; then
     grep -qF "$l" $LOG || fail "shutdown line: $l"
   done
   grep -q '\[Server thread/INFO\]: Done (' $B/logs/latest.log || fail "logs/latest.log format"
+  python3 test/storage_test.py $B/test-world  # vanilla Anvil layout of what was just saved
   exec 3>&-
 
   # Restart; this time stdin closing (EOF) stops the server.
