@@ -205,6 +205,7 @@ final class Registries {
 
     private static Object create(Class<?> type, NamespacedKey key) {
         if (type == org.bukkit.GameRule.class) return GameRulesBridge.create(key);
+        if (type == org.bukkit.damage.DamageType.class) return new Damage.TypeImpl(key);
         if (type == Enchantment.class) {
             return new EnchantmentImpl(key);
         }

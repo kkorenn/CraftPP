@@ -94,6 +94,8 @@ void set_property(Entity& e, const std::string& prop, const Json& v) {
 
 }  // namespace
 
+std::string entity_snapshot(Entity& e) { return snapshot(e); }
+
 std::optional<std::string> api_entity(const std::string& m, const Json& a) {
     if (m.rfind("entity.", 0) != 0) return std::nullopt;
     if (m == "entity.list") {  // every loaded non-player entity, all levels

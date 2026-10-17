@@ -191,8 +191,8 @@ close(c, cid)
 print("anvil rename ok")
 
 # Loot table chest: /setblock with LootTable + LootTableSeed unpacks seeded dungeon loot on first open.
-LOOT_CHEST = (68, -60, 62)
-c.send(PLAY_SB["chat_command"], string('setblock 68 -60 62 chest{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'))
+LOOT_CHEST = (60, -60, 62)
+c.send(PLAY_SB["chat_command"], string('setblock 60 -60 62 chest{LootTable:"minecraft:chests/simple_dungeon",LootTableSeed:42L}'))
 wait_block(c, LOOT_CHEST)
 cid, items = open_menu(c, LOOT_CHEST, 13, "generic_9x3")
 assert any(n > 0 for n, _ in items[:27]), "loot chest did not unpack on open"

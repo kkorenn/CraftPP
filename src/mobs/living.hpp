@@ -481,9 +481,12 @@ inline void LivingEntity::actually_hurt(const DamageSource& s, float dmg) {
     if (rest != 0.0f) set_health(health() - rest);
 }
 
+inline std::vector<void (*)(LivingEntity&, const DamageSource&)> living_death_hooks;  // non-player deaths
 inline void LivingEntity::die(const DamageSource& s) {  // LivingEntity.die
     if (removed || dead) return;
     dead = true;
+    if (!as_player())
+        for (auto f : living_death_hooks) f(*this, s);
     drop_all_death_loot(s);
     broadcast_event(3);
     set_pose(Pose::DYING);
