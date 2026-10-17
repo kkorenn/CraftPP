@@ -1,0 +1,175 @@
+#pragma once
+// Boss fights entry point (included from game/game.hpp; boss::init() runs after the game handlers so it can
+// wrap them). The dragon fight lives in the End (worlds[DIM_END]); the exit portal, credits and the trip home
+// are game/dimensions.hpp + game/portal.hpp (on_ender_dragon_killed, show_end_credits).
+#include "wither.hpp"
+
+namespace boss {
+
+inline std::map<int, int64_t> last_attack, gateway_cooldown;
+inline std::string saved_state;
+
+// ---------- persistence: level.dat key ender-dragon-fight (entities: mob framework chunks) ----------
+inline void save_state() {
+    if (!fight) return;
+    std::string f = fight->save();
+    if (f == saved_state) return;
+    saved_state = f;
+    write_level_data({{"ender-dragon-fight", f}});
+}
+
+// ---------- player actions ----------
+inline float player_attack_damage(Player& p) {  // Player.attack: attribute damage x attack strength, crits
+    const ItemStack& h = held(p);
+    float base = 1.0f + (h.empty() ? 0.0f : item_info[size_t(h.item)].attack_damage);
+    float speed = 4.0f + (h.empty() ? 0.0f : item_info[size_t(h.item)].attack_speed);
+    float delay = 1.0f / speed * 20.0f;
+    auto it = last_attack.find(p.eid);
+    float ticker = it == last_attack.end() ? 1e9f : float(server_tick - it->second);
+    float scale = std::clamp((ticker + 0.5f) / delay, 0.0f, 1.0f);
+    float dmg = base * (0.2f + scale * scale * 0.8f);
+    if (scale > 0.9f && p.g.fall_distance > 0 && !p.on_ground && !p.g.sprinting) dmg *= 1.5f;  // ponytail: no climbing/water/blindness checks
+    last_attack[p.eid] = server_tick;
+    return dmg;
+}
+
+// Level.getEntityOrPart for our entities: the dragon's parts are ids id+1..id+8.
+inline BossEntity* find_target(int eid, int& part) {
+    part = -1;
+    if (auto* b = dynamic_cast<BossEntity*>(entity_by_id(eid)); b && !b->removed) return b;
+    for (auto* d : all_of<EnderDragon>())
+        if (eid > d->id && eid <= d->id + 8) return part = eid - d->id - 1, d;
+    return nullptr;
+}
+inline void attack_entity(Player& p, BossEntity& e, int part) {
+    if (p.gamemode == 3 || p.g.dead) return;
+    float dmg = player_attack_damage(p);
+    e.hurt_by(DamageSource::of("player_attack", entity_by_id(p.eid)), &p, dmg, part);
+}
+
+// EndCrystalItem.useOn: returns true when it handled the click.
+inline bool use_end_crystal(Player& p, int hand, int x, int y, int z) {
+    ItemStack& s = p.inv[hand == 1 ? 40u : size_t(p.selected)];
+    if (s.empty() || s.item != item_by_name["minecraft:end_crystal"]) return false;
+    int b = get_block(x, y, z);
+    if (b != blocks::obsidian && b != blocks::bedrock) return true;  // InteractionResult.FAIL
+    if (!is_air(get_block(x, y + 1, z))) return true;
+    AABB box{double(x), double(y + 1), double(z), x + 1.0, y + 3.0, z + 1.0};
+    bool blocked = false;
+    for_each_entity_in(box, [&](::Entity&) { blocked = true; }, false);
+    for (auto& q : players)
+        if (q->gamemode != 3 && !q->g.dead && player_box(*q).intersects(box)) blocked = true;
+    if (blocked) return true;
+    auto c = std::make_unique<EndCrystal>();
+    c->snap_to(x + 0.5, y + 1, z + 0.5, 0, 0);
+    c->set_show_bottom(false);
+    add_entity(std::move(c));
+    if (fight && p.level == &boss_level()) fight->try_respawn();
+    if (p.gamemode != 1 && --s.count <= 0) s = {};
+    send_slot(p, hand == 1 ? 40 : p.selected);  // client predicted the use; resync the stack
+    return true;
+}
+
+inline void portal_checks(Player& p) {
+    if (!fight || p.level != &boss_level() || p.g.dead || p.gamemode == 3) return;
+    AABB pb = player_box(p);
+    int x0 = int(std::floor(pb.x0)), x1 = int(std::floor(pb.x1)), y0 = int(std::floor(pb.y0)), y1 = int(std::floor(pb.y1));
+    int z0 = int(std::floor(pb.z0)), z1 = int(std::floor(pb.z1));
+    for (int x = x0; x <= x1; x++)
+        for (int y = y0; y <= y1; y++)
+            for (int z = z0; z <= z1; z++) {
+                int s = get_block(x, y, z);
+                if (s != blocks::end_gateway) continue;
+                if (server_tick - gateway_cooldown[p.eid] < 20) continue;  // ponytail: player portal cooldown, not per-gateway beam timer
+                for (size_t i = 0; i < fight->placed_gateways.size(); i++) {
+                    auto& g = fight->placed_gateways[i];
+                    if (g.x != x || g.y != y || g.z != z) continue;
+                    auto t = gateway_exit(i);
+                    gateway_cooldown[p.eid] = server_tick;
+                    p.x = t[0] + 0.5, p.y = t[1], p.z = t[2] + 0.5;
+                    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
+                               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0x18));  // keep rotation
+                    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, false);
+                    return;
+                }
+            }
+}
+
+inline std::unique_ptr<::Entity> make_crystal() { return std::make_unique<EndCrystal>(); }
+inline std::unique_ptr<::Entity> make_fireball() { return std::make_unique<DragonFireball>(); }
+inline std::unique_ptr<::Entity> make_cloud() { return std::make_unique<AreaEffectCloud>(); }
+inline std::unique_ptr<::Entity> make_wither() { return std::make_unique<WitherBoss>(); }
+inline std::unique_ptr<::Entity> make_wither_skull() { return std::make_unique<WitherSkull>(); }
+
+// ---------- tick ----------
+inline void tick() {  // ServerLevel.tick for the End: EnderDragonFight.tick
+    if (!fight) return;
+    InLevel in_end(&boss_level());
+    // EndSpikeFeature crystals queued by worldgen (worker threads) join the level once their chunk is in memory
+    std::vector<endgen::PendingCrystal> ready;
+    {
+        std::lock_guard lock(endgen::pending_mtx);
+        std::erase_if(endgen::pending_crystals, [&](const endgen::PendingCrystal& c) {
+            if (!chunk_loaded_at(int(std::floor(c.x)), int(std::floor(c.z)))) return false;
+            ready.push_back(c);
+            return true;
+        });
+    }
+    for (auto& c : ready) spawn<EndCrystal>(c.x, c.y, c.z, c.yaw);
+    fight->tick();
+    // EnderDragonFight's DRAGON ticket (radius 9): keep the arena's entity chunks loaded while it has players
+    if (!fight->bar_players.empty() && server_tick % 20 == 0)
+        for (int cx = -8; cx <= 8; cx++)
+            for (int cz = -8; cz <= 8; cz++) ensure_entity_chunk_loaded(cx, cz);
+    for (auto& p : players) portal_checks(*p);
+    if (server_tick % 100 == 0) save_state();
+}
+
+inline void on_leave(Player& p) {
+    if (fight) std::erase(fight->bar_players, p.eid);
+    last_attack.erase(p.eid), gateway_cooldown.erase(p.eid);
+}
+
+inline void init() {
+    explosion_entities = explosion_hits_entities;
+    register_entity_factory(entity_types::ender_dragon, make_dragon);
+    register_entity_factory(entity_types::end_crystal, make_crystal);
+    register_entity_factory(entity_types::dragon_fireball, make_fireball);
+    register_entity_factory(entity_types::wither, make_wither);
+    register_entity_factory(entity_types::wither_skull, make_wither_skull);
+    if (!create_entity(entity_types::area_effect_cloud)) register_entity_factory(entity_types::area_effect_cloud, make_cloud);
+    auto kv = read_level_data();
+    fight = new DragonFight();  // ServerLevel: the End always has its EnderDragonFight
+    if (kv.count("ender-dragon-fight")) fight->load(kv["ender-dragon-fight"]);
+    fight->init(level_seed());
+    saved_state = kv["ender-dragon-fight"];  // what is on disk
+    on_tick(tick);
+    on_player_leave(on_leave);
+
+    auto chain = [](int id) { auto it = handlers().find(id); return it == handlers().end() ? PacketHandler{} : it->second; };
+    on(play_sb::attack, [prev = chain(play_sb::attack)](Player& p, Reader& in, int id) {
+        Reader copy = in;
+        int part, eid = in.varint();
+        if (!entity_by_id(eid))  // dragon parts are not framework entities; the rest is mobs-core's Player.attack
+            if (BossEntity* e = find_target(eid, part)) return attack_entity(p, *e, part);
+        if (prev) prev(p, copy, id);
+    });
+    on(play_sb::use_item_on, [prev = chain(play_sb::use_item_on)](Player& p, Reader& in, int id) {
+        Reader copy = in;
+        int hand = in.varint();
+        int x, y, z;
+        read_block_pos(in, x, y, z);
+        if (!p.g.dead && p.gamemode != 3 && use_end_crystal(p, hand, x, y, z)) {
+            in.varint(); in.f32(); in.f32(); in.f32(); in.u8(); in.u8();
+            p.send(Writer().varint(play_cb::block_changed_ack).varint(in.varint()));
+            return;
+        }
+        int face = in.varint();
+        if (prev) prev(p, copy, id);
+        static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
+        if (!wither_check_spawn(x, y, z) && face >= 0 && face < 6)  // the skull went into the clicked or the next cell
+            wither_check_spawn(x + off[face][0], y + off[face][1], z + off[face][2]);
+    });
+}
+
+}  // namespace boss

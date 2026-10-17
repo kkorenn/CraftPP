@@ -7,6 +7,7 @@ struct Entity;
 struct Nbt;
 struct Player;
 struct DamageSource;
+struct ItemStack;
 
 void mobs_init();  // game_init: data, entity types, hooks, packet handlers
 // /summon: creates `type` (entity_types::*) at x y z, merges `tag` (may be null), runs finalizeSpawn for mobs
@@ -19,3 +20,23 @@ void player_knockback_from(Player& p, const DamageSource& s);  // LivingEntity.d
 void mobs_save_all();
 void player_entity_hidden(Player& p);     // end credits: every watcher drops the player entity
 void player_entity_respawned(Player& p);  // respawn: watchers drop and re-add the player entity  // save every loaded entity chunk (server stop)
+
+// Mob effects / enchantments on players (src/effects/effects.cpp).
+float player_max_health(const Player& p);
+bool player_has_effect(const Player& p, const char* effect);  // "slow_falling"
+double player_attribute(const Player& p, const char* attribute);  // "safe_fall_distance"
+bool player_effect_blocks_damage(Player& p, const DamageSource& s);  // fire resistance vs is_fire
+// Resistance, protection enchantments and absorption (getDamageAfterMagicAbsorb + actuallyHurt); returns health loss.
+float player_damage_after_effects(Player& p, const DamageSource& s, float amount);
+void player_hurt_effects(Player& p, const DamageSource& s, float amount);  // MobEffect.onMobHurt (infested)
+float player_destroy_speed(Player& p, float tool_speed, bool eye_in_water);  // Player.getDestroySpeed after the tool
+void save_player_effects(const Player& p, Nbt& tag);  // "active_effects" in the player file
+void load_player_effects(Player& p, const Nbt& tag);
+void effects_player_respawned(Player& p);  // drop the old effects' modifiers and absorption
+void world_sound(const std::string& sound, int source, double x, double y, double z, float vol, float pitch);  // Level.playSound(null, ...)
+void player_block_experience(Player& p, int state, int x, int y, int z);  // ores, sculk, spawners
+int item_durability_change(const ItemStack& s, int amount);  // EnchantmentHelper.processDurabilityChange (unbreaking)
+bool item_vanishes(const ItemStack& s);                     // curse of vanishing (prevent_equipment_drop)
+int repair_player_items(Player& p, int amount);             // mending: experience left after repairs
+bool player_throw_item(Player& p, int hand);  // thrown potions / experience bottles (Item.use)
+void player_consume_effects(Player& p, int item, const ItemStack& stack);  // Consumable.onConsume effects (food, potions, milk)

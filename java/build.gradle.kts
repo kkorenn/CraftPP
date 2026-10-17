@@ -14,6 +14,8 @@ val paperApiVersion = "26.3.build.195-stable"
 
 dependencies {
     implementation("io.papermc.paper:paper-api:$paperApiVersion")
+    // API type-use annotations must be present when plugins compile against the bundled API.
+    implementation("org.jetbrains:annotations:26.0.2")
     // plugin.yml `libraries:` and paper-plugin loaders resolve from Maven Central at runtime.
     runtimeOnly("org.apache.maven.resolver:maven-resolver-connector-basic:1.9.18")
     runtimeOnly("org.apache.maven.resolver:maven-resolver-transport-http:1.9.18")

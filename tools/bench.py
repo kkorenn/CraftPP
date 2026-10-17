@@ -27,8 +27,10 @@ shutil.rmtree(work, ignore_errors=True)
 os.makedirs(work)
 open(f"{work}/server.properties", "w").write(
     f"server-port=25565\nlevel-name={work}/world\nlevel-type=normal\nlevel-seed={args.seed}\nview-distance={args.view}\n"
-    "pause-when-empty-seconds=60\nwhite-list=false\n" + "".join(l + "\n" for l in args.extra_props.split(";") if l))
+    "pause-when-empty-seconds=60\nwhite-list=false\nallow-flight=true\n" + "".join(l + "\n" for l in args.extra_props.split(";") if l))
 open(f"{work}/eula.txt", "w").write("eula=true\n")
+# The walk teleports with /tp (op): movement packets at these speeds trip the "moved too quickly" check.
+open(f"{work}/ops.json", "w").write('[{"uuid": "", "name": "Bench", "level": 4, "bypassesPlayerLimit": false}]\n')
 vanilla = os.path.realpath(os.path.join(ROOT, "vanilla"))
 # vanilla/ is a symlink to an absolute host path: mount it elsewhere and recreate that path inside the container
 # (bind-mounting at the host path itself is unreliable on Docker Desktop).
@@ -95,9 +97,6 @@ try:
                     v = b.i64(); have.discard((struct.unpack(">i", struct.pack(">I", v & 0xFFFFFFFF))[0], v >> 32))
                 elif pid == PLAY_CB["system_chat"] and (b"players online" in b.d or b"commands.list.players" in b.d) and pings:
                     lat.append(time.time() - pings.pop(0))
-                elif pid == PLAY_CB["player_position"]:
-                    tid, pos = b.varint(), b.take(24); b.take(24)
-                    c.send(PLAY_SB["accept_teleportation"], varint(tid) + pos + b.take(8))
         except Exception:
             pass
     have.update(c.chunks)
@@ -112,8 +111,9 @@ try:
         t0, c0, peak, sampled = time.time(), cpu_ticks(), 0, time.time()
         while time.time() - t0 < args.walk:
             x = x0 + speed * (time.time() - t0)
-            c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", x, y, z, 0))
-            time.sleep(0.05)
+            cmd = f"tp Bench {x:.2f} {y:.2f} {z:.2f}".encode()
+            c.send(PLAY_SB["chat_command"], varint(len(cmd)) + cmd)
+            time.sleep(0.1)
             if time.time() - sampled > 1:
                 peak, sampled = max(peak, rss()[0]), time.time()
                 if int(sampled - t0) % 30 == 0: print(f"    {sampled - t0:.0f} s: RSS {rss()[0]:.1f} MiB", flush=True)

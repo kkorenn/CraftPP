@@ -33,11 +33,53 @@ inline void send_health(Player& p) {
 inline void send_experience(Player& p) {
     p.send(Writer().varint(play_cb::set_experience).f32(p.g.xp_progress).varint(p.g.xp_level).varint(p.g.xp_total));
 }
+// ---------- experience (Player / ServerPlayer) ----------
+inline int xp_needed_for_next_level(int level) {  // Player.getXpNeededForNextLevel
+    return level >= 30 ? 112 + (level - 30) * 9 : level >= 15 ? 37 + (level - 15) * 5 : 7 + level * 2;
+}
+inline void give_experience_levels(Player& p, int amount) {  // Player.giveExperienceLevels (no packet)
+    auto& g = p.g;
+    int64_t l = int64_t(g.xp_level) + amount;  // IntMath.saturatedAdd
+    g.xp_level = int(std::clamp<int64_t>(l, INT32_MIN, INT32_MAX));
+    if (g.xp_level < 0) g.xp_level = 0, g.xp_progress = 0.0f, g.xp_total = 0;
+    if (amount > 0 && g.xp_level % 5 == 0 && float(g.last_level_up) < float(g.game_ticks) - 100.0f) {
+        float vol = g.xp_level > 30 ? 1.0f : float(g.xp_level) / 30.0f;
+        world_sound("minecraft:entity.player.levelup", 7 /*players*/, p.x, p.y, p.z, vol * 0.75f, 1.0f);
+        g.last_level_up = g.game_ticks;
+    }
+}
+inline void give_experience_points(Player& p, int i) {  // Player.giveExperiencePoints
+    auto& g = p.g;
+    g.xp_progress = g.xp_progress + float(i) / float(xp_needed_for_next_level(g.xp_level));
+    g.xp_total = int(std::clamp<int64_t>(int64_t(g.xp_total) + i, 0, INT32_MAX));
+    while (g.xp_progress < 0.0f) {
+        float rem = g.xp_progress * float(xp_needed_for_next_level(g.xp_level));
+        if (g.xp_level > 0) {
+            give_experience_levels(p, -1);
+            g.xp_progress = 1.0f + rem / float(xp_needed_for_next_level(g.xp_level));
+        } else {
+            give_experience_levels(p, -1);
+            g.xp_progress = 0.0f;
+        }
+    }
+    while (g.xp_progress >= 1.0f) {
+        g.xp_progress = (g.xp_progress - 1.0f) * float(xp_needed_for_next_level(g.xp_level));
+        give_experience_levels(p, 1);
+        g.xp_progress = g.xp_progress / float(xp_needed_for_next_level(g.xp_level));
+    }
+    send_experience(p);
+}
+inline void set_experience_points(Player& p, int amount) {  // ServerPlayer.setExperiencePoints
+    float limit = float(xp_needed_for_next_level(p.g.xp_level));
+    float mx = (limit - 1.0f) / limit;
+    p.g.xp_progress = std::clamp(float(amount) / limit, 0.0f, mx);
+}
+
 inline void add_exhaustion(Player& p, float a) {
     if (survival_like(p)) p.g.exhaustion = std::min(p.g.exhaustion + a, 40.0f);
 }
 inline void heal(Player& p, float a) {
-    if (!p.g.dead && a > 0) p.g.health = std::min(p.g.health + a, 20.0f);
+    if (!p.g.dead && a > 0) p.g.health = std::min(p.g.health + a, player_max_health(p));
 }
 
 inline void kill(Player& p, const std::string& type);
@@ -78,6 +120,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
     if ((s.is(DT_IS_DROWNING) && !rule("drowning_damage")) || (s.is(DT_IS_FALL) && !rule("fall_damage")) ||
         (s.is(DT_IS_FIRE) && !rule("fire_damage")) || (s.is(DT_IS_FREEZING) && !rule("freeze_damage")))
         return false;
+    if (player_effect_blocks_damage(p, s)) return false;
     if (s.scales_with_difficulty()) {
         int d = difficulty();
         if (d == 0) amount = 0;
@@ -96,7 +139,7 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
         applied = amount;
     }
     applied = player_damage_after_armor(p, s, applied);
-    // ponytail: enchantment protection, resistance and absorption are not applied yet.
+    applied = player_damage_after_effects(p, s, applied);  // resistance, protection, absorption
     auto dt = damage_types.find(s.name());
     if (dt != damage_types.end()) add_exhaustion(p, dt->second.exhaustion);
     p.g.health = std::max(0.0f, p.g.health - applied);
@@ -108,13 +151,14 @@ inline bool hurt(Player& p, const DamageSource& s, float amount) {
     broadcast_near(p.x, p.z, w);
     if (p.g.invulnerable == 20 && !s.is(DT_NO_KNOCKBACK)) player_knockback_from(p, s);
     if (p.g.health <= 0) kill(p, s);
+    else player_hurt_effects(p, s, applied);
     return true;
 }
 inline bool hurt(Player& p, float amount, const std::string& type) { return hurt(p, DamageSource::of(type), amount); }
 
-inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off)
+inline void drop_all(Player& p) {  // Inventory.dropAll (keepInventory off); destroyVanishingCursedItems first
     for (auto& s : p.inv)
-        if (!s.empty()) { player_drop(p, s, true); s = {}; }
+        if (!s.empty()) { if (!item_vanishes(s)) player_drop(p, s, true); s = {}; }
     for (auto* s : {&p.g.carried}) if (!s->empty()) { player_drop(p, *s, true); *s = {}; }
     for (auto& s : p.g.craft2) if (!s.empty()) { player_drop(p, s, true); s = {}; }
     for (auto& s : p.g.craft3) if (!s.empty()) { player_drop(p, s, true); s = {}; }
@@ -193,7 +237,7 @@ inline void respawn(Player& p) {
     place_new_player(p);  // overworld spawn
     World* spawn = p.level;
     p.level = died_in;
-    move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 0);
+    move_to_level(p, spawn, p.x, p.y, p.z, spawn_yaw, spawn_pitch, 0);  // TeleportTransition.createDefault
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -205,7 +249,7 @@ inline void food_tick(Player& p) {
         if (g.saturation > 0) g.saturation = std::max(g.saturation - 1, 0.0f);
         else if (diff != 0) g.food = std::max(g.food - 1, 0);
     }
-    bool hurt_ = g.health > 0 && g.health < 20;
+    bool hurt_ = g.health > 0 && g.health < player_max_health(p);
     bool regen = rule("natural_health_regeneration");
     if (regen && g.saturation > 0 && hurt_ && g.food >= 20) {
         if (++g.food_timer >= 10) {
@@ -226,7 +270,7 @@ inline void food_tick(Player& p) {
     }
     if (diff == 0 && regen) {
         if (g.game_ticks % 20 == 0) {
-            if (g.health < 20) heal(p, 1);
+            if (g.health < player_max_health(p)) heal(p, 1);
             if (g.saturation < 20) g.saturation += 1;
         }
         if (g.food < 20 && g.game_ticks % 10 == 0) g.food++;
@@ -247,18 +291,17 @@ inline bool correct_tool(Player& p, int state) {  // Player.hasCorrectToolForDro
 inline float destroy_progress(Player& p, int state) {
     float h = block_of(state).hardness;
     if (h < 0) return 0;
-    float speed = tool_speed(held(p).item, state);
-    if (eye_in_water(p)) speed *= 0.2f;
-    if (!p.on_ground) speed /= 5.0f;
+    float speed = player_destroy_speed(p, tool_speed(held(p).item, state), eye_in_water(p));
     if (h == 0) return 1.0f;
     return speed / h / (correct_tool(p, state) ? 30.0f : 100.0f);
 }
 
-inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak (no unbreaking yet)
+inline void hurt_tool(Player& p, int amount) {  // ItemStack.hurtAndBreak
     ItemStack& t = held(p);
     if (t.empty() || !survival_like(p)) return;
     int maxd = item_info[size_t(t.item)].max_damage;
     if (maxd <= 0) return;
+    if ((amount = item_durability_change(t, amount)) <= 0) return;  // unbreaking
     if ((t.damage += amount) >= maxd) {
         t = {};
         broadcast_near(p.x, p.z, entity_event_packet(p.eid, 47));  // main hand break animation + sound
@@ -306,6 +349,7 @@ inline bool destroy_block(Player& p, int x, int y, int z) {
         drops.clear();
         block_drops(state, x, y, z, held(p), drops);
         for (auto& d : drops) pop_resource(x, y, z, d);
+        player_block_experience(p, state, x, y, z);
     }
     if (block_of(state).hardness != 0) {
         if (item >= 0 && item_info[size_t(item)].tool >= 0) hurt_tool(p, tools[size_t(item_info[size_t(item)].tool)].damage_per_block);
@@ -441,7 +485,7 @@ inline void finish_using(Player& p) {
         p.g.food = std::clamp(p.g.food + it.nutrition, 0, 20);
         p.g.saturation = std::clamp(p.g.saturation + it.saturation, 0.0f, float(p.g.food));
     }
-    // ponytail: on_consume_effects (golden apple regen, milk clearing effects) need a mob effect system.
+    player_consume_effects(p, s.item, s);  // Consumable.onConsume: on_consume_effects, potion contents
     p.send(entity_event_packet(p.eid, 9));  // finished using
     if (p.gamemode == 1) return;
     int rem = it.use_remainder;
@@ -463,7 +507,8 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
     int feet = world.get_block(fx, fy, fz);
     int bi = block_index(feet);
     bool in_fluid = is_fluid(uint16_t(feet));
-    if (in_fluid || in_sorted(tag_climbable, bi) || in_sorted(tag_fall_reset, bi) || p.gamemode == 1 || p.gamemode == 3) {
+    if (in_fluid || in_sorted(tag_climbable, bi) || in_sorted(tag_fall_reset, bi) || p.gamemode == 1 || p.gamemode == 3 ||
+        player_has_effect(p, "slow_falling") || player_has_effect(p, "levitation")) {
         p.g.fall_distance = 0;
     } else {
         if (dy < 0) p.g.fall_distance -= dy;
@@ -477,7 +522,8 @@ inline void after_move(Player& p, double ox, double oy, double oz, bool was_on_g
                 double dist = p.g.fall_distance;
                 if ((on.size() > 4 && on.compare(on.size() - 4, 4, "_bed") == 0) || on == "minecraft:shelf_mushroom")
                     dist *= 1.0f - 0.5f;  // Properties.fallDistanceReduction(0.5F)
-                int dmg = int(std::floor((dist + 1.0E-6 - 3.0) * mult));
+                int dmg = int(std::floor((dist + 1.0E-6 - player_attribute(p, "safe_fall_distance")) * mult *
+                                         player_attribute(p, "fall_damage_multiplier")));
                 if (dmg > 0) hurt(p, float(dmg), "fall");
             }
             p.g.fall_distance = 0;
@@ -551,7 +597,6 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float
         open_crafting_table(p, x, y, z);
         return 2;
     }
-    ItemStack& slot = p.inv[hand == 1 ? 40u : size_t(p.selected)];
     bool have_items = !held(p).empty() || !p.inv[40].empty();
     if (is_table && !(p.g.sneaking && have_items) && hand == 0) {  // useWithoutItem
         open_crafting_table(p, x, y, z);
@@ -575,6 +620,7 @@ inline void save_player_extra(const Player& p, Nbt& t) {
     t.set("XpLevel", Nbt::num(Nbt::Int, g.xp_level));
     t.set("XpP", Nbt::real(Nbt::Float, g.xp_progress));
     t.set("XpTotal", Nbt::num(Nbt::Int, g.xp_total));
+    save_player_effects(p, t);  // active_effects (src/effects)
     if (save_player_containers) save_player_containers(p, t);  // EnderItems, XpSeed
 }
 inline void load_player_extra(Player& p, const Nbt& t) {
@@ -584,6 +630,7 @@ inline void load_player_extra(Player& p, const Nbt& t) {
     g.saturation = float(D("foodSaturationLevel", 5)), g.exhaustion = float(D("foodExhaustionLevel", 0));
     g.fall_distance = D("fall_distance", 0), g.dead = g.health <= 0;
     g.xp_level = int(D("XpLevel", 0)), g.xp_progress = float(D("XpP", 0)), g.xp_total = int(D("XpTotal", 0));
+    load_player_effects(p, t);
     if (load_player_containers) load_player_containers(p, t);
 }
 // Old text format: "vitals health food saturation exhaustion fall_distance dead" / "xp level progress total" / "dmg slot damage"
@@ -698,6 +745,7 @@ inline void register_game_handlers() {
         if (in.i + 8 <= in.n) p.yaw = in.f32(), p.pitch = in.f32();  // the view the client used the item with
         ack_block_changes(p, seq);
         if (p.gamemode != 3 && !p.g.dead && lvl::use_bucket(p, p.inv[hand ? 40u : size_t(p.selected)])) return;
+        if (p.gamemode != 3 && player_throw_item(p, hand)) return swing(p, hand, false);  // splash/lingering potions, xp bottles
         start_using(p, hand);
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });

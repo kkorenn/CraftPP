@@ -120,22 +120,25 @@ static void player_attack(Player& p, Entity& t) {
     PlayerEntity* pe = player_entity(p);
     if (!pe || !t.is_attackable()) return;
     float base = float(pe->attr(attr::attack_damage));
+    const ItemStack weapon = pe->main_hand();  // getWeaponItem (copied: the attack may break it)
+    DamageSource ds = DamageSource::of("player_attack", pe);
     float scale = attack_strength(p, *pe, 0.5f);
+    float magic = scale * (enchant_modify_damage(weapon, &t, ds, base) - base);  // getEnchantedDamage
     base *= 0.2f + scale * scale * 0.8f;
     combat[&p].attack_ticker = 0;  // onAttack
-    if (base <= 0) return;
+    if (!(base > 0.0f || magic > 0.0f)) return;
     bool full = scale > 0.9f, knock = false;
     if (p.g.sprinting && full) { server_sound(p, "minecraft:entity.player.attack.knockback"); knock = true; }
     bool crit = full && p.g.fall_distance > 0.0 && !p.on_ground && !pe->on_climbable() && !pe->is_in_water() && t.as_living() && !p.g.sprinting;
     if (crit) base *= 1.5f;
+    float total = base + magic;
     bool sweep = false;
     if (full && !crit && !knock && p.on_ground) {
         double sp = pe->attr(attr::movement_speed) * 2.5;
         if (combat[&p].known_movement.horizontal_sqr() < sp * sp) sweep = item_in_tag(pe->main_hand().item, "swords");
     }
-    DamageSource ds = DamageSource::of("player_attack", pe);
-    if (!t.hurt_server(ds, base)) { server_sound(p, "minecraft:entity.player.attack.nodamage"); return; }
-    float kb = float(pe->attr(attr::attack_knockback)) / 2.0f + (knock ? 0.5f : 0.0f);
+    if (!t.hurt_server(ds, total)) { server_sound(p, "minecraft:entity.player.attack.nodamage"); return; }
+    float kb = enchant_modify_knockback(weapon, &t, ds, float(pe->attr(attr::attack_knockback))) / 2.0f + (knock ? 0.5f : 0.0f);
     if (kb > 0 && t.as_living()) {
         t.as_living()->knockback(kb, mth::sin(p.yaw * mth::DEG), -mth::cos(p.yaw * mth::DEG));
         if (knock) p.g.sprinting = false;
@@ -163,16 +166,11 @@ static void player_attack(Player& p, Entity& t) {
     }
     if (!crit && !sweep) server_sound(p, full ? "minecraft:entity.player.attack.strong" : "minecraft:entity.player.attack.weak");
     pe->set_last_hurt_mob(t);
-    if (survival_like(p)) {  // itemAttackInteraction: weapon wear (item_damage_per_attack)
-        ItemStack& w = p.inv[size_t(p.selected)];
-        if (!w.empty()) {
-            auto c = item_combat.find(w.item);
-            int maxd = item_info[size_t(w.item)].max_damage;
-            if (c != item_combat.end() && c->second.weapon_damage > 0 && maxd > 0 && (w.damage += c->second.weapon_damage) >= maxd) {
-                w = {};
-                broadcast_near(p.x, p.z, entity_event_packet(p.eid, 47));
-            }
-        }
+    // itemAttackInteraction: post-attack enchantments (fire aspect, thorns...), then weapon wear (postHurtEnemy)
+    enchant_post_attack(t, ds, &weapon);
+    if (!weapon.empty() && t.as_living()) {
+        auto c = item_combat.find(weapon.item);
+        if (c != item_combat.end() && c->second.weapon_damage >= 0) hurt_item_in_slot(*pe, ES_MAINHAND, c->second.weapon_damage);
     }
     add_exhaustion(p, 0.1f);
 }
@@ -304,13 +302,10 @@ float player_damage_after_armor(Player& p, const DamageSource& s, float amount) 
     if (!pe || s.is(DT_BYPASSES_ARMOR)) return amount;
     if (survival_like(p)) {  // Player.hurtArmor -> doHurtEquipment(max(1, damage / 4)) on armour pieces
         int d = std::max(1, int(amount / 4.0f));
-        for (int i = 36; i <= 39; i++) {
-            ItemStack& a = p.inv[size_t(i)];
-            if (a.empty() || item_info[size_t(a.item)].max_damage <= 0) continue;
-            if ((a.damage += d) >= item_info[size_t(a.item)].max_damage) {
-                a = {};
-                broadcast_near(p.x, p.z, entity_event_packet(p.eid, 52 - (i - 36)));  // armour break (feet 52 .. head 49)
-            }
+        for (int slot = ES_FEET; slot <= ES_HEAD; slot++) {
+            const ItemStack& a = pe->item_in_slot(slot);  // equippable with damage_on_hurt, worn in its own slot
+            if (!a.empty() && item_info[size_t(a.item)].damage_on_hurt && item_info[size_t(a.item)].equip == 36 + slot - ES_FEET)
+                hurt_item_in_slot(*pe, slot, d);
         }
     }
     return pe->damage_after_armor(s, amount);
@@ -328,6 +323,7 @@ void player_entity_hidden(Player& p) {
 void player_entity_respawned(Player& p) {
     PlayerEntity* pe = player_entity(p);
     if (!pe) return;
+    effects_player_respawned(p);
     std::vector<Player*> w = pe->trk.watchers;
     for (Player* q : w) track_remove(*pe, *q);
     pe->sync();

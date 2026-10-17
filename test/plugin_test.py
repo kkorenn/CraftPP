@@ -7,7 +7,7 @@ import glob, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, ti
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "test"))
-from bot import PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
+from bot import free_port, PLAY_CB, PLAY_SB, Buf, login, string, varint, wait  # noqa: E402
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 25598
 BRIDGE = os.path.join(ROOT, "build/java/libs/craftpp-bridge.jar")
@@ -37,6 +37,10 @@ def bridge_stale():
     if not os.path.exists(BRIDGE):
         return True
     built = os.path.getmtime(BRIDGE)
+    for source in ("java/build.gradle.kts", "java/settings.gradle.kts", "tools/build_bridge.sh"):
+        path = os.path.join(ROOT, source)
+        if os.path.exists(path) and os.path.getmtime(path) > built:
+            return True
     for d, _, files in os.walk(os.path.join(ROOT, "java/src")):
         if any(os.path.getmtime(os.path.join(d, f)) > built for f in files):
             return True
@@ -75,7 +79,7 @@ def texts(b):
     return "".join(out)
 
 
-def chat_with(c, needle, limit=3000):
+def chat_with(c, needle, limit=20000):
     return texts(wait(c, PLAY_CB["system_chat"], lambda b: needle.encode() in b.d, limit))
 
 
@@ -101,9 +105,11 @@ def start_server(d, port, plugins):
     log = open(os.path.join(d, "server.log"), "w")
     proc = subprocess.Popen([os.path.join(ROOT, "build/craftpp"), "test.properties"], cwd=d, stdin=subprocess.PIPE,
                             stdout=log, stderr=subprocess.STDOUT, text=True)
-    for _ in range(300):
+    for _ in range(2400):  # 2 min: the JVM starts slowly on a loaded host
         if "Done (" in open(os.path.join(d, "server.log")).read():
             return proc
+        if proc.poll() is not None:
+            break
         time.sleep(0.05)
     raise AssertionError("server did not start: " + open(os.path.join(d, "server.log")).read()[-2000:])
 
@@ -151,6 +157,77 @@ def main():
         msg = chat_with(a, "lookup t")
         assert msg == "lookup true true", msg
         print("plugin command + alias + Player/Server API ok:", msg)
+
+        a.send(PLAY_SB["chat_command"], string("crafttest worldapi"))
+        def final_plugin_clock(q):
+            clock = Buf(q.d[q.i:])
+            age = clock.i64()
+            return clock.varint() == 1 and clock.varint() == 0 and clock.varint() == 73000 and age < 73000
+        clock = wait(a, PLAY_CB["set_time"], final_plugin_clock)
+        clock.i64(); assert clock.varint() == 1 and clock.varint() == 0 and clock.varint() == 73000
+        assert struct.unpack(">ff", clock.take(8)) == (0.0, 1.0)
+        wait(a, PLAY_CB["change_difficulty"], lambda q: q.d[q.i] == 3)
+        spawn = wait(a, PLAY_CB["set_default_spawn_position"])
+        assert spawn.str() == "minecraft:overworld"
+        assert struct.unpack(">q", spawn.take(8))[0] == struct.unpack(">q", pos(12, 90, -7))[0]
+        assert struct.unpack(">ff", spawn.take(8)) == (135.0, 0.0)
+        assert chat_with(a, "worldapi ok") == "worldapi ok"
+        print("World clock (64-bit, negative, forward rollover), game age, difficulty + spawn APIs ok")
+
+        a.send(PLAY_SB["chat_command"], string("crafttest borderapi"))
+        def final_border(q):
+            border = Buf(q.d[q.i:])
+            return struct.unpack(">dddd", border.take(32)) == (100.0, -50.0, 240.0, 260.0)
+        border = wait(a, PLAY_CB["initialize_border"], final_border)
+        border.take(32)
+        assert border.varint() == 20  # one second -> twenty 26.3 simulation ticks
+        assert border.varint() == 29999984 and border.varint() == 9 and border.varint() == 37
+        assert chat_with(a, "borderapi ok") == "borderapi ok"
+        status_output = subprocess.check_output([sys.executable, os.path.join(ROOT, "test/ping.py"), "127.0.0.1", str(PORT)], text=True)
+        status = json.loads(status_output.removeprefix("OK "))
+        assert status["description"]["text"] == "CraftPP plugin API test"
+        newcomer, _ = login("NewDefault", "127.0.0.1", PORT, view=2)
+        newcomer.send(PLAY_SB["chat_command"], string("crafttest lookup"))
+        assert "gm=ADVENTURE" in chat_with(newcomer, "crafttest ok"), "new player ignored plugin default mode"
+        newcomer.s.close()
+        a.send(PLAY_SB["chat_command"], string("crafttest lightapi"))
+        assert chat_with(a, "lightapi ok") == "lightapi ok"
+        print("WorldBorder settings, validation, packets, timed resize; MOTD ping/default login; live lighting ok")
+
+        a.send(PLAY_SB["chat_command"], string("crafttest rulesapi"))
+        wait(a, PLAY_CB["game_event"], lambda q: q.d[q.i] == 11)
+        wait(a, PLAY_CB["game_event"], lambda q: q.d[q.i] == 12)
+        debug = wait(a, PLAY_CB["entity_event"], lambda q: q.d[-1] == 22)
+        assert debug.d[-1] == 22
+        assert chat_with(a, "rulesapi ok") == "rulesapi ok"
+        print("59 typed game rules, defaults, legacy conversions, validation, events and client sync ok")
+
+        a.send(PLAY_SB["chat_command"], string("crafttest entityapi"))
+        obj = wait(a, PLAY_CB["set_objective"])
+        assert obj.str() == "crafttest" and obj.u8() == 0 and texts(obj) == "Craft", texts(obj)
+        score = wait(a, PLAY_CB["set_score"])
+        assert score.str() == "apples" and score.str() == "crafttest" and score.varint() == 42
+        disp = wait(a, PLAY_CB["set_display_objective"])
+        assert disp.varint() == 1 and disp.str() == "crafttest"
+        team = wait(a, PLAY_CB["set_player_team"])
+        assert team.str() == "red" and team.u8() == 0
+        boss = wait(a, PLAY_CB["boss_event"])
+        boss.take(16)
+        assert boss.varint() == 0 and texts(boss) == "Boss"
+        sound = wait(a, PLAY_CB["sound"], lambda q: b"anvil.land" in q.d)
+        sound.varint(); assert sound.str() == "minecraft:block.anvil.land"; sound.take(1)
+        assert sound.varint() == 4  # SoundCategory.BLOCKS -> SoundSource.BLOCKS
+        sound.take(12)
+        assert struct.unpack(">ff", sound.take(8)) == (0.5, 1.5)
+        wait(a, PLAY_CB["sound_entity"], lambda q: b"cow.ambient" in q.d)
+        dust = wait(a, PLAY_CB["level_particles"])
+        particles = json.load(open(os.path.join(ROOT, "data/reports/registries.json")))["minecraft:particle_type"]["entries"]
+        assert dust.varint() == particles["minecraft:dust"]["protocol_id"]
+        assert struct.unpack(">if", dust.take(8)) == (0xFF0000, 2.0)
+        wait(a, PLAY_CB["level_particles"])
+        assert chat_with(a, "entityapi ok", 20000) == "entityapi ok"
+        print("entities (spawn, vitals, flags, tags, equipment, target, teleport, remove), item meta round trip, biomes,"
+              " whitelist/bans, scoreboards, boss bars, sounds, particles ok")
 
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
@@ -246,11 +323,24 @@ def main():
     assert "[CraftTestPlugin] disabled after" in log(), log()[-1500:]
     print("onDisable on stop ok")
 
+    # API writes must survive a real shutdown/reload through the existing world persistence.
+    proc = start_server(d, PORT, jars)
+    try:
+        proc.stdin.write("crafttest worldverify\n"); proc.stdin.flush()
+        for _ in range(100):
+            if "worldverify ok" in log(): break
+            time.sleep(0.05)
+        assert "worldverify ok" in log(), log()[-2000:]
+        print("plugin world clock, difficulty, spawn, border and game rule persistence ok")
+    finally:
+        stop(proc)
+
     # Memory: the same session without plugins (no JVM at all).
     d2 = tempfile.mkdtemp(prefix="craftpp-noplugins-")
-    proc = start_server(d2, PORT + 1, [])
+    port2 = free_port()
+    proc = start_server(d2, port2, [])
     try:
-        c, _ = login("Alice", "127.0.0.1", PORT + 1, view=2)
+        c, _ = login("Alice", "127.0.0.1", port2, view=2)
         time.sleep(0.5)
         rss_plain = rss_kib(proc.pid)
         assert not os.path.exists(os.path.join(d2, "plugins/jvm.properties"))
