@@ -498,11 +498,13 @@ struct World {
     // Async: the chunk, loaded/generated/encoded on the pool. Ready immediately if loaded and its 3x3 is lit.
     std::shared_future<ChunkPtr> request(int cx, int cz) {
         std::shared_ptr<std::promise<ChunkPtr>> job;
-        auto f = find_or_claim(cx, cz, job);
+        auto f = find_or_claim(cx, cz, job, true);
         if (job)
-            pool.submit([this, cx, cz, job] {
-                if (cancel_unviewed(cx, cz, *job)) return;  // player moved on before a worker got to it
-                produce(cx, cz, *job, true);
+            pool.submit([this, cx, cz] {
+                auto j = take_unstarted(cx, cz);
+                if (!j) return;  // claimed synchronously by get_ptr before a worker reached it
+                if (cancel_unviewed(cx, cz, *j)) return;  // player moved on before a worker got to it
+                produce(cx, cz, *j, true);
             });
         else if (ChunkPtr c = get_if_loaded(cx, cz); c && !fullbright && !c->light_ready) {
             // Loaded by a synchronous get_ptr (only the chunk itself lit): light its 3x3 on the pool, not on
@@ -527,7 +529,7 @@ struct World {
             if (auto it = chunks.find({cx, cz}); it != chunks.end()) return it->second;
         }
         std::shared_ptr<std::promise<ChunkPtr>> job;
-        auto f = find_or_claim(cx, cz, job);
+        auto f = find_or_claim(cx, cz, job, false);
         if (job) produce(cx, cz, *job, false);
         return f.get();
     }
@@ -678,15 +680,35 @@ private:
         return true;
     }
 
-    std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job) {
+    std::map<Key, std::shared_ptr<std::promise<ChunkPtr>>> unstarted;
+
+    std::shared_ptr<std::promise<ChunkPtr>> take_unstarted(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = unstarted.find({cx, cz});
+        if (it == unstarted.end()) return nullptr;
+        auto j = std::move(it->second);
+        unstarted.erase(it);
+        return j;
+    }
+
+    std::shared_future<ChunkPtr> find_or_claim(int cx, int cz, std::shared_ptr<std::promise<ChunkPtr>>& job, bool defer = false) {
         std::lock_guard lock(m);
         if (auto it = chunks.find({cx, cz}); it != chunks.end()) {
             std::promise<ChunkPtr> p;
             p.set_value(it->second);
             return p.get_future().share();
         }
-        if (auto it = inflight.find({cx, cz}); it != inflight.end()) return it->second;
+        if (auto it = inflight.find({cx, cz}); it != inflight.end()) {
+            if (!defer) {
+                if (auto u = unstarted.find({cx, cz}); u != unstarted.end()) {
+                    job = std::move(u->second);
+                    unstarted.erase(u);
+                }
+            }
+            return it->second;
+        }
         job = std::make_shared<std::promise<ChunkPtr>>();
+        if (defer) unstarted[{cx, cz}] = job;
         return inflight[{cx, cz}] = job->get_future().share();
     }
     void produce(int cx, int cz, std::promise<ChunkPtr>& job, bool encode);
