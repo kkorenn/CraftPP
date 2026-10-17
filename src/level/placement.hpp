@@ -253,6 +253,8 @@ inline void placed_by(int s, const Pos& p) {
     }
 }
 
+// BlockItem.updateCustomBlockEntityTag: block entity data from the placed item (src/containers).
+inline void (*block_item_placed_hook)(Player& p, int x, int y, int z, const ItemStack& item) = nullptr;
 // BlockItem.place. Returns true when a block was placed.
 inline bool place_block_item(PlaceCtx& c, int standing) {
     int hit_state = get(c.hit);
@@ -425,6 +427,7 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
     if (b < 0) return false;
     PlaceCtx c{pl, hit, face, cy, cx, cz, item};
     if (!place_block_item(c, b)) return false;
+    if (block_item_placed_hook) block_item_placed_hook(pl, c.pos.x, c.pos.y, c.pos.z, slot);
     consume(pl, slot);
     return true;
 }
