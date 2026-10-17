@@ -15,11 +15,7 @@ struct State {
     double last_charge = 0;
 };
 inline bool player_close_for_spawning(const Player& p, int cx, int cz) {  // ChunkMap.playerIsCloseEnoughForSpawning
-<<<<<<< HEAD
     if (p.gamemode == 3 || p.level != cur_level) return false;  // ServerLevel players only
-=======
-    if (p.gamemode == 3 || p.level != cur_level) return false;
->>>>>>> main
     double dx = cx * 16 + 8 - p.x, dz = cz * 16 + 8 - p.z;
     return dx * dx + dz * dz < 16384.0;
 }
