@@ -35,7 +35,7 @@ inline bool monsters_near(double x, double y, double z, double h, double v) {
 
 inline bool is_bed_occupied(const lvl::Pos& p) {
     for (auto& pl : players) {
-        if (pl->g.sleeping && pl->g.bed_x == p.x && pl->g.bed_y == p.y && pl->g.bed_z == p.z) return true;
+        if (pl && pl->g.sleeping && pl->g.bed_x == p.x && pl->g.bed_y == p.y && pl->g.bed_z == p.z) return true;
     }
     return false;
 }
@@ -71,23 +71,36 @@ inline void start_sleeping(Player& p, const lvl::Pos& bed_pos) {
 
 // Player interaction with a bed block
 inline bool use_bed(Player& pl, const lvl::Pos& p, int s) {
+    int dir = lvl::getdir(s);
+    std::string_view part = lvl::has(s, "part") ? lvl::get(s, "part") : "";
+    lvl::Pos head_pos = p;
+    lvl::Pos other_pos = p;
+    if (part == "foot") {
+        head_pos = p.rel(dir);
+        other_pos = head_pos;
+    } else if (part == "head") {
+        other_pos = p.rel(lvl::OPP[dir]);
+    }
+
     int dim = pl.level == &worlds[DIM_NETHER] ? DIM_NETHER : (pl.level == &worlds[DIM_END] ? DIM_END : DIM_OVERWORLD);
     if (dim != DIM_OVERWORLD) {
         // Bed explosion in Nether / End!
         pl.level->set_block(p.x, p.y, p.z, blocks::air);
         broadcast_level(block_update(p.x, p.y, p.z, blocks::air), pl.level);
-        int dir = lvl::getdir(s);
-        lvl::Pos head_or_foot = p.rel(dir);
-        if (lvl::is(pl.level->get_block(head_or_foot.x, head_or_foot.y, head_or_foot.z), lvl::tag("beds"))) {
-            pl.level->set_block(head_or_foot.x, head_or_foot.y, head_or_foot.z, blocks::air);
-            broadcast_level(block_update(head_or_foot.x, head_or_foot.y, head_or_foot.z, blocks::air), pl.level);
+        if (lvl::is(pl.level->get_block(other_pos.x, other_pos.y, other_pos.z), lvl::tag("beds"))) {
+            pl.level->set_block(other_pos.x, other_pos.y, other_pos.z, blocks::air);
+            broadcast_level(block_update(other_pos.x, other_pos.y, other_pos.z, blocks::air), pl.level);
         }
         boss::explode(p.x + 0.5, p.y + 0.5, p.z + 0.5, 5.0f, 1, true, -1, pl.eid);
         return true;
     }
 
-    // Overworld: check range
-    double dx = p.x + 0.5 - pl.x, dy = p.y + 0.5 - pl.y, dz = p.z + 0.5 - pl.z;
+    // Must have the matching other half of the bed
+    int other_s = pl.level->get_block(other_pos.x, other_pos.y, other_pos.z);
+    if (!lvl::is(other_s, lvl::tag("beds"))) return true;
+
+    // Overworld: check range from head_pos
+    double dx = head_pos.x + 0.5 - pl.x, dy = head_pos.y + 0.5 - pl.y, dz = head_pos.z + 0.5 - pl.z;
     if (dx * dx + dy * dy + dz * dz > 25.0) {
         send_action_bar(pl, "block.minecraft.bed.too_far_away");
         return true;
@@ -102,18 +115,18 @@ inline bool use_bed(Player& pl, const lvl::Pos& p, int s) {
     }
 
     // Monster check
-    if (pl.gamemode != 1 && monsters_near(p.x + 0.5, p.y + 0.5, p.z + 0.5, 8.0, 5.0)) {
+    if (pl.gamemode != 1 && monsters_near(head_pos.x + 0.5, head_pos.y + 0.5, head_pos.z + 0.5, 8.0, 5.0)) {
         send_action_bar(pl, "block.minecraft.bed.not_safe");
         return true;
     }
 
-    // Occupied check
-    if (is_bed_occupied(p)) {
+    // Occupied check (always on canonical head_pos)
+    if (is_bed_occupied(head_pos)) {
         send_action_bar(pl, "block.minecraft.bed.occupied");
         return true;
     }
 
-    start_sleeping(pl, p);
+    start_sleeping(pl, head_pos);
     return true;
 }
 

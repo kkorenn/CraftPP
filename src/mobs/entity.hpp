@@ -433,7 +433,7 @@ struct Entity {
     float move_dist = 0, next_step = 1;
     int tick_count = 0, invulnerable_time = 0;
     int fire_ticks = -1;  // remainingFireTicks (-fireImmuneTicks when not burning)
-    bool invulnerable = false, removed = false, added = false;
+    bool invulnerable = false, removed = false, added = false, is_captain = false;
     Removal removal = Removal::NONE;
     std::vector<std::string> tags;
     SynchedData data;
@@ -540,7 +540,10 @@ struct Entity {
         if (flag == "is_on_fire") return is_on_fire();
         return false;
     }
-    virtual std::string loot_prop(const std::string&) const { return ""; }
+    virtual std::string loot_prop(const std::string& k) const {
+        if (k == "raider/is_captain") return is_captain ? "true" : "false";
+        return "";
+    }
 
     // ---- shared flags / data (Entity) ----
     bool shared_flag(int bit) const { return (data.get(edata::Entity::SHARED_FLAGS, 0) >> bit) & 1; }

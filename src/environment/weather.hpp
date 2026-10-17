@@ -13,6 +13,7 @@ inline void deoxidize_copper(int x, int y, int z) {
     int s = world.get_block(x, y, z);
     if (s <= 0) return;
     std::string n = block_of(s).name;
+    if (n.rfind("minecraft:waxed_", 0) == 0 || n.rfind("waxed_", 0) == 0 || n.find("waxed_") != std::string::npos) return;
     std::string target;
     if (n.find("oxidized_") != std::string::npos) {
         size_t pos = n.find("oxidized_");

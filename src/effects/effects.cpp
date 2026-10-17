@@ -114,6 +114,19 @@ void player_consume_effects(Player& p, int item, const ItemStack& stack) {
             if (mob_effects[size_t(e.id)].instant) apply_instant(*pe, e.id, e.amp, 1.0, pe, pe);
             else add_effect(*pe, e, pe);
         }
+    } else if (item == item_id("ominous_bottle")) {
+        int amp = 0;
+        int cid = component_id("ominous_bottle_amplifier");
+        if (cid >= 0) {
+            if (auto* b = item_component(stack, cid)) {
+                if (!b->empty()) {
+                    Reader r(*b);
+                    amp = std::clamp(r.varint(), 0, 4);
+                }
+            }
+        }
+        add_effect(*pe, EffectInstance(eff::bad_omen, 120000, amp));
+        play_sound("minecraft:item.ominous_bottle.dispose", SRC_PLAYERS, p.x, p.y, p.z, 1.0f, 1.0f);
     }
     auto it = consume_effects.find(item);
     if (it == consume_effects.end()) return;

@@ -193,6 +193,23 @@ pump_until(c, check_creeper_powered, 5.0)
 assert powered_seen, "Creeper not powered by lightning strike"
 print("Creeper -> Powered Creeper ok")
 
+# 2c. Copper oxidation stripping vs waxed copper immunity
+cmd(c, "setblock 260 -60 260 minecraft:weathered_copper")
+cmd(c, "setblock 261 -60 260 minecraft:waxed_oxidized_copper")
+sync(c)
+cmd(c, "summon minecraft:lightning_bolt 260 -60 260")
+deoxidized = False
+def check_copper(pid, b):
+    global deoxidized
+    if pid == PLAY_CB["block_update"]:
+        p = block_pos(b.i64())
+        if p == (260, -60, 260):
+            deoxidized = True
+            return True
+pump_until(c, check_copper, 5.0)
+assert deoxidized, "Weathered copper was not deoxidized by lightning"
+print("Copper de-oxidation & waxed immunity ok")
+
 # =========================================================================
 # 3. Beds & Sleeping: Daytime rejection, Night skipping, Nether explosion
 # =========================================================================
@@ -245,21 +262,61 @@ cmd(c, "setblock 300 60 300 red_bed[facing=north,part=head]")
 sync(c)
 
 bed_exploded = False
+head_cleared = False
+foot_cleared = False
 def check_explode(pid, b):
-    global bed_exploded
+    global bed_exploded, head_cleared, foot_cleared
     if pid == PLAY_CB["explode"]:
         bed_exploded = True
+    elif pid == PLAY_CB["block_update"]:
+        p = block_pos(b.i64())
+        bs = b.varint()
+        if p == (300, 60, 300) and bs == 0:
+            head_cleared = True
+        elif p == (300, 60, 301) and bs == 0:
+            foot_cleared = True
+    if bed_exploded and head_cleared and foot_cleared:
         return True
 use_on(c, 300, 60, 300)
 pump_until(c, check_explode, 5.0)
-assert bed_exploded, "Bed in Nether did not explode"
+assert bed_exploded and head_cleared and foot_cleared, "Bed explosion did not clear both head and foot"
 print("Nether bed explosion ok")
+
+# 3d. Bed foot interaction and occupancy rejection
+teleport_dim(c, "minecraft:overworld", 310.5, -60.0, 312.5)
+cmd(c, "time set 13000")
+cmd(c, "gamerule players_sleeping_percentage 100")
+cmd(c, "setblock 310 -60 311 red_bed[facing=north,part=foot]")
+cmd(c, "setblock 310 -60 310 red_bed[facing=north,part=head]")
+sync(c)
+# Clicking foot puts player to sleep
+use_on(c, 310, -60, 311)
+time.sleep(0.3)
+sync(c)
+# Second player attempts to click the same bed while occupied
+c2, _ = login("Cora", host, port, decode=False, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Cora"))
+c2.s.settimeout(10)
+cmd(c2, "gamemode creative")
+teleport(c2, 310.5, -60.0, 312.5)
+occupied_msg = False
+def check_occupied(pid, b):
+    global occupied_msg
+    if pid == PLAY_CB["set_action_bar_text"]:
+        if b"block.minecraft.bed.occupied" in b.d:
+            occupied_msg = True
+            return True
+use_on(c2, 310, -60, 311)
+pump_until(c2, check_occupied, 5.0)
+assert occupied_msg, "Occupied bed did not reject second player"
+c2.s.close()
+print("Bed foot sleep & occupancy rejection ok")
 
 # =========================================================================
 # 4. Respawn Anchor: Charge & spawn in Nether, Explode in Overworld
 # =========================================================================
 print("Testing respawn anchors...")
 # 4a. Nether charge
+teleport_dim(c, "minecraft:the_nether", 305.5, 60.0, 307.5)
 cmd(c, "setblock 305 60 305 respawn_anchor[charges=0]")
 sync(c)
 hold(c, "glowstone", 4)
@@ -403,6 +460,69 @@ for _ in range(10):
 
 assert victory_seen, "Raid victory and Hero of the Village effect not received"
 print("Raid victory + Hero of the Village ok")
+
+cmd(c, "kill @e[type=!player]")
+sync(c)
+
+# =========================================================================
+# 6. Pillager Captain death & Ominous Bottle drop
+# =========================================================================
+print("Testing Pillager Captain & Ominous Bottle drop...")
+teleport(c, 600.5, -60.0, 600.5)
+cmd(c, "kill @e[type=!player]")
+sync(c)
+
+cmd(c, "setblock 600 -60 600 red_bed[facing=north,part=foot]")
+cmd(c, "setblock 600 -60 599 red_bed[facing=north,part=head]")
+cmd(c, "summon minecraft:villager 600 -60 600")
+sync(c)
+cmd(c, "raid start 1")
+sync(c)
+
+bottle_dropped = False
+def check_bottle(pid, b):
+    global bottle_dropped
+    if pid == PLAY_CB["add_entity"]:
+        eid = b.varint(); b.take(16); etype = b.varint()
+        if etype == ENTITY["item"]:
+            bottle_dropped = True
+            return True
+
+time.sleep(0.5)
+cmd(c, "kill @e[type=pillager]")
+pump_until(c, check_bottle, 5.0)
+assert bottle_dropped, "Pillager captain did not drop ominous bottle"
+print("Pillager Captain drop ominous bottle ok")
+
+cmd(c, "raid stop")
+cmd(c, "kill @e[type=!player]")
+sync(c)
+
+# =========================================================================
+# 7. Drinking Ominous Bottle -> Bad Omen -> Village Raid Omen
+# =========================================================================
+print("Testing Ominous bottle drink and Raid Omen conversion...")
+cmd(c, "effect clear @s")
+hold(c, "ominous_bottle", 1)
+c.seq = getattr(c, "seq", 0) + 1
+c.send(PLAY_SB["use_item"], varint(0) + varint(c.seq) + struct.pack(">ff", 0.0, 0.0))
+
+bad_omen_seen = False
+raid_omen_seen = False
+def check_omen(pid, b):
+    global bad_omen_seen, raid_omen_seen
+    if pid == PLAY_CB["update_mob_effect"]:
+        b.varint() # eid
+        eff = b.varint()
+        if eff == BAD_OMEN:
+            bad_omen_seen = True
+        elif eff == RAID_OMEN:
+            raid_omen_seen = True
+            return True
+
+pump_until(c, check_omen, 5.0)
+assert bad_omen_seen or raid_omen_seen, "Drinking ominous bottle did not trigger Bad Omen / Raid Omen"
+print("Ominous bottle drinking -> Bad Omen -> Raid Omen ok")
 
 cmd(c, "kill @e[type=!player]")
 sync(c)

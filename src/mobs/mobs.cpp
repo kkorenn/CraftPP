@@ -388,9 +388,14 @@ void player_set_sleeping(Player& p, bool sleeping, int bed_x, int bed_y, int bed
     }
 }
 
-void mob_finalize_raid(Entity* e) {
+void mob_finalize_raid(Entity* e, bool is_captain) {
     if (auto* m = dynamic_cast<Mob*>(e)) {
         m->finalize_spawn(SpawnReason::EVENT, nullptr);
         m->set_persistence_required();
+        m->is_captain = is_captain;
+        if (is_captain) {
+            int b = item_id("white_banner");
+            if (b >= 0) m->set_item_slot(ES_HEAD, {b, 1, 0});
+        }
     }
 }

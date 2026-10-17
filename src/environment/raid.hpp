@@ -108,6 +108,7 @@ struct Raid {
 
         ::play_sound("minecraft:event.raid.horn", 4, center_x + 0.5, center_y + 1.0, center_z + 0.5, 64.0f, 1.0f);
 
+        bool captain_spawned = false;
         auto spawn_type = [&](int type, int count) {
             for (int i = 0; i < count; i++) {
                 auto e = create_entity(type);
@@ -121,7 +122,9 @@ struct Raid {
                     if (!lvl::is_air(world.get_block(sx, y, sz))) { sy = y + 1; break; }
                 }
                 e->snap_to(sx + 0.5, sy, sz + 0.5, rand_float() * 360.0f, 0.0f);
-                mob_finalize_raid(e.get());
+                bool make_captain = !captain_spawned && (type == entity_types::pillager);
+                if (make_captain) captain_spawned = true;
+                mob_finalize_raid(e.get(), make_captain);
                 total_health += e->max_health();
                 raiders.insert(e->id);
                 add_entity(std::move(e));

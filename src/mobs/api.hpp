@@ -42,4 +42,4 @@ bool player_throw_item(Player& p, int hand);  // thrown potions / experience bot
 void player_consume_effects(Player& p, int item, const ItemStack& stack);  // Consumable.onConsume effects (food, potions, milk)
 bool player_add_effect(Player& p, int effect_id, int duration, int amp = 0);
 void player_set_sleeping(Player& p, bool sleeping, int bed_x = 0, int bed_y = 0, int bed_z = 0);
-void mob_finalize_raid(Entity* e);
+void mob_finalize_raid(Entity* e, bool is_captain = false);
