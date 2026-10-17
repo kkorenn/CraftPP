@@ -286,7 +286,12 @@ inline void setup_world() {
     int64_t seed = parse_seed(seed_str);
     hashed_seed = material::MaterialSystem::obfuscateSeed(seed);
     setup_dimensions(seed);
-    if (flat_world) return;
+    if (flat_world) {
+        // Flat worlds skip noise-generator setup, but must still restore a changed world spawn.
+        if (level.count("spawn-x") && level.count("spawn-y") && level.count("spawn-z"))
+            world_spawn = {std::stoi(level["spawn-x"]), std::stoi(level["spawn-y"]), std::stoi(level["spawn-z"])};
+        return;
+    }
     auto ow = std::make_shared<worldgen::Overworld>(seed, props["worldgen-stages"], "data/vanilla", props["worldgen-datapack"]);
     const std::string& stages = props["worldgen-stages"];
     if (props["generate-structures"] != "false" && (stages == "structures" || stages == "features"))

@@ -149,12 +149,13 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public long getTime() {
-        return getFullTime() % 24000;
+        return Math.floorMod(getFullTime(), 24000L);
     }
 
     public void setTime(long time) {
         long full = getFullTime();
-        setFullTime(full - full % 24000 + time);
+        long delta = Math.floorMod(Math.floorMod(time, 24000L) - Math.floorMod(full, 24000L), 24000L);
+        setFullTime(Math.addExact(full, delta));
     }
 
     public long getFullTime() {
@@ -162,11 +163,12 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public void setFullTime(long time) {
-        Main.rpc.api("world.setTime", "time", time);
+        // Send decimal text so the C++ JSON double cannot round a Java long.
+        Main.rpc.api("world.setTime", "time", Long.toString(time));
     }
 
     public long getGameTime() {
-        return getFullTime();
+        return Main.rpc.api("world.gameTime").getAsLong();
     }
 
     public boolean isDayTime() {
@@ -197,6 +199,7 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
     }
 
     public void setDifficulty(Difficulty difficulty) {
+        java.util.Objects.requireNonNull(difficulty, "difficulty");
         Main.rpc.api("world.setDifficulty", "value", difficulty.ordinal());
     }
 
@@ -206,20 +209,21 @@ public final class WorldImpl implements ProxyBase.Backing, ProxyBase.HandleProvi
             return new Location(proxy, 0.5, 64, 0.5);
         }
         JsonObject spawn = result.getAsJsonObject();
-        return new Location(proxy, spawn.get("x").getAsInt() + 0.5, spawn.get("y").getAsInt(), spawn.get("z").getAsInt() + 0.5);
+        return new Location(proxy, spawn.get("x").getAsInt() + 0.5, spawn.get("y").getAsInt(), spawn.get("z").getAsInt() + 0.5, spawn.get("yaw").getAsFloat(), 0);
     }
 
     public boolean setSpawnLocation(Location location) {
-        return setSpawnLocation(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+        java.util.Objects.requireNonNull(location, "location");
+        if (!proxy.equals(location.getWorld())) return false;
+        return setSpawnLocation(location.getBlockX(), location.getBlockY(), location.getBlockZ(), location.getYaw());
     }
 
     public boolean setSpawnLocation(int x, int y, int z) {
-        Main.rpc.api("world.setSpawn", "x", x, "y", y, "z", z);
-        return true;
+        return setSpawnLocation(x, y, z, 0);
     }
 
     public boolean setSpawnLocation(int x, int y, int z, float angle) {
-        return setSpawnLocation(x, y, z);
+        return Main.rpc.api("world.setSpawn", "x", x, "y", y, "z", z, "yaw", angle).getAsBoolean();
     }
 
     public List<Player> getPlayers() {

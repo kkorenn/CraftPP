@@ -676,6 +676,28 @@ std::string api(const std::string& m, const Json& a) {
         return it == plugin_data.end() ? "null" : q(it->second);
     }
 
+    // The bridge currently exposes only the overworld. Game age and the day clock are independent.
+    if (m == "world.time") return std::to_string(clocks[0].total);
+    if (m == "world.gameTime") return std::to_string(game_time);
+    if (m == "world.setTime") {
+        const auto& value = a["time"].asString();
+        size_t end = 0;
+        int64_t time = std::stoll(value, &end);
+        if (end != value.size()) throw std::runtime_error("Invalid world time");
+        clocks[0].total = time;
+        clocks[0].partial = 0;
+        clock_changed(0);
+        return "null";
+    }
+    if (m == "world.difficulty") return std::to_string(world_difficulty);
+    if (m == "world.setDifficulty") {
+        int value = int(num_arg(a, "value", -1));
+        if (value < 0 || value > 3) throw std::runtime_error("Invalid difficulty");
+        world_difficulty = value;
+        broadcast(difficulty_packet());
+        return "null";
+    }
+
     // world
     int x = int(num_arg(a, "x")), y = int(num_arg(a, "y")), z = int(num_arg(a, "z"));
     if (m == "world.block") {
@@ -705,8 +727,18 @@ std::string api(const std::string& m, const Json& a) {
             if (world.get_block(x, yy, z) != blocks::air) return std::to_string(yy);
         return std::to_string(MIN_Y);
     }
+    if (m == "world.setSpawn") {
+        if (y < MIN_Y || y >= MIN_Y + HEIGHT || x < -30000000 || x >= 30000000 || z < -30000000 || z >= 30000000)
+            return "false";
+        world_spawn = {x, y, z};
+        spawn_yaw = std::remainder(float(num_arg(a, "yaw")), 360.f);
+        spawn_pitch = 0;
+        broadcast(spawn_packet());
+        save_level();
+        return "true";
+    }
     if (m == "world.spawn") return "{\"x\":" + std::to_string(world_spawn.x) + ",\"y\":" + std::to_string(world_spawn.y) +
-                                   ",\"z\":" + std::to_string(world_spawn.z) + "}";
+                                   ",\"z\":" + std::to_string(world_spawn.z) + ",\"yaw\":" + std::to_string(spawn_yaw) + "}";
     if (m == "world.save") { world->save_dirty(true); return "null"; }
     if (m == "world.lightAt") return "{\"sky\":15,\"block\":0}";  // matches what CraftPP sends: full sky light everywhere
     if (m == "world.border")  // CraftPP sends no border packets, so clients use the vanilla default

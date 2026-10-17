@@ -214,6 +214,14 @@ The next lever is loading fewer API classes eagerly (registries and
   `getBlockData`/`setBlockData` with typed `BlockData`, `createBlockData`,
   `getHighestBlockYAt`, spawn, light (always 15, matching what CraftPP sends),
   and border (the vanilla default).
+  Overworld time (`getTime`, `setTime`, `getFullTime`, `setFullTime`) uses the actual
+  day clock; `getGameTime` reads independent elapsed game ticks. `setTime` normalizes
+  to 0–23999 and moves forward to the requested time. Full time preserves Java long
+  precision, including negative values. Difficulty reads/writes and spawn setters
+  (including yaw) update clients and use existing world persistence. Spawn writes
+  outside build height or the horizontal world bounds return false. These setters
+  do not yet emit `TimeSkipEvent` or `SpawnChangeEvent`; the bridge still exposes
+  only the overworld.
 - **Events.**
   - `PlayerJoinEvent` and `PlayerQuitEvent`: message editable or
     suppressible.
@@ -248,7 +256,8 @@ The next lever is loading fewer API classes eagerly (registries and
 | Player inventory | read and write of item + count; **item meta (name, lore, enchants) is dropped** on writes |
 | Custom inventories / GUIs (`openInventory`) | throws (`player.openInventory` not implemented) |
 | Entities (`spawnEntity`, `getEntities`) | `getEntities` returns players only; spawning throws |
-| Scoreboards, boss bars, sounds, particles, biomes, game rules, world time | throw `IllegalStateException("CraftPP does not implement plugin API call ...")`. World time reads 0 |
+| Overworld time, elapsed game ticks, difficulty, spawn location | implemented; client updates and restart persistence covered by plugin tests |
+| Scoreboards, boss bars, sounds, particles, biomes, game rules | throw `IllegalStateException("CraftPP does not implement plugin API call ...")` |
 | Persistent data containers | in memory for the session only |
 | Registries, `Material` facts | bundled 26.3 registry report. `material-properties-26.3.json` still holds the 26.2 values (regenerate with PrismMC's `tools/jar-truth/MaterialTruth.java` against the 26.3 jar) |
 | NMS (`CraftPlayer.getHandle`, packets, Netty pipeline) | boots (see below). Plugin-sent packets reach the client. Clientbound filtering and serverbound interception through plugin pipelines are not wired yet |

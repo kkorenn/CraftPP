@@ -152,6 +152,22 @@ def main():
         assert msg == "lookup true true", msg
         print("plugin command + alias + Player/Server API ok:", msg)
 
+        a.send(PLAY_SB["chat_command"], string("crafttest worldapi"))
+        def final_plugin_clock(q):
+            clock = Buf(q.d[q.i:])
+            age = clock.i64()
+            return clock.varint() == 1 and clock.varint() == 0 and clock.varint() == 73000 and age < 73000
+        clock = wait(a, PLAY_CB["set_time"], final_plugin_clock)
+        clock.i64(); assert clock.varint() == 1 and clock.varint() == 0 and clock.varint() == 73000
+        assert struct.unpack(">ff", clock.take(8)) == (0.0, 1.0)
+        wait(a, PLAY_CB["change_difficulty"], lambda q: q.d[q.i] == 3)
+        spawn = wait(a, PLAY_CB["set_default_spawn_position"])
+        assert spawn.str() == "minecraft:overworld"
+        assert struct.unpack(">q", spawn.take(8))[0] == struct.unpack(">q", pos(12, 90, -7))[0]
+        assert struct.unpack(">ff", spawn.take(8)) == (135.0, 0.0)
+        assert chat_with(a, "worldapi ok") == "worldapi ok"
+        print("World clock (64-bit, negative, forward rollover), game age, difficulty + spawn APIs ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))
@@ -245,6 +261,18 @@ def main():
         stop(proc)
     assert "[CraftTestPlugin] disabled after" in log(), log()[-1500:]
     print("onDisable on stop ok")
+
+    # API writes must survive a real shutdown/reload through the existing world persistence.
+    proc = start_server(d, PORT, jars)
+    try:
+        proc.stdin.write("crafttest worldverify\n"); proc.stdin.flush()
+        for _ in range(100):
+            if "worldverify ok" in log(): break
+            time.sleep(0.05)
+        assert "worldverify ok" in log(), log()[-2000:]
+        print("plugin world clock, difficulty and spawn persistence ok")
+    finally:
+        stop(proc)
 
     # Memory: the same session without plugins (no JVM at all).
     d2 = tempfile.mkdtemp(prefix="craftpp-noplugins-")
