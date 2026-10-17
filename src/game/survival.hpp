@@ -199,6 +199,7 @@ inline void respawn(Player& p) {
     p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
     send_health(p);
     send_experience(p);
+    send_commands(p);  // Respawn creates a new LocalPlayer with no permissions; PlayerList resends them.
     entities_reset_view(p);  // client dropped its entities: resend them
     player_entity_respawned(p);  // others see the player re-added at its new position
 }
