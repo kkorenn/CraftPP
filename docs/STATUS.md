@@ -30,18 +30,20 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Feature ordering: FIFO generation tickets and x-major decoration layers, failed-prefetch recovery, synchronized palette writes visible to lighting. Surface-only comparison seed 12345/radius 1 matched all blocks and biomes.
 
 - Dimensions: recovered Nether/End pipelines and portal travel, per-world scheduled/random ticks and structure managers; repaired Nether-fossil column bounds, world-specific lava rules and cross-world caches. Sampled Nether/End surface and Nether structure stages match vanilla; see docs/coordinator-integration.md for scope and remaining gaps.
+- Storage (from codex/coordinator-storage): vanilla Anvil world format — region files, chunk NBT, level.dat + SavedData, players/data NBT, entities in Anvil, proto-chunk eviction + persistence, light column unloading.
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| dimensions | Core travel/generation integrated; remaining Nether features, lighting and environment attributes |
-| mobs-roster | remaining mobs, villagers, breeding |
+| roster-int | integrating mobs-roster (78 mobs, villagers, taming, horses) onto main + slime-cap test fix |
 | mobs-bosses | ender dragon, wither, warden |
 | effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
 | redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
-| containers | block entities + container menus |
-| storage | vanilla Anvil region files, proto-chunk eviction |
+| containers | block entities + menus; porting ender chest/item components to NBT player data, then merge |
 | feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
+| dim-light | per-World light engine (nether no skylight, end), light_ensure stall, TSan re-check |
+| nether-end-gen | nether/end feature types, end gateways, nether/end natural spawning |
+| dim-bughunt | end-portal segfault (ASan), portal destinations vs vanilla, pick-block reach, duplicate UUID kick, flaky tests |
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening

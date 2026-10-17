@@ -28,7 +28,7 @@ if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp)
-add_executable(craftpp src/main.cpp src/light/light.cpp ${CRAFTPP_MOB_SOURCES})
+add_executable(craftpp src/main.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
 # Game code is a Java port: signed int overflow wraps like Java instead of being UB.
 target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
@@ -46,8 +46,7 @@ add_library(craftpp_worldgen STATIC src/worldgen/noise.cpp src/worldgen/biome_so
   src/worldgen/density.cpp src/worldgen/terrain.cpp src/worldgen/block_state.cpp src/worldgen/pipeline.cpp
   src/worldgen/carver.cpp src/worldgen/overworld.cpp src/worldgen/features.cpp
   src/worldgen/block_behavior.cpp src/worldgen/feature_basic.cpp src/worldgen/feature_tree.cpp src/worldgen/feature_cave.cpp
-  src/worldgen/feature_misc.cpp
-  src/worldgen/feature_nether_end.cpp)
+  src/worldgen/feature_misc.cpp src/worldgen/feature_nether_end.cpp src/storage/region.cpp src/storage/chunk_nbt.cpp)
 target_include_directories(craftpp_worldgen PUBLIC src)
 target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
 find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
