@@ -76,7 +76,8 @@ inline int ceil_i(double v) { return Mth::d2i(std::ceil(v)); }                  
 // WorldGenLevel over the FEATURES region (WorldGenRegion).
 class Level {
  public:
-  Level(Region& r, const Features& f) : r(r), f(f) {}
+  Level(Region& r, const Features& f) : r(r), f(&f) {}
+  explicit Level(Region& r) : r(r), f(nullptr) {}  // block access only (no biome/seed/random queries)
   uint16_t get(const P& p) const;
   uint16_t get(int x, int y, int z) const { return get(P{x, y, z}); }
   bool set(const P& p, int state);  // WorldGenRegion.setBlock (+ block entity bookkeeping)
@@ -106,11 +107,11 @@ class Level {
     }
   }
   Region& region() { return r; }
-  const Features& features() const { return f; }
+  const Features& features() const { return *f; }
 
  private:
   Region& r;
-  const Features& f;
+  const Features* f;
   std::unique_ptr<RandomSource> rand;
 };
 
@@ -191,6 +192,12 @@ long multiface_spread_all(Level& l, const Spreader& sp, int state, const P& p, b
 // other blocks are returned unchanged. update_from_neighbour_shapes = Block.updateFromNeighbourShapes.
 int update_shape(Level& l, int state, const P& p, bs::Dir dir, const P& neighbourPos, int neighbour);
 int update_from_neighbour_shapes(Level& l, int state, const P& p);
+// StructureTemplate.updateShapeAtEdge(level, flags, shape, min) over the box min + [0,sx)x[0,sy)x[0,sz) where
+// full(x, y, z) is the voxel shape; includes LeavesBlock.updateShape's scheduled leaf ticks.
+void update_shape_at_edge(Level& l, const P& min, int sx, int sy, int sz, const std::function<bool(int, int, int)>& full);
+// LevelChunk.postProcessGeneration for the region's center chunk plus the leaf ticks worldgen scheduled
+// (the FULL step; Features::finish). Needs no Features (structures-only stage runs it too).
+void post_process(Region& r);
 
 // Parses worldgen JSON into owned objects; registry ids are memoized.
 class Loader {

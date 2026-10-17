@@ -111,6 +111,25 @@ class RegionLevel : public Level {
     } ctx(r_);
     return t_.materials ? t_.materials->zoomedBiome(ctx, x, y, z, true) : ctx.noiseBiome(x >> 2, y >> 2, z >> 2);
   }
+  void addMob(int type, BlockPos p, bool persistent, bool heal, bool finalize) override {
+    worldgen::ProtoChunk* c = r_.chunk(p.x >> 4, p.z >> 4);
+    if (c && c->chunk) c->chunk->structure_mobs.push_back({type, p.x + 0.5, double(p.y), p.z + 0.5, persistent, heal, finalize});
+  }
+  void markPostProcessing(int x, int y, int z) override { blockLevel().mark_post_processing({x, y, z}); }
+  void updatePlacedShapes(BlockPos mn, BlockPos mx, const std::vector<BlockPos>& placed) override {
+    namespace feat = worldgen::feat;
+    feat::Level& l = blockLevel();
+    int sx = mx.x - mn.x + 1, sy = mx.y - mn.y + 1, sz = mx.z - mn.z + 1;
+    std::vector<uint8_t> shape(size_t(sx) * size_t(sy) * size_t(sz));
+    auto cell = [&](int x, int y, int z) -> uint8_t& { return shape[(size_t(x) * size_t(sy) + size_t(y)) * size_t(sz) + size_t(z)]; };
+    for (auto& p : placed) cell(p.x - mn.x, p.y - mn.y, p.z - mn.z) = 1;
+    feat::update_shape_at_edge(l, {mn.x, mn.y, mn.z}, sx, sy, sz, [&](int x, int y, int z) { return cell(x, y, z) != 0; });
+    for (auto& p : placed) {  // Block.updateFromNeighbourShapes (flags | UPDATE_KNOWN_SHAPE: no post-process mark)
+      worldgen::feat::P q{p.x, p.y, p.z};
+      int st = l.get(q), ns = feat::update_from_neighbour_shapes(l, st, q);
+      if (ns != st) setBlock(p.x, p.y, p.z, ns);
+    }
+  }
   RandomSource& random() override {
     if (!rand_) rand_ = t_.dfs.randomState().getOrCreateRandomFactory("minecraft:worldgen_region_random").at(r_.cx * 16, 0, r_.cz * 16);
     return *rand_;
@@ -121,7 +140,11 @@ class RegionLevel : public Level {
   worldgen::TerrainGenerator& t_;
   const worldgen::Features* f_;
   const FeatureMap* fm_;
-  std::unique_ptr<worldgen::feat::Level> fl_;
+  std::unique_ptr<worldgen::feat::Level> fl_, bl_;
+  worldgen::feat::Level& blockLevel() {
+    if (!bl_) bl_ = f_ ? std::make_unique<worldgen::feat::Level>(r_, *f_) : std::make_unique<worldgen::feat::Level>(r_);
+    return *bl_;
+  }
   std::unique_ptr<RandomSource> rand_;
 };
 
@@ -177,6 +200,7 @@ StructureWorld::StructureWorld(worldgen::Overworld& ow, bool place) : impl_(std:
       RegionLevel level(r, *terrain);
       m->placeAll(level, r.cx, r.cz);
     });
+    ow.pipeline.set_step(worldgen::Status::FULL, [](worldgen::Region& r) { worldgen::feat::post_process(r); }, 1);
     return;
   }
   // Feature pool elements (village trees, hay, ...): load their placed features up front (loader not thread-safe).

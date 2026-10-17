@@ -213,6 +213,7 @@ void Pipeline::take(int cx, int cz, Chunk& out) {
     out.sections = p->chunk->sections;
     out.block_entities = p->chunk->block_entities;
     out.level.post = p->chunk->level.post;  // ProtoChunk.postProcessing -> LevelChunk (src/level/ runs it)
+    out.structure_mobs = std::move(p->chunk->structure_mobs);
     if (on_take) on_take(*p, out);
     p->taken = true;
   }

@@ -15,7 +15,7 @@ def state(name, **props):
 def pos(x, y, z): return struct.pack(">q", (x & 0x3FFFFFF) << 38 | (z & 0x3FFFFFF) << 12 | (y & 0xFFF))
 c, _ = login("Alice", sys.argv[1], int(sys.argv[2]), decode=True, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Alice"))
 c.s.settimeout(10)
-slots, sounds = {}, []
+slots, sounds, pongs = {}, [], set()
 def stack(b):
     n = b.varint()
     if not n: return (0, -1)
@@ -41,8 +41,13 @@ def pump(seconds):
         elif pid == PLAY_CB["container_set_content"]:
             b.varint(); b.varint()
             for i in range(b.varint()): slots[i] = stack(b)
+        elif pid == PLAY_CB["pong_response"]:
+            pongs.add(b.i64())
         elif pid == PLAY_CB["sound"]:
-            if b.varint() == 0: sounds.append(b.str())
+            if b.varint() == 0:
+                sound = b.str()
+                # Ambient mobs are independent of the interaction being tested.
+                if sound.startswith("minecraft:item.bucket."): sounds.append(sound)
 
 def wait_until(pred, message):
     end = time.monotonic() + 4
@@ -50,6 +55,12 @@ def wait_until(pred, message):
         if pred(): return
         pump(.05)
     raise AssertionError(f"{message}; slots={slots}")
+def sync():
+    sync.seq += 1
+    seq = sync.seq
+    c.send(PLAY_SB["ping_request"], struct.pack(">q", seq))
+    wait_until(lambda: seq in pongs, "server processed preceding requests")
+sync.seq = 0
 def cmd(s): c.send(PLAY_SB["chat_command"], string(s))
 X, Y, Z = 8, -60, 700
 
@@ -66,6 +77,8 @@ def prepare(block, held, count=1, creative=False, hand=0):
     if not creative:
         cmd("gamemode survival")
         pump(.2)
+    sync()
+    pump(.05)
     sounds.clear()
 
 def use(hand=0):
@@ -94,9 +107,9 @@ print("cauldron bucket fill/extract: all fluid replacements + sounds")
 for fluid in ("water", "powder_snow"):
     for level in (1, 2):
         prepare(f"{fluid}_cauldron[level={level}]", "bucket", 3)
-        use(); pump(.25)
+        use(); sync(); pump(.25)
         assert at() == state(fluid + "_cauldron", level=level)
-        assert slots[36] == (3, item("bucket")) and not sounds
+        assert slots[36] == (3, item("bucket")) and not sounds, (fluid, level, slots.get(36), sounds)
 
 # Stacked empty buckets leave the held remainder and add the filled bucket to inventory.
 prepare("water_cauldron[level=3]", "bucket", 3)
@@ -114,13 +127,13 @@ use()
 wait_until(lambda: at() == state("cauldron") and (1, item("water_bucket")) in slots.values(), "creative result")
 assert slots[36] == (4, item("bucket"))
 cmd(f"setblock {X} {Y} {Z} water_cauldron[level=3]")
-pump(.2); use(); pump(.25)
+pump(.2); use(); sync(); pump(.25)
 assert sum(n for n, i in slots.values() if i == item("water_bucket")) == 1
 
 # Sneaking with an item bypasses the block interaction, matching ServerPlayerGameMode.
 prepare("cauldron", "water_bucket")
 c.send(PLAY_SB["player_input"], b"\x20")
-use(); pump(.25)
+use(); sync(); pump(.25)
 assert at() == state("cauldron") and slots[36] == (1, item("water_bucket"))
 c.send(PLAY_SB["player_input"], b"\x00")
 
@@ -136,7 +149,7 @@ def observed_swings(seconds=.25):
         if pid == PLAY_CB["swing_animation"]: swings += 1
     return swings
 observed_swings()
-use(); pump(.25)
+use(); sync(); pump(.25)
 assert observed_swings() == 1, "successful cauldron use should swing"
 
 # Fluid above blocks lava/snow filling, including waterlogged blocks. Water buckets remain valid.
@@ -145,8 +158,8 @@ for above in ("water", "oak_slab[type=top,waterlogged=true]"):
     for fluid in ("lava", "powder_snow"):
         prepare("cauldron", fluid + "_bucket")
         observed_swings()
-        use(); pump(.25)
-        assert at() == state("cauldron") and slots[36] == (1, item(fluid + "_bucket")) and not sounds
+        use(); sync(); pump(.25)
+        assert at() == state("cauldron") and slots[36] == (1, item(fluid + "_bucket")) and not sounds, (above, fluid, at(), at(Y + 1), slots.get(36), sounds)
         assert observed_swings() == 0, "underwater rejection consumes without swinging"
     prepare("cauldron", "water_bucket")
     use()

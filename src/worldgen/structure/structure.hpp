@@ -129,6 +129,16 @@ struct Level {
   virtual int64_t seed() const = 0;
   virtual int biomeAt(int x, int y, int z) = 0;  // getBiome(pos) (noise biome of the quart containing pos)
   virtual RandomSource& random() = 0;              // WorldGenRegion.getRandom (worldgen_region_random at the chunk)
+  // EntityType.create(STRUCTURE) + snapTo(block bottom center) + finalizeSpawn + addFreshEntity, queued with the chunk
+  // holding pos (spawned by the tick thread). persistent: setPersistenceRequired; heal: heal(getMaxHealth()).
+  virtual void addMob(int entityType, BlockPos pos, bool persistent, bool heal = false, bool finalize = true) {
+    (void)entityType, (void)pos, (void)persistent, (void)heal, (void)finalize;
+  }
+  // ChunkAccess.markPosForPostProcessing: the FULL step runs updateFromNeighbourShapes there.
+  virtual void markPostProcessing(int x, int y, int z) { (void)x, (void)y, (void)z; }
+  // StructureTemplate.placeInWorld without knownShape: updateShapeAtEdge over the placed positions (their box
+  // starts at `min`), then updateFromNeighbourShapes for each in placement order.
+  virtual void updatePlacedShapes(BlockPos min, BlockPos max, const std::vector<BlockPos>& placed) { (void)min, (void)max, (void)placed; }
   // FeaturePoolElement / feature-placing pieces: place a placed_feature by id. False when unavailable.
   virtual bool placeFeature(const std::string& placedFeature, RandomSource& random, BlockPos pos) {
     (void)placedFeature, (void)random, (void)pos;
@@ -279,7 +289,7 @@ struct GenContext {  // Structure.GenerationContext
 };
 
 class StructureManager;
-struct StructureStart {
+struct StructureStart : std::enable_shared_from_this<StructureStart> {
   const Structure* structure;
   StructureManager* owner = nullptr;  // marks the start dirty after placement (persistence)
   int cx, cz;
@@ -360,6 +370,7 @@ class StructureManager {
   void encodeChunk(int cx, int cz, std::vector<uint8_t>& out);
   void decodeChunk(int cx, int cz, const uint8_t* p, size_t n);
   Generator& generator() { return gen_; }
+  size_t cachedChunks() { std::lock_guard l(m_); return cache_.size(); }
 
  private:
   bool isStructureChunk(const StructureSet& set, int x, int z);
@@ -375,7 +386,13 @@ class StructureManager {
   std::vector<const StructureSet*> possibleSets_;
   std::vector<std::vector<const StructureSet*>> placementsFor_;  // per structure registryIndex
   std::mutex m_;
-  std::unordered_map<int64_t, std::vector<StartP>> cache_;
+  // Start cache (vanilla keeps starts in loaded chunks): least recently used half dropped above kCacheCap entries.
+  // Dropped starts are recomputed on demand; their placement state is snapshotted first (see evicted()).
+  struct CacheEntry { std::vector<StartP> starts; uint64_t used; };
+  static constexpr size_t kCacheCap = 8192;
+  std::unordered_map<int64_t, CacheEntry> cache_;
+  uint64_t useClock_ = 0;
+  void evicted(std::vector<StartP> starts);
   std::map<const StructureSet*, std::vector<std::pair<int, int>>> rings_;
   std::mutex ringsLock_;
   // persistence
@@ -383,9 +400,12 @@ class StructureManager {
   using RegionMap = std::map<std::pair<int64_t, int>, Saved>;  // (origin chunk key, structure registryIndex)
   std::string persistDir_;
   std::mutex persistLock_;
-  std::map<std::pair<int, int>, RegionMap> regions_;
-  std::set<StructureStart*> dirty_;
+  std::map<std::pair<int, int>, RegionMap> regions_;  // loaded region files; written ones beyond kRegionCap are dropped
+  static constexpr size_t kRegionCap = 64;
+  std::set<std::pair<int, int>> unwritten_;            // regions holding snapshots not yet on disk
+  std::set<StartP> dirty_;
   RegionMap& region(int rx, int rz);  // loads lazily; persistLock_ held
+  void snapshot(const std::vector<StartP>& starts);  // piece state -> regions_ (placeLock, then persistLock_)
   void restore(StructureStart& s);
   friend struct StructureStart;
 };

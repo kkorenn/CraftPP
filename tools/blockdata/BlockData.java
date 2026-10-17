@@ -71,6 +71,14 @@ public class BlockData {
     Direction[] dirs = {Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST};
     EmptyBlockGetter g = EmptyBlockGetter.INSTANCE;
     BlockPos o = BlockPos.ZERO;
+    // WallBlock.isCovered tests (bits 10..14 of the second flag word): post, then wall sides N, S, W, E.
+    java.lang.reflect.Field fp = net.minecraft.world.level.block.WallBlock.class.getDeclaredField("TEST_SHAPE_POST");
+    java.lang.reflect.Field fw = net.minecraft.world.level.block.WallBlock.class.getDeclaredField("TEST_SHAPES_WALL");
+    fp.setAccessible(true);
+    fw.setAccessible(true);
+    net.minecraft.world.phys.shapes.VoxelShape[] wallTests = new net.minecraft.world.phys.shapes.VoxelShape[5];
+    wallTests[0] = (net.minecraft.world.phys.shapes.VoxelShape) fp.get(null);
+    for (int d = 2; d < 6; d++) wallTests[d - 1] = ((Map<Direction, net.minecraft.world.phys.shapes.VoxelShape>) fw.get(null)).get(dirs[d]);
     for (int id = 0; id < nstates; id++) {
       BlockState st = Block.stateById(id);
       long f = 0;
@@ -99,6 +107,9 @@ public class BlockData {
       if (st.isRedstoneConductor(g, o)) e |= 8;
       for (int d = 0; d < 6; d++)
         if (Block.isFaceFull(st.getCollisionShape(g, o), dirs[d])) e |= 16 << d;
+      net.minecraft.world.phys.shapes.VoxelShape below = st.getCollisionShape(g, o).getFaceShape(Direction.DOWN);
+      for (int t = 0; t < 5; t++)
+        if (!net.minecraft.world.phys.shapes.Shapes.joinIsNotEmpty(wallTests[t], below, net.minecraft.world.phys.shapes.BooleanOp.ONLY_FIRST)) e |= 1024 << t;
       out.writeShort(e);
     }
     out.close();

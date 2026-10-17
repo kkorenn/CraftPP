@@ -256,14 +256,18 @@ bool placeInWorld(const Template& t, Level& level, BlockPos pos, BlockPos ref, c
   const auto& infos = s.randomPalette(t, pos);
   if ((infos.empty() && (s.ignoreEntities || !t.hasEntities)) || t.size.x < 1 || t.size.y < 1 || t.size.z < 1) return false;
   const Blocks& b = Blocks::get();
-  std::vector<BlockPos> toFill, locked;
+  std::vector<BlockPos> toFill, locked, placed;
   auto processed = processBlockInfos(level, pos, ref, s, infos, t);
+  BlockPos mn{INT_MAX, INT_MAX, INT_MAX}, mx{INT_MIN, INT_MIN, INT_MIN};
   for (auto& info : processed) {
     BlockPos p = info.pos;
     if (s.boundingBox && !s.boundingBox->isInside(p)) continue;
     int previous = s.applyWaterlogging ? level.getBlock(p.x, p.y, p.z) : -1;
     int state = b.rotate(b.mirror(info.state, s.mirror), s.rotation);
-    level.setBlock(p.x, p.y, p.z, state);
+    level.setBlock(p.x, p.y, p.z, state);  // ponytail: WorldGenRegion.setBlock false (ensureCanWrite) not reported
+    mn = {std::min(mn.x, p.x), std::min(mn.y, p.y), std::min(mn.z, p.z)};
+    mx = {std::max(mx.x, p.x), std::max(mx.y, p.y), std::max(mx.z, p.z)};
+    placed.push_back(p);
     if (info.nbt != -1 && (b.flags(state) & BS_RANDOMIZABLE)) random.nextLong();  // LootTableSeed
     if (previous >= 0) {
       if (isFluidSource(state)) {
@@ -303,8 +307,8 @@ bool placeInWorld(const Template& t, Level& level, BlockPos pos, BlockPos ref, c
       ++it;
     }
   }
-  // ponytail: !knownShape neighbour shape updates (updateShapeAtEdge / updateFromNeighbourShapes) and template
-  // entities are not applied; add with a block-update engine and entity support.
+  if (!placed.empty() && !s.knownShape) level.updatePlacedShapes(mn, mx, placed);
+  // ponytail: template entities are not placed; add with entity support.
   return true;
 }
 

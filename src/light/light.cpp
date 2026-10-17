@@ -609,6 +609,9 @@ struct Engine {
     // ---------- chunk lifecycle ----------
     void initialize(int cx, int cz, Chunk* blocks = nullptr) {  // ChunkStatusTasks.initializeLight
         Column& c = col_create(cx, cz);
+        // take_changes can release the block handle of an initialized column before it is lit.
+        // Flat-world ensure_lit has loaded it again; restore the handle even when setup is complete.
+        if (c.adopted && (c.resolve || !c.chunk)) acquire(c, cx, cz);
         if (c.status != NEW) return;
         if (blocks) c.chunk = blocks;
         else c.adopted = true, acquire(c, cx, cz);

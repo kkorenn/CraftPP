@@ -19,10 +19,13 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Block ticks (src/level/): Level.setBlock + CollectingNeighborUpdater (vanilla update order), scheduled ticks (persisted), exact water/lava flow + worldgen fluid post-processing (vanilla-vs-CraftPP fluid diffs at vanilla-vs-vanilla level), random ticks (crops, grass, leaves, ice, snow, fire, copper), pop-offs, two-part blocks, buckets, bone meal, hoe, flint and steel, falling blocks. Tool-time extractor: tools/gen_level_data.py → data/level.json.
 - Placement (src/level/place_rules.hpp): vanilla getStateForPlacement + updateShape/canSurvive for walls, chests, wire shape, rails (RailState), rotation-16 signs/banners/skulls, wall/hanging variants, attached blocks, count increments, per-class facing, waterlogging. Fixed state-id ordering for 12 blocks in data/game.json and item→block mapping for redstone/string/seeds.
 
+- Coordinator integration: structure edge-shape updates, fortress/end-city pieces, bounded structure caches and structure mob queues. Fluid post-processing is preserved alongside mob queues when transferring generated chunks.
+- Memory/data repairs: keep fluid-tag JSON alive during iteration; reacquire released initialized light-column chunk handles; bind vanilla block/fluid tags in the build-time mob extractor before querying fluid/path data. Generated mob data now distinguishes water/lava correctly; invalid type 3 is rejected at load time.
+- Regression fixtures: cauldron checks synchronize requests and filter bucket sounds; water timing is measured in server ticks; cow combat selects the intended summoned entity by position.
+
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| structures-2 | structure edge shape updates, nether fortress/bastion/end city pieces, bounded structure caches, structure entities hooks |
 | dimensions | Nether, End, portals |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
@@ -42,7 +45,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 ## Known issues
 - light::Engine::state() reads chunks while worldgen workers write them (TSan, possible use-after-free) — needs chunk locking.
-- No vanilla "moved too quickly" check; pick_item_from_block has no reach check (chunk-generation DoS).
+- Movement speed checks are covered by parity_test.py; pick_item_from_block reach handling still needs audit.
 - Duplicate UUID with two names can be online at once.
 - Flaky: plugin_test second start under heavy load; test-server.log occasionally misses lines after restart.
 - vanilla/client (real client for tools/run_client.py) was lost on 2026-10-17 and is not restored; vanilla/ server data was rebuilt from the verified server.jar.

@@ -156,6 +156,10 @@ struct Chunk {
     ChunkLevelData level;
     uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::array<Section, SECTIONS> sections;
+    // Mobs structure pieces spawned during generation (witch huts, monuments, mansions, ...), spawned by the tick thread
+    // when the chunk first loads (mobs/spawn.hpp). Not saved: consumed before the chunk can be saved.
+    struct StructureMob { int type; double x, y, z; bool persistent, heal, finalize; };
+    std::vector<StructureMob> structure_mobs;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
     std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
