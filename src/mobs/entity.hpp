@@ -108,9 +108,9 @@ inline int view_dist_cached() {
     static int v = view_distance();
     return v;
 }
-inline bool sees_chunk(const Player& p, int cx, int cz) {
+inline bool sees_chunk(const Player& p, int cx, int cz) {  // in cur_level and in the player's view
     int v = view_dist_cached();
-    return std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
+    return p.level == cur_level && std::abs(cx - p.cx) <= v && std::abs(cz - p.cz) <= v;
 }
 // Sends to every player whose view contains (x, z).
 inline void broadcast_near(double x, double z, const Writer& w, const Player* except = nullptr) {

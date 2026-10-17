@@ -1121,7 +1121,7 @@ void install_handlers() {
                                              std::to_string(y) + ",\"z\":" + std::to_string(z) + ",\"block\":" + q(block_name(state)) + "}");
             if (cancelled(r)) {  // revert the client's predicted break
                 p.send(block_update(x, y, z, state));
-                p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+                ack_block_changes(p, seq);
                 return;
             }
         }
@@ -1156,7 +1156,7 @@ void install_handlers() {
                                                  ",\"replaced\":" + q(block_name(replaced)) + ",\"item\":" + q(block_name(state)) + "}");
                 if (cancelled(r)) {
                     p.send(block_update(x, y, z, replaced));
-                    p.send(Writer().varint(play_cb::block_changed_ack).varint(seq));
+                    ack_block_changes(p, seq);
                     return;
                 }
             }

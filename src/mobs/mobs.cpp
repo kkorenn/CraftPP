@@ -337,7 +337,7 @@ void player_entity_respawned(Player& p) {
 }
 
 void mobs_init() {
-    on_level_switch = ent_detail::switch_level;
+    level_switch_hooks.push_back(ent_detail::switch_level);
     if (!load_mob_data()) _exit(1);
     register_core_types();
     for (auto f : mob_registrations()) f();

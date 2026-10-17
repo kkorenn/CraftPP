@@ -228,7 +228,7 @@ def text_of(b):
     n = struct.unpack(">H", d[i:i + 2])[0]
     return d[i + 2:i + 2 + n].decode()
 
-def wait(c, pid, pred=lambda b: True, limit=2000):
+def wait(c, pid, pred=lambda b: True, limit=50000):  # mobs flood entity packets
     for _ in range(limit):
         p, b = c.recv()
         if p == pid and pred(b): return b

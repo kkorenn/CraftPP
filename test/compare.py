@@ -40,6 +40,8 @@ ap.add_argument("--edits", help="';'-separated console commands run after the ch
                 "e.g. \"fill {x} {y-30} {z} {x+6} {y-24} {z+6} air;setblock {x+3} {y-27} {z+3} torch\" (tests incremental light); 'wait' settles in between")
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
 ap.add_argument("--dimension", choices=["overworld", "the_nether", "the_end"], default="overworld")
+ap.add_argument("--fluids", action="store_true", help="also settle without --light: apply the block updates of fluids "
+                "that flow after post-processing (vanilla sends chunks right after it)")
 args = ap.parse_args()
 if args.dimension != "overworld": MIN_Y = 0
 BOT = "Cmp"
@@ -89,7 +91,7 @@ def collect(port, center, proc, edited=False):
         c.send(PLAY_SB["chat_command"], string("list"))
         while True:
             if play_step(c) == PLAY_CB["system_chat"] and b"commands.list" in c.last.d: break
-    if args.light: settle(c)  # neighbours may still be lighting: take their light_update packets too
+    if args.light or args.fluids: settle(c)  # neighbours may still be lighting: take their light_update packets too
     if args.edits and not edited:
         x, y, z = center
         for cmd in args.edits.split(";"):
@@ -136,7 +138,7 @@ def run_craftpp(center):
     props = f"{ROOT}/build/compare/compare.properties"  # server dir build/compare: its own ops.json
     open(f"{ROOT}/build/compare/ops.json", "w").write(OPS)
     shutil.rmtree(f"{ROOT}/build/compare-world", ignore_errors=True)  # throwaway world: no saved chunks
-    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + 1}\n"
+    open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + (2 if args.fluids else 1)}\n"  # --fluids: neighbours must tick too
                            f"level-name=build/compare-world\nlevel-type=normal\nwhite-list=false\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
     open(f"{ROOT}/build/compare/eula.txt", "w").write("eula=true\n")  # server dir = build/compare/ (beside the properties file)

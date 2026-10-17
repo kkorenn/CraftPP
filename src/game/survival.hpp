@@ -283,6 +283,11 @@ inline void destroy_block_progress(const Player& p, int x, int y, int z, int sta
     }
 }
 
+namespace lvl {
+inline bool player_destroy(Player& p, int x, int y, int z, int state);  // level/glue.hpp: playerWillDestroy + removeBlock
+inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz);  // level/placement.hpp
+inline bool use_bucket(Player& pl, ItemStack& slot);
+}
 // ServerPlayerGameMode.destroyBlock: remove the block, drop loot when harvestable, wear the tool.
 // Returns false when the held item can't break blocks (swords etc. in creative).
 inline bool destroy_block(Player& p, int x, int y, int z) {
@@ -293,9 +298,8 @@ inline bool destroy_block(Player& p, int x, int y, int z) {
         return false;
     if (state == blocks::air) return true;
     level_event(2001, x, y, z, state, &p);  // Block.spawnDestroyParticles (break particles + sound for others)
-    change_block(x, y, z, blocks::air);
+    if (!lvl::player_destroy(p, x, y, z, state)) return true;  // other halves of doors/beds/plants, leaves fluids
     if (p.gamemode == 1) return true;
-    // ponytail: multi-block structures (doors, beds, tall plants) only break the targeted half.
     if (correct_tool(p, state)) {
         static std::vector<ItemStack> drops;
         drops.clear();
@@ -532,7 +536,7 @@ inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for 
 }
 
 // ServerPlayerGameMode.useItemOn. Returns 0 PASS, 1 SUCCESS (swing), 2 CONSUME (no swing).
-inline int use_item_on(Player& p, int hand, int x, int y, int z, int face) {
+inline int use_item_on(Player& p, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     if (p.g.dead) return 0;
     int clicked = world.get_block(x, y, z);
     bool is_table = block_index(clicked) == block_index(blocks::crafting_table);
@@ -547,22 +551,8 @@ inline int use_item_on(Player& p, int hand, int x, int y, int z, int face) {
         open_crafting_table(p, x, y, z);
         return 1;
     }
-    int state = slot.empty() ? -1 : ITEM_TO_BLOCK[slot.item];
-    if (state < 0) return 0;
     if (p.gamemode == 2) return 0;  // !mayBuild; ponytail: can_place_on (adventure predicates) not supported
-    // ponytail: places the block's default state (no facing/axis/half); needs per-block placement rules.
-    if (!block_of(clicked).replaceable) {
-        static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
-        if (face < 0 || face > 5) face = 1;
-        x += off[face][0], y += off[face][1], z += off[face][2];
-    }
-    if (y < MIN_Y || y > MIN_Y + HEIGHT - 1) return 0;
-    int target = world.get_block(x, y, z);
-    if (!block_of(target).replaceable) return 0;
-    if (block_of(state).collision && box_hits_player(x, y, z)) return 0;
-    change_block(x, y, z, state);
-    if (p.gamemode != 1 && --slot.count <= 0) slot = {};
-    return 1;
+    return lvl::use_item_on(p, hand, x, y, z, face, cx, cy, cz) ? 1 : 0;  // block use, item useOn, BlockItem.place
 }
 
 // ---------- persistence (appended to playerdata/<uuid>.txt; old files simply lack these lines) ----------
@@ -669,7 +659,7 @@ inline void register_game_handlers() {
         } else if (!p.net.awaiting) {
             const ItemStack& used = p.inv[hand == 1 ? 40u : size_t(p.selected)];
             bool placing = !used.empty() && ITEM_TO_BLOCK[used.item] >= 0;  // wasBlockPlacementAttempt
-            int result = use_item_on(p, hand, x, y, z, face);
+            int result = use_item_on(p, hand, x, y, z, face, cx, cy, cz);
             if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= MIN_Y)))
                 overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {MIN_Y}));
             else if (result == 1) swing(p, hand, false);
@@ -683,8 +673,10 @@ inline void register_game_handlers() {
     on(play_sb::use_item, [](Player& p, Reader& in, int) {
         int hand = in.varint();
         int seq = in.varint();
-        start_using(p, hand);
+        if (in.i + 8 <= in.n) p.yaw = in.f32(), p.pitch = in.f32();  // the view the client used the item with
         ack_block_changes(p, seq);
+        if (p.gamemode != 3 && !p.g.dead && lvl::use_bucket(p, p.inv[hand ? 40u : size_t(p.selected)])) return;
+        start_using(p, hand);
     });
     on(play_sb::container_click, [](Player& p, Reader& in, int) { handle_container_click(p, in); });
     on(play_sb::container_close, [](Player& p, Reader& in, int) {

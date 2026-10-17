@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <filesystem>
 #include <fstream>
@@ -134,6 +135,15 @@ struct Section {
     Paletted<64, 1, 3, BIOME_GLOBAL_BITS> biomes;    // 4x4x4 cells, same order
 };
 
+// Level tick state that travels with the chunk (src/level/): worldgen post-processing marks (vanilla
+// ProtoChunk.postProcessing, packed x | z << 4 | (y - MIN_Y) << 8) and the tick lists in the level's own
+// encoding. Owned by the tick thread once the chunk is loaded; save_chunk reads it under Chunk::m.
+struct ChunkLevelData {
+    bool post_processed = true;  // generated chunks start false; LevelChunk.postProcessGeneration ran
+    std::vector<uint32_t> post;
+    std::vector<uint8_t> ticks;
+};
+
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
 // network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
 struct BlockEntity {
@@ -148,10 +158,12 @@ struct Chunk {
     int min_y;                // dimension type min_y
     bool skylight = true;     // dimension type has_skylight
     bool fullbright = false;  // not lit by the light engine (nether, end): full light sent, none saved
+    ChunkLevelData level;
+    uint32_t edits = 0;  // bumped by set(): lets caches (random-tick sections) notice changes
     std::vector<Section> sections;
     std::vector<BlockEntity> block_entities;
     std::mutex m;        // guards sections + body against concurrent edit + encode
-    bool dirty = false;  // modified since last save
+    std::atomic<bool> dirty{false};  // modified since last save (set under m; save_dirty reads it under the map lock)
     bool on_disk = false;
     std::shared_ptr<const std::vector<uint8_t>> body;  // cached network frame (chunk_frame), reset by set()
     uint32_t light_version = 0;  // bumped (with body.reset) by the light engine under light::mutex() + m
@@ -165,6 +177,7 @@ struct Chunk {
     void set(int x, int y, int z, uint16_t s) {
         sections[(y - min_y) >> 4].blocks.set((((y - min_y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
+        edits++;
         if (!block_entities.empty())
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
@@ -445,6 +458,13 @@ inline bool load_chunk(const std::string& dir, Chunk& c) {
         if (r.i + len <= out.size()) c.saved_light.assign(out.begin() + std::ptrdiff_t(r.i), out.begin() + std::ptrdiff_t(r.i + len));
         r.i += len;
     }
+    if (r.i < r.n && r.u8() == 1) {  // level data, after light (absent in older files: processed, no ticks)
+        c.level.post_processed = r.u8();
+        c.level.post.resize(size_t(r.varint()));
+        for (auto& v : c.level.post) v = uint32_t(r.i32());
+        c.level.ticks.resize(size_t(r.varint()));
+        for (auto& b : c.level.ticks) b = r.u8();
+    }
     if (r.i < out.size() && chunk_load_extra) chunk_load_extra(c, r);  // structures (starts + references)
     return c.on_disk = true;
 }
@@ -464,6 +484,10 @@ inline void save_chunk(const std::string& dir, Chunk& c) {
         for (auto& e : c.block_entities)
             w.u8(e.x).u8(e.z).varint(e.y).varint(e.type).varint(int32_t(e.nbt.size())).bytes(e.nbt);
         w.varint(int32_t(light.size())).bytes(light);
+        w.u8(1).u8(c.level.post_processed).varint(int32_t(c.level.post.size()));
+        for (uint32_t v : c.level.post) w.i32(int32_t(v));
+        w.varint(int32_t(c.level.ticks.size()));
+        w.bytes(c.level.ticks.data(), c.level.ticks.size());
         if (chunk_save_extra) chunk_save_extra(c, w);
         c.dirty = c.light_version != light_version;  // light changed since it was captured: save again
     }
@@ -507,6 +531,18 @@ struct World {
     // Nether portal blocks (vanilla PoiManager NETHER_PORTAL records), kept by set_block (under m), saved with chunks.
     std::set<std::tuple<int, int, int>> portals;
     bool portals_dirty = false;
+    std::function<void(const ChunkPtr&)> on_load;            // any thread, after a chunk entered `chunks`
+
+    // The chunk if loaded, else null (never loads or generates).
+    ChunkPtr find(int cx, int cz) {
+        std::lock_guard lock(m);
+        auto it = chunks.find({cx, cz});
+        return it == chunks.end() ? nullptr : it->second;
+    }
+    bool is_viewed(int cx, int cz) {
+        std::lock_guard lock(m);
+        return viewed({cx, cz});
+    }
 
     void start(int threads) { pool.start(threads > 0 ? threads : ChunkPool::auto_size()); }  // once, for all Worlds
     int max_y() const { return min_y + height; }  // exclusive
@@ -584,13 +620,16 @@ struct World {
             }
             if (!fullbright) light::block_changed(x, y, z, old, state);
         }
-        if (is_nether_portal(old) != is_nether_portal(state)) {
-            std::lock_guard pl(m);
-            if (is_nether_portal(state)) portals.insert({x, y, z});
-            else portals.erase({x, y, z});
-            portals_dirty = true;
-        }
+        note_block(x, y, z, old, state);
         return true;
+    }
+    // Every block write (set_block, src/level's set) reports here: keeps the nether portal index.
+    void note_block(int x, int y, int z, uint16_t old, uint16_t state) {
+        if (is_nether_portal(old) == is_nether_portal(state)) return;
+        std::lock_guard pl(m);
+        if (is_nether_portal(state)) portals.insert({x, y, z});
+        else portals.erase({x, y, z});
+        portals_dirty = true;
     }
 
     // Saves modified chunks, then unloads (saving first if needed) chunks nobody views or holds.
@@ -699,12 +738,14 @@ inline World* level_by_id(const std::string& id) {
     return nullptr;
 }
 inline int dim_of(const World* w) { return int(w - worlds); }
-// Tick thread: per-level state of other subsystems (the entity manager) follows cur_level through this hook.
-inline void (*on_level_switch)(World* from, World* to) = nullptr;
+// Tick thread: per-level state of other subsystems (entity manager, level ticks) follows cur_level: each hook
+// parks the old level's state and takes the new one's.
+inline std::vector<void (*)(World* from, World* to)> level_switch_hooks;
 inline thread_local bool is_tick_thread = false;
 inline void set_level(World* w) {
     if (w == cur_level) return;
-    if (is_tick_thread && on_level_switch) on_level_switch(cur_level, w);
+    if (is_tick_thread)
+        for (auto f : level_switch_hooks) f(cur_level, w);
     cur_level = w;
 }
 struct InLevel {  // RAII: run a block of game code in level `w`
@@ -718,6 +759,8 @@ inline struct LevelProxy {
     Chunk& get(int cx, int cz) const { return cur_level->get(cx, cz); }
     ChunkPtr get_ptr(int cx, int cz) const { return cur_level->get_ptr(cx, cz); }
     ChunkPtr get_if_loaded(int cx, int cz) const { return cur_level->get_if_loaded(cx, cz); }
+    ChunkPtr find(int cx, int cz) const { return cur_level->find(cx, cz); }
+    bool is_viewed(int cx, int cz) const { return cur_level->is_viewed(cx, cz); }
     uint16_t get_block(int x, int y, int z) const { return cur_level->get_block(x, y, z); }
     // Game edits: fire on_block_changed (portal ignition / collapse: game/portal.hpp) after a real change.
     bool set_block(int x, int y, int z, uint16_t s) const;
@@ -750,6 +793,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
         c->cx = cx, c->cz = cz, c->skylight = skylight, c->fullbright = fullbright;
         bool loaded = load_chunk(dir, *c);
         if (!loaded) {
+            c->level.post_processed = false;
             generator(*c);
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
@@ -760,6 +804,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             chunks[{cx, cz}] = c;
             inflight.erase({cx, cz});
         }
+        if (on_load) on_load(c);
         job.set_value(c);
     } catch (...) {
         {

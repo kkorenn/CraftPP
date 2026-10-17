@@ -187,7 +187,9 @@ struct Cmd {
     Vec3 vec(const char* name) const { return get<Coords>(name).pos(src); }
     void block_pos(const char* name, int& x, int& y, int& z) const {
         get<Coords>(name).block(src, x, y, z);
-        if (y < world.min_y() || y >= world.max_y()) throw err("argument.pos.outofworld");
+        // Level.isInWorldBounds
+        if (y < world.min_y() || y >= world.max_y() || x < -30000000 || z < -30000000 || x >= 30000000 || z >= 30000000)
+            throw err("argument.pos.outofworld");
     }
     // ScoreHolderArgument.getNames
     std::vector<std::string> holders(const char* name) const {

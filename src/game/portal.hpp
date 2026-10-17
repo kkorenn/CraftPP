@@ -84,31 +84,52 @@ inline std::optional<Shape> find_empty_shape(Pos pos, int preferred) {
     return std::nullopt;
 }
 
+// Level.setBlock flags 18 (UPDATE_CLIENTS | UPDATE_KNOWN_SHAPE): no neighbour updates while the portal fills.
+inline void set_portal_block(int x, int y, int z, int state) {
+    if (level_set_block) level_set_block(x, y, z, state, 18);
+    else change_block(x, y, z, state);
+}
 inline void create_portal_blocks(const Shape& s) {
     for (int h = 0; h < s.height; h++)
         for (int i = 0; i < s.width; i++) {
             Pos p = s.step(s.bottom_left.rel(Y, h), i);
-            change_block(p.x, p.y, p.z, portal_state(s.axis));
+            set_portal_block(p.x, p.y, p.z, portal_state(s.axis));
         }
 }
 
 inline bool in_portal_dimension() { return cur_level == &worlds[DIM_OVERWORLD] || cur_level == &worlds[DIM_NETHER]; }
 
-// BaseFireBlock.onPlace (fire lights a frame) and NetherPortalBlock.updateShape (a portal block whose frame or
-// neighbouring portal block went away turns to air, which cascades through the portal).
+// BaseFireBlock.onPlace: fire placed in an empty frame (preferred axis X) becomes a portal.
+inline bool fire_lights_portal(int x, int y, int z) {
+    if (!in_portal_dimension()) return false;
+    auto s = find_empty_shape({x, y, z}, X);
+    if (!s) return false;
+    create_portal_blocks(*s);
+    return true;
+}
+
+// NetherPortalBlock.updateShape: a portal block whose frame (or a neighbouring portal block) went away turns to
+// air, which cascades through the portal (updates across the portal's thin axis are ignored).
+inline int portal_update_shape(int state, int x, int y, int z, int dir, int nstate) {
+    int axis = axis_of(uint16_t(state));
+    int update_axis = dir <= 1 ? Y : dir <= 3 ? Z : X;  // lvl::Dir: DOWN UP NORTH SOUTH WEST EAST
+    bool wrong_axis = axis != update_axis && update_axis != Y;
+    if (!wrong_axis && !is_nether_portal(uint16_t(nstate)) && !find_any_shape({x, y, z}, axis).complete()) return blocks::air;
+    return state;
+}
+
+// Without the level tick system (no level_set_block): the same two rules from World edits.
 inline void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state) {
-    if (is_fire(new_state) && !is_fire(old_state) && in_portal_dimension())
-        if (auto s = find_empty_shape({x, y, z}, X)) return create_portal_blocks(*s);
+    if (level_set_block) return;  // src/level handles both through on_place / update_shape
+    if (is_fire(new_state) && !is_fire(old_state) && fire_lights_portal(x, y, z)) return;
     if (is_nether_portal(new_state)) return;
-    static const int dirs[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    static const int dirs[6][4] = {{0, -1, 0, 0}, {0, 1, 0, 1}, {0, 0, -1, 2}, {0, 0, 1, 3}, {-1, 0, 0, 4}, {1, 0, 0, 5}};
     for (auto& d : dirs) {
         Pos n{x + d[0], y + d[1], z + d[2]};
         uint16_t b = cur_level->peek_block(n.x, n.y, n.z);
         if (!is_nether_portal(b)) continue;
-        int axis = axis_of(b);
-        int update_axis = d[0] ? X : d[1] ? Y : Z;
-        if (axis != update_axis && update_axis != Y) continue;  // wrongAxis
-        if (!find_any_shape(n, axis).complete()) change_block(n.x, n.y, n.z, blocks::air);
+        int opposite = d[3] ^ 1;  // direction from the portal block to the changed one
+        if (portal_update_shape(b, n.x, n.y, n.z, opposite, new_state) != b) change_block(n.x, n.y, n.z, blocks::air);
     }
 }
 
@@ -252,7 +273,7 @@ inline Rect create_portal(Pos origin, int axis) {
         for (int h = -1; h < 4; h++)
             if (w == -1 || w == 2 || h == -1 || h == 3) change_block(full.x + w * dx, full.y + h, full.z + w * dz, blocks::obsidian);
     for (int w = 0; w < 2; w++)
-        for (int h = 0; h < 3; h++) change_block(full.x + w * dx, full.y + h, full.z + w * dz, portal_state(axis));
+        for (int h = 0; h < 3; h++) set_portal_block(full.x + w * dx, full.y + h, full.z + w * dz, portal_state(axis));
     return {full, 2, 3};
 }
 
@@ -461,6 +482,8 @@ inline bool use_item_on(Player& p, int hand, int x, int y, int z, int face) {
 
 inline void init() {
     on_block_changed = block_changed;
+    lvl::fire_lights_portal = fire_lights_portal;
+    lvl::portal_update_shape = portal_update_shape;
     on_player_tick(player_tick);
     PacketHandler prev = handlers()[play_sb::use_item_on];
     on(play_sb::use_item_on, [prev](Player& p, Reader& in, int id) {

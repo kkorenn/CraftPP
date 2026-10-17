@@ -710,7 +710,8 @@ std::mutex& mutex() {
 int get(int x, int y, int z, bool sky) {
     std::lock_guard lock(mutex());
     Engine& e = engine();
-    Column* c = e.col(x >> 4, z >> 4);
+    auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
+    Column* c = it == e.columns.end() ? nullptr : it->second.get();
     if (!c || c->status != LIT) return -1;
     int sy = y >> 4;
     if (!sky) {
@@ -986,6 +987,11 @@ uint32_t write(Writer& w, Chunk& c) {
     if (check) verify(e, c.cx, c.cz);
     write_masks(w, e.col(c.cx, c.cz), ~0u, ~0u);
     return c.light_version;
+}
+
+int level(bool sky, int x, int y, int z) {
+    int v = get(x, y, z, sky);
+    return v >= 0 ? v : sky ? 15 : 0;
 }
 
 void block_changed(int x, int y, int z, uint16_t old_state, uint16_t new_state) {

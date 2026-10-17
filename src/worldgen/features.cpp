@@ -997,7 +997,10 @@ void Features::finish(Region& r) const {
   for (int32_t v : c.post_processing) {
     P p = unpack(v);
     int s = level.get(p);
-    if (R().has_fluid(s)) continue;  // ponytail: fluid ticks (flowing water / lava after generation) not simulated
+    if (R().has_fluid(s)) {  // fluids: LevelChunk.postProcessGeneration ticks them when the chunk ticks (src/level/)
+      c.chunk->level.post.push_back(uint32_t(v));
+      continue;
+    }
     int n = update_from_neighbour_shapes(level, s, p);
     if (n != s && writable(p)) level.set(p, n);
   }
