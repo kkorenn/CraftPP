@@ -6,6 +6,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#include <cstdlib>
 #include <iostream>
 #include <iterator>
 
@@ -148,6 +149,13 @@ int main(int argc, char** argv) {
     load_properties(props_path);
     if (!check_eula(server_dir)) return 0;
     ensure_paper_files(server_dir);
+    if (!std::filesystem::exists("data/vanilla/minecraft")) {  // Mojang's game data is fetched at runtime, never shipped
+        log_info("Downloading Minecraft %s server data from Mojang (tools/setup_vanilla.sh)", GAME_VERSION);
+        if (std::system("sh tools/setup_vanilla.sh") != 0 || !std::filesystem::exists("data/vanilla/minecraft")) {
+            log_error("Could not set up data/vanilla: run tools/setup_vanilla.sh (needs curl and unzip)");
+            return 1;
+        }
+    }
 
     log_info("Starting minecraft server version %s", GAME_VERSION);
     log_info("Loading properties");

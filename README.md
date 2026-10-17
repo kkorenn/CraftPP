@@ -4,7 +4,7 @@ Minecraft Java server in C++, targeting **26.3** (protocol 777).
 
 ## Run a release
 Download `craftpp-<version>-<platform>.tar.gz` from GitHub Releases (linux-aarch64 for a Raspberry Pi with a
-64-bit OS), extract it, `cd` into the folder and run `./start.sh`. The first start downloads the official
+64-bit OS), extract it, `cd` into the folder and run `./craftpp`. The first start (after accepting the EULA) downloads the official
 Minecraft 26.3 server jar from Mojang (about 60 MB, SHA-1 checked) and unpacks the game data CraftPP needs into
 `data/vanilla`; Mojang's files are never shipped with CraftPP. Needs `curl` and `unzip`, no Java.
 
