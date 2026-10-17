@@ -20,8 +20,9 @@ export ASAN_OPTIONS=${ASAN_OPTIONS:-abort_on_error=1:detect_leaks=0} UBSAN_OPTIO
 export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
 
 if [ -n "$TEST" ]; then
-  # Free port per run so parallel test runs (other worktrees) never collide.
-  PORT=${TEST_PORT:-$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")}
+  # Free port per run, outside the ephemeral range so nothing takes it while the server restarts on it.
+  FREE_PORT='import sys; sys.path.insert(0, "test"); from bot import free_port; print(free_port())'
+  PORT=${TEST_PORT:-$(python3 -c "$FREE_PORT")}
   LOG=$B/test-server.log
   fail() { echo "FAIL: $1"; tail -20 $LOG; exit 1; }
   wait_log() {  # wait_log <text> [count]: until the server log has <text> at least <count> times
@@ -111,7 +112,7 @@ if [ -n "$TEST" ]; then
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"
   python3 -u test/stress.py --server ./$B/craftpp --quick ${SAN:+--no-rss-check} || fail "stress (log: $B/stress/server.log)"  # own server
-  PLUGIN_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind((\"\",0)); print(s.getsockname()[1])")
+  PLUGIN_PORT=$(python3 -c "$FREE_PORT")
   [ -n "$SAN" ] || python3 -u test/plugin_test.py $PLUGIN_PORT  # Bukkit plugins; prints SKIP without a Java 25+ JDK
   echo "all tests passed"
 fi
