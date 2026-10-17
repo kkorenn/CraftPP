@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <stdexcept>
 
 #include "worldgen/json.hpp"
@@ -20,10 +21,20 @@ const Registry& Registry::get() {
 Registry::Registry() {
   std::ifstream f("data/blocks.bin", std::ios::binary);
   if (!f) throw std::runtime_error("data/blocks.bin missing (tools/gen_block_data.sh)");
-  auto u8 = [&] { return uint8_t(f.get()); };
+  const std::string buf(std::istreambuf_iterator<char>(f), {});
+  size_t at = 0;
+  bool truncated = false;
+  auto u8 = [&] {
+    if (at >= buf.size()) return truncated = true, uint8_t(0);
+    return uint8_t(buf[at++]);
+  };
   auto u16 = [&] { int a = u8(); return uint16_t(a << 8 | u8()); };
   auto u32 = [&] { uint32_t a = u16(); return a << 16 | u16(); };
-  auto str = [&] { std::string s(u16(), '\0'); f.read(s.data(), std::streamsize(s.size())); return s; };
+  auto str = [&] {
+    size_t n = u16();
+    if (at + n > buf.size()) return truncated = true, std::string();
+    return at += n, buf.substr(at - n, n);
+  };
   if (u32() != 0x43424432) throw std::runtime_error("data/blocks.bin: bad magic");
   uint32_t nblocks = u32(), nstates = u32();
   blocks.resize(nblocks);
@@ -50,14 +61,15 @@ Registry::Registry() {
   state_fluid.resize(nstates);
   state_flags2.resize(nstates);
   for (uint32_t s = 0; s < nstates; s++) state_flags[s] = u32(), state_fluid[s] = u8(), state_flags2[s] = u16();
-  if (!f) throw std::runtime_error("data/blocks.bin: truncated");
+  if (truncated) throw std::runtime_error("data/blocks.bin: truncated");
 
   // Block tags: load every file, resolve references recursively.
   std::unordered_map<std::string, std::vector<std::string>> raw;
   const std::string root = "vanilla/src/data/minecraft/tags/block";
   for (auto& e : std::filesystem::recursive_directory_iterator(root)) {
     if (e.path().extension() != ".json") continue;
-    std::string rel = std::filesystem::relative(e.path(), root).replace_extension().generic_string();
+    std::string rel = e.path().generic_string();  // <root>/<name>.json
+    rel = rel.substr(root.size() + 1, rel.size() - root.size() - 6);
     Json j = Json::parseFile(e.path().string());
     auto& v = raw["minecraft:" + rel];
     for (auto& x : j["values"].arr) v.push_back(x.isString() ? x.str : x["id"].str);
@@ -84,9 +96,10 @@ Registry::Registry() {
   const std::string froot = "vanilla/src/data/minecraft/tags/fluid";
   std::unordered_map<std::string, std::vector<std::string>> fraw;
   for (auto& e : std::filesystem::directory_iterator(froot))
-    if (e.path().extension() == ".json")
-      for (auto& x : Json::parseFile(e.path().string())["values"].arr)
-        fraw["minecraft:" + e.path().stem().string()].push_back(x.isString() ? x.str : x["id"].str);
+    if (e.path().extension() == ".json") {
+      Json j = Json::parseFile(e.path().string());  // keep the array owner alive throughout iteration
+      for (auto& x : j["values"].arr) fraw["minecraft:" + e.path().stem().string()].push_back(x.isString() ? x.str : x["id"].str);
+    }
   std::function<uint8_t(const std::string&, int)> fres = [&](const std::string& t, int depth) -> uint8_t {
     uint8_t m = 0;
     if (depth > 8) return 0;

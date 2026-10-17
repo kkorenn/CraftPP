@@ -103,7 +103,7 @@ find_package(ZLIB REQUIRED)
 target_sources(craftpp_worldgen PRIVATE src/worldgen/structure/blocks.cpp src/worldgen/structure/nbt_io.cpp
   src/worldgen/structure/template.cpp src/worldgen/structure/structure.cpp src/worldgen/structure/jigsaw.cpp
   src/worldgen/structure/structures.cpp src/worldgen/structure/scattered.cpp src/worldgen/structure/templated.cpp
-  src/worldgen/structure/beardifier.cpp src/worldgen/structure/hooks.cpp src/worldgen/structure/pending.cpp src/worldgen/structure/mineshaft.cpp src/worldgen/structure/stronghold.cpp src/worldgen/structure/monument.cpp src/worldgen/structure/mansion.cpp)
+  src/worldgen/structure/beardifier.cpp src/worldgen/structure/hooks.cpp src/worldgen/structure/fortress.cpp src/worldgen/structure/endcity.cpp src/worldgen/structure/mineshaft.cpp src/worldgen/structure/stronghold.cpp src/worldgen/structure/monument.cpp src/worldgen/structure/mansion.cpp)
 target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB)
 add_executable(structure_test test/structure_test.cpp)
 target_link_libraries(structure_test PRIVATE craftpp_worldgen)

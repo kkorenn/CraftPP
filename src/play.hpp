@@ -20,28 +20,18 @@ inline void on(int id, PacketHandler h) { handlers()[id] = std::move(h); }
 inline void join(const PlayerPtr& pp) {
     Player& p = *pp;
     int v = view_distance();
-    p.send(Writer()
-               .varint(play_cb::login)
-               .i32(p.eid)
-               .boolean(false)  // hardcore
-               .varint(1).str("minecraft:overworld")
-               .varint(std::stoi(props["max-players"]))
-               .varint(v)
-               .varint(v)       // simulation distance
-               .boolean(rule("reduced_debug_info"))
-               .boolean(!rule("immediate_respawn"))  // show death screen
-               .boolean(rule("limited_crafting"))
-               .varint(dimension_types::overworld)
-               .str("minecraft:overworld")
-               .i64(0)          // hashed seed
-               .varint(p.gamemode)
-               .varint(0)       // previous gamemode: none
-               .boolean(false)  // debug world
-               .boolean(flat_world)
-               .boolean(false)  // no last death location
-               .varint(0)       // portal cooldown
-               .varint(63)      // sea level
-               .boolean(false)  // online mode
+    Writer login;
+    login.varint(play_cb::login).i32(p.eid).boolean(false);  // hardcore
+    login.varint(DIM_COUNT);
+    for (auto& w : worlds) login.str(w.id);
+    login.varint(std::stoi(props["max-players"]))
+        .varint(v)
+        .varint(v)        // simulation distance
+        .boolean(rule("reduced_debug_info"))
+        .boolean(!rule("immediate_respawn"))  // show death screen
+        .boolean(rule("limited_crafting"));
+    write_spawn_info(login, p);
+    p.send(login.boolean(false)    // online mode
                .boolean(false));  // enforces secure chat
     commands_on_join(p);  // commands tree, op level, border, time, spawn, difficulty, weather, scoreboard
     p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));  // level chunks load start

@@ -3,6 +3,7 @@
 // BlockItem.place with BlockPlaceContext and getStateForPlacement per block class, setPlacedBy (second halves),
 // bone meal, hoe tilling, flint and steel, and buckets (BucketItem.use). Tick thread only.
 #include "falling.hpp"
+#include "cauldrons.hpp"
 
 namespace lvl {
 
@@ -85,7 +86,7 @@ inline int state_for_placement(int b, PlaceCtx& c) {
     int hdir = horizontal_direction(c.player);
     switch (kind(s)) {
         case K_DOOR: {
-            if (p.y >= MIN_Y + HEIGHT - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
+            if (p.y >= world.max_y() - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
             // getHinge
             int left = ccw(hdir), right = clockwise(hdir);
             Pos lp = p.rel(left), rp = p.rel(right);
@@ -107,7 +108,7 @@ inline int state_for_placement(int b, PlaceCtx& c) {
             return can_be_replaced_ctx(get(rel), c) ? withdir(s, "facing", hdir) : -1;
         }
         case K_DOUBLE_PLANT:
-            if (p.y >= MIN_Y + HEIGHT - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
+            if (p.y >= world.max_y() - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
             return with_waterlogged(s, p);
         case K_WALL_TORCH:
         case K_WALL_SIGN:
@@ -381,13 +382,16 @@ inline bool item_ends_with(int item, const char* suffix) {
 }
 
 // ServerPlayerGameMode.useItemOn
-inline bool use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
+inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, float cx, float cy, float cz) {
     Pos hit{x, y, z};
     ItemStack& slot = pl.inv[hand == 1 ? 40u : size_t(pl.selected)];
     bool hands = !pl.inv[size_t(pl.selected)].empty() || !pl.inv[40].empty();
     bool suppress = pl.g.sneaking && hands;
     int s = get(hit);
-    if (!suppress && hand == 0 && use_without_item(pl, hit, s)) return true;
+    if (!suppress) {
+        if (int result = use_cauldron_bucket(pl, hit, s, slot)) return result;
+        if (hand == 0 && use_without_item(pl, hit, s)) return 1;
+    }
     if (slot.empty() || pl.gamemode == 2) return false;  // ponytail: adventure can_place_on not checked
     int item = slot.item;
     if (item_name_is(item, "bone_meal")) {

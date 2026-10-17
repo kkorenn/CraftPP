@@ -89,6 +89,7 @@ static void pre_tick() {
     }
 }
 static void post_tick() {
+    if (cur_level != &worlds[DIM_OVERWORLD]) return;  // ponytail: nether/end mob spawning not wired yet
     tick_fresh_chunks();
     tick_natural_spawning();
     static bool dbg = getenv("CRAFTPP_MOBDEBUG"), dbg_verbose = dbg && std::string(getenv("CRAFTPP_MOBDEBUG")) == "2";
@@ -246,6 +247,7 @@ std::string entity_name_string(const Entity* e) {  // getScoreboardName for non-
     return e->has_custom_name() ? e->custom_name : uuid_dashed(e->uuid_hi, e->uuid_lo);
 }
 Vec3 entity_position(const Entity* e) { return e->pos; }
+World* entity_level(const Entity* e) { return e->level(); }
 void entity_rotation(const Entity* e, float& yaw, float& pitch) { yaw = e->yaw, pitch = e->pitch; }
 double entity_eye_height(const Entity* e) { return e->eye_height; }
 void entity_kill(Entity* e) { e->kill(); }
@@ -318,6 +320,12 @@ void player_knockback_from(Player& p, const DamageSource& s) {
     if (PlayerEntity* pe = player_entity(p)) pe->deal_default_knockback(s);
 }
 void mobs_save_all() { save_all_entities(); }
+void player_entity_hidden(Player& p) {
+    PlayerEntity* pe = player_entity(p);
+    if (!pe) return;
+    std::vector<Player*> w = pe->trk.watchers;
+    for (Player* q : w) track_remove(*pe, *q);
+}
 void player_entity_respawned(Player& p) {
     PlayerEntity* pe = player_entity(p);
     if (!pe) return;
@@ -329,6 +337,7 @@ void player_entity_respawned(Player& p) {
 }
 
 void mobs_init() {
+    level_switch_hooks.push_back(ent_detail::switch_level);
     if (!load_mob_data()) _exit(1);
     register_core_types();
     for (auto f : mob_registrations()) f();
@@ -352,12 +361,12 @@ void mobs_init() {
     // so far (spawn area, never saved) and, through the wrapped generator, every later one. Runs before the accept
     // loop starts, so no worker is generating while the generator is replaced.
     {
-        std::lock_guard lock(world.m);
-        for (auto& [k, c] : world.chunks)
+        std::lock_guard lock(worlds[DIM_OVERWORLD].m);
+        for (auto& [k, c] : worlds[DIM_OVERWORLD].chunks)
             if (!c->on_disk) fresh_chunks.emplace_back(k.first, k.second);
     }
-    auto gen = world.generator;
-    world.generator = [gen](Chunk& c) {
+    auto gen = worlds[DIM_OVERWORLD].generator;
+    worlds[DIM_OVERWORLD].generator = [gen](Chunk& c) {
         gen(c);
         std::lock_guard lock(fresh_chunks_mtx);
         fresh_chunks.emplace_back(c.cx, c.cz);

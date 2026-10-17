@@ -4,6 +4,7 @@
 // hurt/heal (survival.hpp), run_on_tick/on_tick/on_player_* (tick.hpp).
 #include "survival.hpp"
 #include "../level/glue.hpp"
+#include "portal.hpp"
 #include "netplay.hpp"
 #include "../plugins/plugins.hpp"
 #include "../console.hpp"
@@ -49,6 +50,8 @@ inline void start_game() {
     game_init();
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
+    dimensions_init();  // after the game handlers: wraps client_command
+    portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)
     boss::init();  // after the game handlers: it wraps some of them
     plugins::start();  // Bukkit plugins (no-op without plugins/*.jar): wraps the handlers above, hooks the tick
