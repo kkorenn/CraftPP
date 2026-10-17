@@ -236,7 +236,7 @@ public final class ServerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     }
 
     public void setMotd(String motd) {
-        Main.rpc.api("server.setMotd", "text", motd);
+        Main.rpc.api("server.setMotd", "text", java.util.Objects.requireNonNull(motd, "motd"));
     }
 
     public String getShutdownMessage() {
@@ -554,7 +554,7 @@ public final class ServerImpl implements ProxyBase.Backing, ProxyBase.HandleProv
     }
 
     public void setDefaultGameMode(GameMode mode) {
-        Main.rpc.api("server.setDefaultGameMode", "mode", mode.getValue());
+        Main.rpc.api("server.setDefaultGameMode", "mode", java.util.Objects.requireNonNull(mode, "mode").getValue());
     }
 
     public int getIdleTimeout() {

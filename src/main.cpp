@@ -10,12 +10,17 @@
 #include <iterator>
 
 static std::string status_json(int protocol) {
+    std::string motd;
+    {
+        std::lock_guard lock(cmd_mtx);
+        motd = props["motd"];
+    }
     // Echo a matching protocol so the list shows the MOTD; mismatched clients see the required version.
     return "{\"version\":{\"name\":\"CraftPP " + std::string(GAME_VERSION) + "\",\"protocol\":" +
            std::to_string(protocol == PROTOCOL_VERSION ? protocol : PROTOCOL_VERSION) +
            "},\"players\":{\"max\":" + std::to_string(std::stoi(props["max-players"])) +
            ",\"online\":" + std::to_string(snapshot().size()) +
-           "},\"description\":{\"text\":\"" + json_escape(props["motd"]) + "\"}}";
+           "},\"description\":{\"text\":\"" + json_escape(motd) + "\"}}";
 }
 
 // "/ip:port" like Java's InetSocketAddress (or vanilla's placeholder when log-ips=false).

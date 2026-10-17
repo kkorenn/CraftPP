@@ -168,6 +168,26 @@ def main():
         assert chat_with(a, "worldapi ok") == "worldapi ok"
         print("World clock (64-bit, negative, forward rollover), game age, difficulty + spawn APIs ok")
 
+        a.send(PLAY_SB["chat_command"], string("crafttest borderapi"))
+        def final_border(q):
+            border = Buf(q.d[q.i:])
+            return struct.unpack(">dddd", border.take(32)) == (100.0, -50.0, 240.0, 260.0)
+        border = wait(a, PLAY_CB["initialize_border"], final_border)
+        border.take(32)
+        assert border.varint() == 20  # one second -> twenty 26.3 simulation ticks
+        assert border.varint() == 29999984 and border.varint() == 9 and border.varint() == 37
+        assert chat_with(a, "borderapi ok") == "borderapi ok"
+        status_output = subprocess.check_output([sys.executable, os.path.join(ROOT, "test/ping.py"), "127.0.0.1", str(PORT)], text=True)
+        status = json.loads(status_output.removeprefix("OK "))
+        assert status["description"]["text"] == "CraftPP plugin API test"
+        newcomer, _ = login("NewDefault", "127.0.0.1", PORT, view=2)
+        newcomer.send(PLAY_SB["chat_command"], string("crafttest lookup"))
+        assert "gm=ADVENTURE" in chat_with(newcomer, "crafttest ok"), "new player ignored plugin default mode"
+        newcomer.s.close()
+        a.send(PLAY_SB["chat_command"], string("crafttest lightapi"))
+        assert chat_with(a, "lightapi ok") == "lightapi ok"
+        print("WorldBorder settings, validation, packets, timed resize; MOTD ping/default login; live lighting ok")
+
         a.send(PLAY_SB["chat_command"], string("craftop"))
         assert chat_with(a, "craftop") == "craftop ok"
         b.send(PLAY_SB["chat_command"], string("craftop"))
@@ -270,7 +290,7 @@ def main():
             if "worldverify ok" in log(): break
             time.sleep(0.05)
         assert "worldverify ok" in log(), log()[-2000:]
-        print("plugin world clock, difficulty and spawn persistence ok")
+        print("plugin world clock, difficulty, spawn and border persistence ok")
     finally:
         stop(proc)
 

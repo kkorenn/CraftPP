@@ -552,6 +552,21 @@ std::string api(const std::string& m, const Json& a) {
         return s + "]";
     }
     if (m == "server.motd") return q(props["motd"]);
+    if (m == "server.setMotd") {
+        std::lock_guard lock(cmd_mtx);  // status pings read the MOTD from network threads
+        props["motd"] = text_arg(a, "text");
+        return "null";
+    }
+    if (m == "server.setDefaultGameMode") {
+        int mode = int(num_arg(a, "mode", -1));
+        if (mode < 0 || mode > 3) throw std::runtime_error("Invalid default game mode");
+        std::lock_guard lock(cmd_mtx);
+        static const char* names[] = {"survival", "creative", "adventure", "spectator"};
+        props["gamemode"] = names[mode];
+        if (prop_bool("force-gamemode", false))
+            for (auto& p : snapshot()) set_gamemode(*p, mode);
+        return "null";
+    }
     if (m == "server.broadcast") { broadcast_legacy(text_arg(a, "text")); return "null"; }
     if (m == "server.dispatch") {  // Bukkit.dispatchCommand for a non-plugin command
         std::string line = text_arg(a, "line");
@@ -740,9 +755,57 @@ std::string api(const std::string& m, const Json& a) {
     if (m == "world.spawn") return "{\"x\":" + std::to_string(world_spawn.x) + ",\"y\":" + std::to_string(world_spawn.y) +
                                    ",\"z\":" + std::to_string(world_spawn.z) + ",\"yaw\":" + std::to_string(spawn_yaw) + "}";
     if (m == "world.save") { world->save_dirty(true); return "null"; }
-    if (m == "world.lightAt") return "{\"sky\":15,\"block\":0}";  // matches what CraftPP sends: full sky light everywhere
-    if (m == "world.border")  // CraftPP sends no border packets, so clients use the vanilla default
-        return "{\"centerX\":0,\"centerZ\":0,\"size\":59999968,\"damageAmount\":0.2,\"damageBuffer\":5,\"warningDistance\":5,\"warningTime\":15}";
+    if (m == "world.lightAt") {
+        if (y < MIN_Y || y >= MIN_Y + HEIGHT) return "{\"sky\":15,\"block\":0}";
+        auto chunk = world.get_ptr(x >> 4, z >> 4);
+        light::ensure_lit(*cur_level, *chunk);
+        return "{\"sky\":" + std::to_string(light::level(true, x, y, z)) +
+               ",\"block\":" + std::to_string(light::level(false, x, y, z)) + "}";
+    }
+    if (m == "world.border")
+        return "{\"centerX\":" + num(border.cx) + ",\"centerZ\":" + num(border.cz) +
+               ",\"size\":" + num(border.size()) + ",\"damageAmount\":" + num(border.damage) +
+               ",\"damageBuffer\":" + num(border.buffer) + ",\"warningDistance\":" + std::to_string(border.warn_dist) +
+               ",\"warningTimeTicks\":" + std::to_string(border.warn_time) + "}";
+    if (m == "world.setBorder") {
+        Border next = border;  // validate the entire request before changing live state
+        auto number = [&](const char* name, double lo, double hi, double& target) {
+            if (!a.has(name)) return;
+            double value = num_arg(a, name);
+            if (!std::isfinite(value) || value < lo || value > hi) throw std::runtime_error(std::string("Invalid border ") + name);
+            target = value;
+        };
+        number("centerX", -29999984, 29999984, next.cx);
+        number("centerZ", -29999984, 29999984, next.cz);
+        number("damageAmount", 0, std::numeric_limits<double>::max(), next.damage);
+        number("damageBuffer", 0, std::numeric_limits<double>::max(), next.buffer);
+        auto integer = [&](const char* name, int& target) {
+            if (!a.has(name)) return;
+            double value = num_arg(a, name);
+            if (!std::isfinite(value) || value < 0 || value > INT32_MAX || std::floor(value) != value)
+                throw std::runtime_error(std::string("Invalid border ") + name);
+            target = int(value);
+        };
+        integer("warningDistance", next.warn_dist);
+        integer("warningTimeTicks", next.warn_time);
+        if (a.has("size")) {
+            double size = next.to;
+            number("size", 1, 59999968, size);
+            int64_t ticks = 0;
+            if (a.has("ticks")) {
+                const auto& text = a["ticks"].asString();
+                size_t end = 0;
+                ticks = std::stoll(text, &end);
+                if (end != text.size() || ticks < 0) throw std::runtime_error("Invalid border duration");
+            }
+            next.from = ticks ? border.size() : size;
+            next.to = size;
+            next.lerp_total = next.lerp_left = ticks;
+        }
+        border = next;
+        broadcast(border_init_packet());
+        return "null";
+    }
     if (m == "world.gameRules") return "[]";
     if (m == "world.gameRule") return "null";
     if (m == "entity.list") return "[]";  // CraftPP has no non-player entities yet
