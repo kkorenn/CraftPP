@@ -63,6 +63,12 @@ try:
                     if i == 16 and (not phases or phases[-1] != v): phases.append(v)
             elif pid == PLAY_CB["block_update"]:
                 p = block_pos(b.i64()); s = b.varint(); blocks_seen[p] = s; set_block(c, *p, s)
+            elif pid == PLAY_CB["section_blocks_update"]:  # the level batches a tick's changes per section
+                v = b.i64(); sx, sy, sz = v >> 42, sext(v, 20), sext(v >> 20, 22)
+                for _ in range(b.varint()):
+                    e = b.varint()
+                    p = (sx * 16 + (e >> 8 & 15), sy * 16 + (e & 15), sz * 16 + (e >> 4 & 15))
+                    blocks_seen[p] = e >> 12; set_block(c, *p, e >> 12)
             elif pid == PLAY_CB["level_chunk_with_light"]:
                 cx, cz, secs = parse_chunk(b, True)[:3]; c.chunks[cx, cz] = secs
             elif pid == PLAY_CB["player_position"]:
@@ -100,7 +106,10 @@ try:
     gz = math.floor(96 * math.sin(2 * (-math.pi + math.pi / 20 * LAST_GATEWAY)))
     pump(lambda: dragon not in types and 1 in bar and blocks_seen.get((gx, 75, gz)) == BLK["end_gateway"]
          and blocks_seen.get((0, 64, 0)) == BLK["dragon_egg"], 10)
-    portal = [p for p, s in blocks_seen.items() if s == BLK["end_portal"]]
+    portals = lambda: [(x, y, z) for x in range(-3, 4) for z in range(-3, 4) for y in range(56, 66) if block_at(c, x, y, z) == BLK["end_portal"]]
+    try: pump(lambda: len(portals()) == 20, 10)  # big edits reach the client as section updates or chunk resends
+    except AssertionError: pass
+    portal = portals()
     assert len(portal) == 20 and {p[1] for p in portal} == {60}, portal
     assert block_at(c, 0, 63, 0) == BLK["bedrock"] and block_at(c, 3, 60, 0) == BLK["bedrock"]
     print(f"kill ok: exit portal (20 blocks at y 60), egg at 0 64 0, gateway at {gx} 75 {gz}")
