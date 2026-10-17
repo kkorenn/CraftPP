@@ -504,6 +504,8 @@ size_t Pipeline::evict(const std::function<bool(int, int)>& keep, bool all) {
     if (persist && !p->taken && p->chunk && p->get_status() >= Status::TERRAIN) save(*p);
   }
   if (on_evict) on_evict(keep);
+  static const bool log = getenv("CRAFTPP_EVICT_LOG");
+  if (log) fprintf(stderr, "evict: %zu proto chunks kept, %zu dropped\n", loaded(), dropped);
   return dropped;
 }
 

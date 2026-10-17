@@ -573,6 +573,8 @@ struct World {
         for (auto& c : idle)
             if (cache_generated && !c->on_disk) save_chunk(dir, *c), c->saved_at = now;
         if (on_flush) on_flush(all);
+        static const bool log = getenv("CRAFTPP_EVICT_LOG");
+        if (log) fprintf(stderr, "evict: %s %zu chunks loaded, %zu idle candidates, %zu viewed\n", id.c_str(), loaded(), idle.size(), viewers.size());
         storage::flush();
         {
             std::lock_guard lock(m);
