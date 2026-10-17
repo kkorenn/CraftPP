@@ -115,7 +115,7 @@ inline int inventory_add(Player& p, ItemStack& s) {
         for (int i = 0; i < 36 && !have; i++) have = p.inv[size_t(i)].same(s);
         if (!have)
             for (int i = 0; i < 36; i++)
-                if (p.inv[size_t(i)].empty()) { p.inv[size_t(i)] = {s.item, s.count, s.damage}; break; }
+                if (p.inv[size_t(i)].empty()) { p.inv[size_t(i)] = s; break; }
         s.count = 0;
         return start;
     }
@@ -133,7 +133,7 @@ inline int inventory_add(Player& p, ItemStack& s) {
             for (int i = 0; i < 36 && slot < 0; i++) if (p.inv[size_t(i)].empty()) slot = i;
         if (slot < 0) break;
         auto& t = p.inv[size_t(slot)];
-        if (t.empty()) t = {s.item, 0, s.damage};
+        if (t.empty()) t = s.copy(0);
         int n = std::min(s.count, max_stack(s) - t.count);
         t.count += n;
         s.count -= n;
@@ -176,16 +176,49 @@ inline int clear_inventory(Player& p, int item = -1, int max = -1) {
 
 // ---------- menus ----------
 // Slot layouts: InventoryMenu: 0 result, 1-4 grid, 5-8 armor (head..feet = inv 39..36), 9-35 main, 36-44 hotbar,
-// 45 offhand. CraftingMenu: 0 result, 1-9 grid, 10-36 main, 37-45 hotbar.
-enum SlotKind : uint8_t { S_RESULT, S_GRID, S_INV, S_ARMOR };
+// 45 offhand. CraftingMenu: 0 result, 1-9 grid, 10-36 main, 37-45 hotbar. Other menus (p.g.menu): the
+// container's slots, then (has_inventory) 27 main + 9 hotbar.
+//
+// Menu = an AbstractContainerMenu subclass (chest, furnace, anvil, ...; src/containers/). Slot behaviour is
+// virtual per container slot index; the click logic below (all ClickTypes) is shared.
+struct Menu {
+    int type = 0;  // minecraft:menu registry id
+    virtual ~Menu() = default;
+    virtual int size() const = 0;                                    // container slots
+    virtual bool has_inventory() const { return true; }              // player slots follow (not the lectern)
+    virtual ItemStack& at(int i) = 0;
+    virtual bool may_place(int, const ItemStack&) { return true; }   // Slot.mayPlace
+    virtual int slot_limit(int, const ItemStack& s) { return std::min(99, max_stack(s)); }  // Slot.getMaxStackSize(stack)
+    virtual bool may_pickup(Player&, int) { return true; }           // Slot.mayPickup
+    virtual bool pick_all_ok(int) { return true; }                   // canTakeItemForPickAll
+    virtual void on_take(Player&, int, const ItemStack&) {}          // Slot.onTake (stack already removed)
+    virtual void changed(Player&, int) {}                            // Slot.setChanged -> container/slotsChanged
+    virtual ItemStack quick_move(Player&, int) = 0;                  // quickMoveStack (menu slot index)
+    virtual bool still_valid(Player&) { return true; }
+    virtual void removed(Player&) {}                                 // AbstractContainerMenu.removed, cursor already returned
+    virtual bool button(Player&, int) { return false; }              // clickMenuButton
+    virtual int data_count() const { return 0; }                     // ContainerData slots (container_set_data)
+    virtual int data(int) { return 0; }
+};
+
+enum SlotKind : uint8_t { S_RESULT, S_GRID, S_INV, S_ARMOR, S_MENU };
 struct SlotRef {
     ItemStack* s = nullptr;
     SlotKind kind = S_INV;
-    int inv = -1;  // inventory index for S_INV/S_ARMOR
+    int inv = -1;  // inventory index for S_INV/S_ARMOR, container slot for S_MENU
+    Menu* m = nullptr;
 };
-inline int menu_size(const Player& p) { return p.g.container ? 46 : 46; }
+inline int menu_size(const Player& p) {
+    if (Menu* m = p.g.menu.get()) return m->size() + (m->has_inventory() ? 36 : 0);
+    return 46;
+}
 inline SlotRef menu_slot(Player& p, int i) {
     auto inv = [&](int k, SlotKind kind = S_INV) { return SlotRef{&p.inv[size_t(k)], kind, k}; };
+    if (Menu* m = p.g.menu.get()) {
+        if (i < m->size()) return {&m->at(i), S_MENU, i, m};
+        i -= m->size();
+        return i < 27 ? inv(i + 9) : inv(i - 27);
+    }
     if (i == 0) return {&p.g.result, S_RESULT};
     if (p.g.container == 0) {
         if (i <= 4) return {&p.g.craft2[size_t(i - 1)], S_GRID};
@@ -198,17 +231,21 @@ inline SlotRef menu_slot(Player& p, int i) {
     if (i <= 36) return inv(i - 1);
     return inv(i - 37);
 }
-inline int grid_width(const Player& p) { return p.g.container ? 3 : 2; }
-inline ItemStack* grid(Player& p) { return p.g.container ? p.g.craft3.data() : p.g.craft2.data(); }
+inline bool table_open(const Player& p) { return p.g.container && !p.g.menu; }  // crafting table
+inline int grid_width(const Player& p) { return table_open(p) ? 3 : 2; }
+inline ItemStack* grid(Player& p) { return table_open(p) ? p.g.craft3.data() : p.g.craft2.data(); }
 
 inline bool may_place(const SlotRef& r, const ItemStack& s) {
+    if (r.kind == S_MENU) return r.m->may_place(r.inv, s);
     if (r.kind == S_RESULT) return false;
     if (r.kind == S_ARMOR) return s.item >= 0 && item_info[size_t(s.item)].equip == r.inv;
     return true;
 }
 inline int slot_max(const SlotRef& r, const ItemStack& s) {
+    if (r.kind == S_MENU) return r.m->slot_limit(r.inv, s);
     return r.kind == S_ARMOR ? 1 : std::min(99, max_stack(s));
 }
+inline bool may_pickup(Player& p, const SlotRef& r) { return r.kind != S_MENU || r.m->may_pickup(p, r.inv); }
 
 inline void update_result(Player& p) {
     const Recipe* r = find_recipe(grid(p), grid_width(p));
@@ -238,7 +275,7 @@ inline void safe_insert(const SlotRef& r, ItemStack& in, int amount) {
     ItemStack& t = *r.s;
     int n = std::min({amount, in.count, slot_max(r, in) - (t.empty() ? 0 : t.count)});
     if (n <= 0) return;
-    if (t.empty()) t = {in.item, n, in.damage};
+    if (t.empty()) t = in.copy(n);
     else if (t.same(in)) t.count += n;
     else return;
     in.count -= n;
@@ -255,10 +292,20 @@ inline ItemStack try_remove(Player& p, const SlotRef& r, int amount, int max_amo
         take_result(p);
         return got;
     }
+    if (r.kind == S_MENU) {
+        if (!r.m->may_pickup(p, r.inv)) return {};
+        if (!r.m->may_place(r.inv, t) && max_amount < t.count) return {};  // !allowModification: all or nothing
+    }
     int n = std::min({amount, max_amount, t.count});
-    ItemStack got{t.item, n, t.damage};
+    ItemStack got = t.copy(n);
     if ((t.count -= n) <= 0) t = {};
+    if (r.kind == S_MENU) r.m->on_take(p, r.inv, got), r.m->changed(p, r.inv);
     return got;
+}
+// Slot.setChanged after a click touched the slot.
+inline void slot_changed(Player& p, const SlotRef& r) {
+    if (r.kind == S_GRID) update_result(p);
+    else if (r.kind == S_MENU) r.m->changed(p, r.inv);
 }
 
 // AbstractContainerMenu.moveItemStackTo over menu slots [a, b).
@@ -270,17 +317,18 @@ inline bool move_to(Player& p, ItemStack& s, int a, int b, bool backwards) {
             ItemStack& t = *r.s;
             if (t.empty() || !t.same(s)) continue;
             int mx = slot_max(r, t), total = t.count + s.count;
-            if (total <= mx) t.count = total, s = {}, changed = true;
-            else if (t.count < mx) s.count -= mx - t.count, t.count = mx, changed = true;
+            if (total <= mx) t.count = total, s = {}, changed = true, slot_changed(p, r);
+            else if (t.count < mx) s.count -= mx - t.count, t.count = mx, changed = true, slot_changed(p, r);
         }
     if (!s.empty())
         for (int i = backwards ? b - 1 : a; backwards ? i >= a : i < b; i += backwards ? -1 : 1) {
             SlotRef r = menu_slot(p, i);
             if (r.s->empty() && may_place(r, s)) {
                 int n = std::min(s.count, slot_max(r, s));
-                *r.s = {s.item, n, s.damage};
+                *r.s = s.copy(n);
                 if ((s.count -= n) <= 0) s = {};
                 changed = true;
+                slot_changed(p, r);
                 break;
             }
         }
@@ -289,6 +337,7 @@ inline bool move_to(Player& p, ItemStack& s, int a, int b, bool backwards) {
 
 // InventoryMenu / CraftingMenu.quickMoveStack. Returns the stack before moving (empty = nothing moved).
 inline ItemStack quick_move(Player& p, int i) {
+    if (p.g.menu) return p.g.menu->quick_move(p, i);
     SlotRef r = menu_slot(p, i);
     if (r.s->empty()) return {};
     ItemStack stack = *r.s, clicked = stack;
@@ -343,12 +392,13 @@ inline void do_click(Player& p, int slot, int button, int type) {
             if (!valid) return;
             SlotRef r = menu_slot(p, slot);
             bool fits = r.s->empty() || (r.s->same(carried) && r.s->count <= max_stack(carried));
-            if (fits && may_place(r, carried) && (g.qc_type == 2 || carried.count > std::popcount(g.qc_slots)))
-                g.qc_slots |= 1ull << slot;
+            if (fits && may_place(r, carried) && (g.qc_type == 2 || carried.count > int(g.qc_slots.count())))
+                g.qc_slots.set(size_t(slot));
         } else if (g.qc_status == 2) {
-            int cnt = std::popcount(g.qc_slots);
+            int cnt = int(g.qc_slots.count());
             if (cnt == 1) {
-                int s = std::countr_zero(g.qc_slots);
+                int s = 0;
+                while (!g.qc_slots[size_t(s)]) s++;
                 int t = g.qc_type;
                 reset();
                 do_click(p, s, t, 0);
@@ -358,7 +408,7 @@ inline void do_click(Player& p, int slot, int button, int type) {
                 ItemStack source = carried;
                 int remaining = carried.count;
                 for (int s = 0; s < n; s++) {
-                    if (!(g.qc_slots >> s & 1)) continue;
+                    if (!g.qc_slots[size_t(s)]) continue;
                     SlotRef r = menu_slot(p, s);
                     bool fits = r.s->empty() || (r.s->same(carried) && r.s->count <= max_stack(carried));
                     if (!fits || !may_place(r, carried) || (g.qc_type != 2 && carried.count < cnt)) continue;
@@ -367,7 +417,8 @@ inline void do_click(Player& p, int slot, int button, int type) {
                     int place = g.qc_type == 0 ? source.count / cnt : g.qc_type == 1 ? 1 : max_stack(source);
                     int nc = std::min(place + carry, mx);
                     remaining -= nc - carry;
-                    *r.s = {source.item, nc, source.damage};
+                    *r.s = source.copy(nc);
+                    slot_changed(p, r);
                 }
                 source.count = remaining;
                 carried = source.count > 0 ? source : ItemStack{};
@@ -384,11 +435,12 @@ inline void do_click(Player& p, int slot, int button, int type) {
         if (slot == -999) {
             if (carried.empty()) return;
             if (primary) { player_drop(p, carried, true); carried = {}; }
-            else { player_drop(p, {carried.item, 1, carried.damage}, true); if (--carried.count <= 0) carried = {}; }
+            else { player_drop(p, carried.copy(1), true); if (--carried.count <= 0) carried = {}; }
             return;
         }
         if (!valid) return;
         if (type == 1) {
+            if (!may_pickup(p, menu_slot(p, slot))) return;
             ItemStack c = quick_move(p, slot);
             while (!c.empty() && menu_slot(p, slot).s->item == c.item) c = quick_move(p, slot);
             return;
@@ -397,6 +449,7 @@ inline void do_click(Player& p, int slot, int button, int type) {
         ItemStack& clicked = *r.s;
         if (clicked.empty()) {
             if (!carried.empty()) safe_insert(r, carried, primary ? carried.count : 1);
+        } else if (!may_pickup(p, r)) {
         } else if (carried.empty()) {
             carried = try_remove(p, r, primary ? clicked.count : (clicked.count + 1) / 2, INT32_MAX);
         } else if (may_place(r, carried)) {
@@ -406,7 +459,7 @@ inline void do_click(Player& p, int slot, int button, int type) {
             ItemStack got = try_remove(p, r, clicked.count, max_stack(carried) - carried.count);
             carried.count += got.count;
         }
-        if (r.kind == S_GRID) update_result(p);
+        slot_changed(p, r);
         return;
     }
     if (type == 2 && valid && ((button >= 0 && button < 9) || button == 40)) {
@@ -414,30 +467,31 @@ inline void do_click(Player& p, int slot, int button, int type) {
         SlotRef t = menu_slot(p, slot);
         if (src.empty() && t.s->empty()) return;
         if (src.empty()) {
-            src = try_remove(p, t, t.s->count, INT32_MAX);
+            if (may_pickup(p, t)) src = try_remove(p, t, t.s->count, INT32_MAX);
         } else if (t.s->empty()) {
             if (may_place(t, src)) {
                 int mx = slot_max(t, src);
-                if (src.count > mx) *t.s = {src.item, mx, src.damage}, src.count -= mx;
+                if (src.count > mx) *t.s = src.copy(mx), src.count -= mx;
                 else *t.s = src, src = {};
             }
-        } else if (t.kind != S_RESULT && may_place(t, src)) {
+        } else if (t.kind != S_RESULT && may_pickup(p, t) && may_place(t, src)) {
             int mx = slot_max(t, src);
             if (src.count > mx) {
                 ItemStack old = *t.s;
-                *t.s = {src.item, mx, src.damage};
+                *t.s = src.copy(mx);
                 src.count -= mx;
                 if (inventory_add(p, old), old.count > 0) player_drop(p, old, true);
             } else {
                 std::swap(src, *t.s);
+                if (t.kind == S_MENU) t.m->on_take(p, t.inv, src);
             }
         }
-        if (t.kind == S_GRID) update_result(p);
+        slot_changed(p, t);
         return;
     }
     if (type == 3 && valid && p.gamemode == 1 && carried.empty()) {
         ItemStack s = *menu_slot(p, slot).s;
-        if (!s.empty()) carried = {s.item, max_stack(s), s.damage};
+        if (!s.empty()) carried = s.copy(max_stack(s));
         return;
     }
     if (type == 4 && valid && carried.empty() && p.gamemode != 3) {
@@ -450,21 +504,22 @@ inline void do_click(Player& p, int slot, int button, int type) {
             player_drop(p, s, true);
             if (r.s->item != item) break;
         }
-        if (r.kind == S_GRID) update_result(p);
+        slot_changed(p, r);
         return;
     }
     if (type == 6 && valid && !carried.empty()) {
         SlotRef r0 = menu_slot(p, slot);
-        if (!r0.s->empty()) return;
+        if (!r0.s->empty() && may_pickup(p, r0)) return;
         int start = button == 0 ? 0 : n - 1, step = button == 0 ? 1 : -1;
         for (int pass = 0; pass < 2; pass++)
             for (int i = start; i >= 0 && i < n && carried.count < max_stack(carried); i += step) {
                 SlotRef r = menu_slot(p, i);
-                if (r.s->empty() || !r.s->same(carried) || r.kind == S_RESULT) continue;  // canTakeItemForPickAll
+                if (r.s->empty() || !r.s->same(carried) || r.kind == S_RESULT || !may_pickup(p, r)) continue;
+                if (r.kind == S_MENU && !r.m->pick_all_ok(r.inv)) continue;  // canTakeItemForPickAll
                 if (pass == 0 && r.s->count == max_stack(*r.s)) continue;
                 ItemStack got = try_remove(p, r, r.s->count, max_stack(carried) - carried.count);
                 carried.count += got.count;
-                if (r.kind == S_GRID) update_result(p);
+                slot_changed(p, r);
             }
     }
 }
@@ -483,6 +538,7 @@ inline void send_menu_content(Player& p) {
     p.g.remote_carried = p.g.carried;
     p.g.remote_valid = true;
     p.send(w);
+    p.g.remote_data.fill(INT32_MIN);  // sendAllDataToRemote: data slots too
 }
 // broadcastChanges: send every slot that differs from what the client was last told.
 inline void sync_menu(Player& p) {
@@ -503,6 +559,13 @@ inline void sync_menu(Player& p) {
         p.send(w);
         p.g.remote_carried = p.g.carried;
     }
+    if (Menu* m = p.g.menu.get())
+        for (int i = 0; i < std::min(m->data_count(), int(p.g.remote_data.size())); i++) {
+            int v = int16_t(m->data(i));  // sent as a short
+            if (v == p.g.remote_data[size_t(i)]) continue;
+            p.send(Writer().varint(play_cb::container_set_data).varint(p.g.container).i16(int16_t(i)).i16(int16_t(v)));
+            p.g.remote_data[size_t(i)] = v;
+        }
 }
 
 // Closing a menu returns the grid and cursor to the inventory (AbstractContainerMenu.removed / clearContainer).
@@ -512,8 +575,8 @@ inline void return_grid(Player& p) {
         if (inventory_add(p, s), s.count > 0) player_drop(p, s, false);
         s = {};
     };
-    if (p.g.container) for (auto& s : p.g.craft3) give_back(s);
-    else for (auto& s : p.g.craft2) give_back(s);
+    if (table_open(p)) for (auto& s : p.g.craft3) give_back(s);
+    else if (!p.g.menu) for (auto& s : p.g.craft2) give_back(s);
     give_back(p.g.carried);
     update_result(p);
 }
@@ -521,15 +584,30 @@ inline void close_container(Player& p, bool notify_client) {
     return_grid(p);
     if (p.g.container == 0) return;
     if (notify_client) p.send(Writer().varint(play_cb::container_close).varint(p.g.container));
+    if (auto m = std::move(p.g.menu)) m->removed(p);
     p.g.container = 0;
     update_result(p);
     p.g.remote_valid = false;
 }
-inline void open_crafting_table(Player& p, int x, int y, int z) {
+inline void next_container_id(Player& p) {
     if (p.g.container) close_container(p, true);
     else return_grid(p);
     p.g.next_container = p.g.next_container % 100 + 1;
     p.g.container = p.g.next_container;
+}
+// Player.openMenu: closes the current menu, sends open_screen(type, title) and the full contents next sync.
+// `title` is a text component in network NBT.
+inline void open_menu(Player& p, std::shared_ptr<Menu> m, const std::vector<uint8_t>& title) {
+    next_container_id(p);
+    p.g.menu = std::move(m);
+    Writer w;
+    w.varint(play_cb::open_screen).varint(p.g.container).varint(p.g.menu->type);
+    w.bytes(title);
+    p.send(w);
+    p.g.remote_valid = false;
+}
+inline void open_crafting_table(Player& p, int x, int y, int z) {
+    next_container_id(p);
     p.g.table_x = x, p.g.table_y = y, p.g.table_z = z;
     Writer w;
     w.varint(play_cb::open_screen).varint(p.g.container).varint(menu_ids["crafting"]);

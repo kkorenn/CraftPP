@@ -31,6 +31,7 @@ inline void resend_changed_chunks(Player& p) {
 inline void start() {
     init();
     on_tick(tick_all_levels);
+    on_player_tick(plates_player_tick);
     on_tick_end(broadcast_all_changes);
     on_player_join(resend_changed_chunks);
     level_set_block = [](int x, int y, int z, int state, int flags) { return set(Pos{x, y, z}, state, flags); };

@@ -369,11 +369,12 @@ struct Rail {
         }
     }
 };
-// BaseRailBlock.onPlace -> updateState -> updateDir(first = true). ponytail: no redstone, hasNeighborSignal is false.
+inline bool has_neighbor_signal(const Pos& p);  // redstone.hpp
+// BaseRailBlock.onPlace -> updateState -> updateDir(first = true).
 inline void rail_on_place(int state, const Pos& p, int old, bool piston) {
     if (block(old) == block(state)) return;
     Rail r(p, state);
-    r.place(false, true, std::string(get(state, "shape")));
+    r.place(has_neighbor_signal(p), true, std::string(get(state, "shape")));
     if (r.straight) neighbor_changed_full(r.state, p, block(state), piston);
 }
 

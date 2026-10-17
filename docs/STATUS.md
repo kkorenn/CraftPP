@@ -31,25 +31,31 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 - Dimensions: recovered Nether/End pipelines and portal travel, per-world scheduled/random ticks and structure managers; repaired Nether-fossil column bounds, world-specific lava rules and cross-world caches. Sampled Nether/End surface and Nether structure stages match vanilla; see docs/coordinator-integration.md for scope and remaining gaps.
 - Storage (from codex/coordinator-storage): vanilla Anvil world format — region files, chunk NBT, level.dat + SavedData, players/data NBT, entities in Anvil, proto-chunk eviction + persistence, light column unloading.
+- CI/release: `.github/workflows/ci.yml` (build + full tests on Linux x86_64, compile on Linux arm64 + macOS, every push) and `release.yml` (publishing a GitHub release attaches Linux x86_64/aarch64 Debian-bookworm builds with static libstdc++ and a macOS arm64 build, each `craftpp` + `data/`). Vanilla datapack + reports are checked in (`data/vanilla`, `data/reports`), so a clone builds, tests and runs without vanilla/.
+- Containers (src/containers/): block entity registry, generic Menu, chests (double/trapped/copper), barrel, ender chest, shulker box, dispenser/dropper menus, hoppers, furnace/smoker/blast furnace, stonecutter, smithing, grindstone, anvil, loom, enchanting table (exact seed/costs), brewing stand, beacon; item components and EnderItems as vanilla NBT.
+- Redstone (src/level/redstone.hpp): wire (DefaultRedstoneWireEvaluator, HashSet order), torches with burnout, repeaters, comparators (incl. containers), observers, buttons/levers/plates, lamps, daylight detectors, pistons/sticky pistons (full resolver, block events), powered/activator rails, power-reactive doors/trapdoors/gates/note blocks/TNT/copper bulbs. ~0.3 ms/tick for a clock driving 100 wires.
+- Structures-2: template edge shape updates; fluid post-processing marks in placeBlock; stronghold 197→28 and mansion 487→56 mismatches (rest is tick timing); fortress, end city and bastion piece lists identical to vanilla.
+- Feature order: chunk decoration follows vanilla's task order (tickets, 3x3 x-major, ring by ring). Mismatches at or below vanilla's own run-to-run noise in 8 biome locations; with vanilla's exact recorded order, 83–598 per area remain (ticks, leaf distance). Open bug: one lush-caves clay pool (pale garden, chunk 9,-25).
+- Nether/End generation: delta, basalt columns, netherrack blobs, huge fungus, pillars, glowstone, end spikes/islands/chorus/platform/gateways. End matches vanilla exactly around spawn; Nether at vanilla noise level. Natural spawning in Nether/End with structure overrides (fortress) and per-dimension light rules.
 
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
+| storage | finishing Anvil deltas vs main (vanilla interop check, RSS, low-write autosave) |
 | roster-int | integrating mobs-roster (78 mobs, villagers, taming, horses) onto main + slime-cap test fix |
 | mobs-bosses | ender dragon, wither, warden |
 | effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
-| redstone | wire, torches, repeaters, comparators, observers, pistons, hoppers, droppers/dispensers, rails |
-| containers | block entities + menus; porting ender chest/item components to NBT player data, then merge |
-| feature-parity | Further full-stage comparisons across biomes; fossil/template features and tree-bin iteration |
 | dim-light | per-World light engine (nether no skylight, end), light_ensure stall, TSan re-check |
-| nether-end-gen | nether/end feature types, end gateways, nether/end natural spawning |
+| blocks-2 | signs, lectern/books, jukebox, decorated pot, chest loot tables, maps, dispenser behaviours, hopper/redstone, primed TNT, minecarts |
+| netsec | online-mode auth + encryption, signed chat, resource packs, favicon, query, RCON |
+| progression | advancements, recipe book, statistics |
 | dim-bughunt | end-portal segfault (ASan), portal destinations vs vanilla, pick-block reach, duplicate UUID kick, flaky tests |
 
 ## Left
 - Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
-- Advancements, recipe book, statistics, maps
+- Signs/lectern/jukebox/decorated pot block entities, chest loot tables, map data; dispenser behaviours, hopper↔redstone, pistons pushing entities, minecarts, tripwire, sculk sensors
+- Missing mobs used by Nether/End/structures: ghast, piglin, magma cube, enderman, hoglin, strider, blaze, wither skeleton, witch, cat, drowned, illagers, shulker (roster-int may cover some)
 - Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
-- Online-mode auth + encryption + compression, signed chat, resource packs, server-list favicon, query, RCON
 - Pi deployment guide (systemd), plugin API coverage
 
 ## Known issues

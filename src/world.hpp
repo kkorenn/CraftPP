@@ -150,13 +150,21 @@ struct ChunkLevelData {
 };
 
 // Block entity (chest, spawner, beehive, ...): chunk-local x, z, world y, block_entity_types:: id and its
-// network NBT (nameless compound incl. the 0x0a tag byte). Chunk::set drops the one at a replaced position.
+// saved NBT (saveCustomOnly: nameless compound incl. the 0x0a tag byte). The chunk packet sends
+// block_entity_update_tag(type, nbt) instead (most types send {}). Chunk::set drops the one at a position whose
+// block changes (same block, other state: kept). Live game state: src/containers/block_entity.hpp.
 struct BlockEntity {
     uint8_t x, z;
     int16_t y;
     int type;
     std::vector<uint8_t> nbt{0x0a, 0x00};
 };
+
+inline int state_block_index(int state) {  // block index (position in BLOCK_FIRST_STATE)
+    return int(std::upper_bound(std::begin(BLOCK_FIRST_STATE), std::end(BLOCK_FIRST_STATE), state) - std::begin(BLOCK_FIRST_STATE)) - 1;
+}
+// BlockEntity.getUpdateTag: set by src/containers (nullptr = send the saved NBT).
+inline void (*block_entity_update_tag)(const BlockEntity& e, Writer& w) = nullptr;
 
 struct Chunk {
     int cx = 0, cz = 0;
@@ -186,10 +194,11 @@ struct Chunk {
         return sections[(y - min_y) >> 4].blocks.get((((y - min_y) & 15) * 16 + z) * 16 + x);
     }
     void set(int x, int y, int z, uint16_t s) {
+        uint16_t old = block_entities.empty() ? s : get(x, y, z);
         sections[(y - min_y) >> 4].blocks.set((((y - min_y) & 15) * 16 + z) * 16 + x, s);
         body.reset();
         edits++;
-        if (!block_entities.empty())
+        if (!block_entities.empty() && state_block_index(old) != state_block_index(s))
             std::erase_if(block_entities, [&](const BlockEntity& e) { return e.x == x && e.y == y && e.z == z; });
     }
     // Biome cell: qx, qz 0..3, qy 0..height/4-1 (quart rows from min_y).
@@ -275,7 +284,8 @@ inline std::vector<uint8_t> chunk_packet(const Chunk& c, size_t reserve, const W
     w.varint(int32_t(c.block_entities.size() + portals.size()));
     for (auto& e : c.block_entities) {
         w.u8(uint8_t(e.x << 4 | e.z)).i16(e.y).varint(e.type);
-        w.bytes(e.nbt.data(), e.nbt.size());
+        if (block_entity_update_tag) block_entity_update_tag(e, w);
+        else w.bytes(e.nbt.data(), e.nbt.size());
     }
     for (auto [si, i] : portals) {
         uint16_t state = c.sections[size_t(si)].blocks.get(i);
@@ -395,6 +405,11 @@ struct ChunkPool {
 };
 
 inline void generate_flat(Chunk& c);
+struct World;
+// Called on a worker thread once a chunk is loaded or generated, before it is published (src/containers).
+inline void (*chunk_loaded_hook)(World* w, const ChunkPtr& c) = nullptr;
+// A block of `w` changed (World::set_block or the level tick writer; tick thread): src/containers.
+inline void (*block_changed_hook)(World* w, int x, int y, int z, int old_state, int new_state) = nullptr;
 
 inline std::string world_dir = "world";  // server.properties level-name
 
@@ -539,6 +554,7 @@ struct World {
     }
     // Shared by World::set_block and the level tick block writer.
     void note_block(int x, int y, int z, uint16_t old, uint16_t state) {
+        if (block_changed_hook && old != state) block_changed_hook(this, x, y, z, old, state);
         if (is_nether_portal(old) != is_nether_portal(state)) {
             std::lock_guard pl(m);
             if (is_nether_portal(state)) portals.insert({x, y, z});
@@ -744,6 +760,7 @@ inline void World::produce(int cx, int cz, std::promise<ChunkPtr>& job, bool enc
             for (auto& s : c->sections) s.blocks.compact(), s.biomes.compact();
         }
         if (!fullbright) light::produced(*this, *c, loaded, encode);
+        if (chunk_loaded_hook) chunk_loaded_hook(this, c);
         if (encode) chunk_frame(*c);
         {
             std::lock_guard lock(m);
