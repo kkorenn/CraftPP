@@ -4,8 +4,8 @@
 
 inline int biome_at_pos(int x, int y, int z) {
     Chunk* c = loaded_chunk(x >> 4, z >> 4);
-    if (!c || y < MIN_Y || y >= MIN_Y + HEIGHT) return 0;
-    int qy = (y - MIN_Y) >> 2;
+    if (!c || y < c->min_y || y >= c->min_y + c->height()) return 0;
+    int qy = (y - c->min_y) >> 2;
     return c->get_biome((x & 15) >> 2, qy, (z & 15) >> 2);
 }
 // Farm animal variants (registry order: cold 0, temperate 1, warm 2) chosen by the spawn biome tags.

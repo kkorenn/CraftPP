@@ -518,11 +518,16 @@ inline bool ignores_light(SpawnReason r) { return r == SpawnReason::TRIAL_SPAWNE
 inline bool check_mob_spawn_rules(int type, SpawnReason r, int x, int y, int z) {  // Mob.checkMobSpawnRules
     return is_spawner_reason(r) || valid_spawn_on(block_at(x, y - 1, z), type);
 }
-inline int monster_spawn_light_test() { return rand_between(0, 7); }  // dimension monster_spawn_light_level uniform(0, 7)
+// dimension_type monster_spawn_light_level: overworld uniform(0, 7), the_nether 7, the_end 15
+inline int monster_spawn_light_test() {
+    return cur_level == &worlds[DIM_NETHER] ? 7 : cur_level == &worlds[DIM_END] ? 15 : rand_between(0, 7);
+}
 inline bool is_dark_enough_to_spawn(int x, int y, int z) {  // Monster.isDarkEnoughToSpawn
     if (sky_light_at(x, y, z) > rand_int(32)) return false;
-    if (block_light_at(x, y, z) > 0) return false;  // monster_spawn_block_light_limit 0
-    int b = weather.thundering ? raw_brightness(x, y, z, 10) : max_local_raw_brightness(x, y, z);
+    // monster_spawn_block_light_limit: 15 (no limit) in the nether, 0 elsewhere
+    if (cur_level != &worlds[DIM_NETHER] && block_light_at(x, y, z) > 0) return false;
+    bool thunder = weather.thundering && cur_level == &worlds[DIM_OVERWORLD];  // ponytail: weather lives on the overworld only
+    int b = thunder ? raw_brightness(x, y, z, 10) : max_local_raw_brightness(x, y, z);
     return b <= monster_spawn_light_test();
 }
 inline bool check_monster_spawn_rules(int type, SpawnReason r, int x, int y, int z) {

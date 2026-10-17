@@ -89,7 +89,6 @@ static void pre_tick() {
     }
 }
 static void post_tick() {
-    if (cur_level != &worlds[DIM_OVERWORLD]) return;  // ponytail: nether/end mob spawning not wired yet
     tick_fresh_chunks();
     tick_natural_spawning();
     static bool dbg = getenv("CRAFTPP_MOBDEBUG"), dbg_verbose = dbg && std::string(getenv("CRAFTPP_MOBDEBUG")) == "2";
@@ -361,15 +360,18 @@ void mobs_init() {
     // Freshly generated chunks get their chunk-generation creature spawns on the tick thread: the ones generated
     // so far (spawn area, never saved) and, through the wrapped generator, every later one. Runs before the accept
     // loop starts, so no worker is generating while the generator is replaced.
-    {
-        std::lock_guard lock(worlds[DIM_OVERWORLD].m);
-        for (auto& [k, c] : worlds[DIM_OVERWORLD].chunks)
-            if (!c->on_disk) fresh_chunks.emplace_back(k.first, k.second);
+    for (int d = 0; d < DIM_COUNT; d++) {
+        World& w = worlds[d];
+        if (!w.generator) continue;
+        {
+            std::lock_guard lock(w.m);
+            for (auto& [k, c] : w.chunks)
+                if (!c->on_disk) fresh_chunks[size_t(d)].emplace_back(k.first, k.second);
+        }
+        w.generator = [gen = w.generator, d](Chunk& c) {
+            gen(c);
+            std::lock_guard lock(fresh_chunks_mtx);
+            fresh_chunks[size_t(d)].emplace_back(c.cx, c.cz);
+        };
     }
-    auto gen = worlds[DIM_OVERWORLD].generator;
-    worlds[DIM_OVERWORLD].generator = [gen](Chunk& c) {
-        gen(c);
-        std::lock_guard lock(fresh_chunks_mtx);
-        fresh_chunks.emplace_back(c.cx, c.cz);
-    };
 }

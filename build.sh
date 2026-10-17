@@ -7,6 +7,7 @@ cd "$(dirname "$0")"
 [ -f data/level.json ] || python3 tools/gen_level_data.py
 # Generators need the developer vanilla/ dir (README); a plain clone (CI, release) uses the checked-in output.
 [ ! -d vanilla/src/net ] || [ data/game.json -nt tools/gen_game_data.py ] || python3 tools/gen_game_data.py
+[ ! -d vanilla/src/net ] || [ data/containers.json -nt tools/gen_container_data.py ] || python3 tools/gen_container_data.py
 TEST=; SAN=; B=build
 for a in "$@"; do
   case $a in test) TEST=1;; asan) SAN=address; B=build-asan;; tsan) SAN=thread; B=build-tsan;; esac
@@ -48,7 +49,7 @@ if [ -n "$TEST" ]; then
   printf 'server-port=%s\nlevel-name=%s/test-world\nlevel-type=flat\ngamemode=creative\nview-distance=8\nwhite-list=false\nspawn-protection=0\n' "$PORT" $B > $B/test.properties
   echo "eula=true" > $B/eula.txt
   rm -f $B/banned-players.json $B/banned-ips.json $B/whitelist.json
-  printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}]\n' > $B/ops.json  # bot.py and survival.py run op commands
+  printf '[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Sam", "level": 4, "bypassesPlayerLimit": false}, {"uuid": "", "name": "Cora", "level": 4, "bypassesPlayerLimit": false}]\n' > $B/ops.json  # bot.py and survival.py run op commands
   # The console is a FIFO kept open on fd 3, so the tests type commands into it like an admin would.
   rm -f $B/console.fifo && mkfifo $B/console.fifo
   ./$B/craftpp $B/test.properties < $B/console.fifo > $LOG 2>&1 &
@@ -62,6 +63,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT
   python3 -u test/survival.py 127.0.0.1 $PORT
   python3 -u test/level_test.py 127.0.0.1 $PORT
+  python3 -u test/redstone_test.py 127.0.0.1 $PORT
   python3 -u test/placement_test.py 127.0.0.1 $PORT
   python3 -u test/cauldron_test.py 127.0.0.1 $PORT
   python3 -u test/parity_test.py 127.0.0.1 $PORT
@@ -70,6 +72,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/dimensions_test.py 127.0.0.1 $PORT
   python3 -u test/mobs_test.py 127.0.0.1 $PORT
   python3 -u test/effects_test.py 127.0.0.1 $PORT
+  python3 -u test/containers_test.py 127.0.0.1 $PORT
   grep -qE 'Alice\[/127\.0\.0\.1:[0-9]+\] logged in with entity id [0-9]+ at \(\['$B'/test-world\]' $LOG || fail "login line"
   grep -q 'Alice joined the game' $LOG || fail "join line"
   grep -q 'Alice lost connection: Disconnected' $LOG || fail "lost connection line"
@@ -103,6 +106,7 @@ if [ -n "$TEST" ]; then
   python3 -u test/persist.py 127.0.0.1 $PORT --after-restart
   python3 -u test/commands_test.py 127.0.0.1 $PORT --after-restart
   python3 -u test/mobs_test.py 127.0.0.1 $PORT --after-restart
+  python3 -u test/containers_test.py 127.0.0.1 $PORT --after-restart
   exec 3>&-
   wait $PID || fail "server exit code after EOF"
   [ "$(grep -c 'All dimensions are saved' $LOG)" -eq 2 ] || fail "no clean save on EOF"

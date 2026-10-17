@@ -399,11 +399,19 @@ inline std::string player_dat(const Player& p) {
 }
 inline const char* const EQUIPMENT_SLOTS[5] = {"feet", "legs", "chest", "head", "offhand"};  // inv 36..40
 
+// Data components beyond damage (ItemStack::comp) <-> the "components" compound: src/containers/item_nbt.hpp.
+inline void (*item_components_to_nbt)(const ItemStack& s, Nbt& components) = nullptr;
+inline void (*item_components_from_nbt)(ItemStack& s, const Nbt& components) = nullptr;
 inline Nbt item_nbt(const ItemStack& s) {  // ItemStack.CODEC: {id, count, components}
     Nbt e = Nbt::compound();
     e.set("id", Nbt::str(std::string("minecraft:") + gen::ITEM_NAMES[s.item]));
     e.set("count", Nbt::num(Nbt::Int, s.count));
-    if (s.damage) {
+    if (s.comp && item_components_to_nbt) {
+        Nbt c = Nbt::compound();
+        if (s.damage) c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
+        item_components_to_nbt(s, c);
+        if (!c.comp.empty()) e.set("components", c);
+    } else if (s.damage) {
         Nbt c = Nbt::compound();
         c.set("minecraft:damage", Nbt::num(Nbt::Int, s.damage));
         e.set("components", c);
@@ -423,8 +431,10 @@ inline ItemStack item_from(const Nbt& e) {
     s.item = it->second;
     const Nbt* n = e.get("count");
     s.count = n && n->is_num() ? int(n->i) : 1;
-    if (const Nbt* c = e.get("components"))
+    if (const Nbt* c = e.get("components")) {
         if (const Nbt* d = c->get("minecraft:damage"); d && d->is_num()) s.damage = int(d->i);
+        if (item_components_from_nbt) item_components_from_nbt(s, *c);
+    }
     return s;
 }
 
@@ -500,9 +510,11 @@ inline void save_player(const Player& p) {
     nbtio::write_file(player_dat(p), t);
 }
 
-inline void (*on_save_all)() = nullptr;  // tick thread, before chunks are saved (level tick lists)
+inline void (*on_save_all)() = nullptr;          // tick thread, before chunks are saved (level tick lists)
+inline void (*before_world_save)() = nullptr;    // tick thread: flush live block entities into chunks (src/containers)
 inline void save_all() {
     if (on_save_all) on_save_all();
+    if (before_world_save) before_world_save();
     for (auto& p : snapshot()) save_player(*p);
     for (auto& w : worlds) w.save_dirty(true);
 }
