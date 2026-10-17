@@ -274,7 +274,7 @@ struct JungleTemplePiece : ScatteredPiece {
          );
          placeBlock(level, BS(blocks::mossy_cobblestone), 3, -3, 1, chunkBB);
          if (!placedTrap1) {
-            placedTrap1 = createDispenser(level, chunkBB, random, 3, -2, 1, Dir::NORTH);
+            placedTrap1 = createDispenser(level, chunkBB, random, 3, -2, 1, Dir::NORTH, "minecraft:chests/jungle_temple_dispenser");
          }
 
          placeBlock(level, BS(blocks::vine).with("south", true), 3, -2, 2, chunkBB);
@@ -345,13 +345,13 @@ struct JungleTemplePiece : ScatteredPiece {
          placeBlock(level, BS(blocks::mossy_cobblestone), 9, -3, 4, chunkBB);
          placeBlock(level, redstoneWireNS, 9, -2, 4, chunkBB);
          if (!placedTrap2) {
-            placedTrap2 = createDispenser(level, chunkBB, random, 9, -2, 3, Dir::WEST);
+            placedTrap2 = createDispenser(level, chunkBB, random, 9, -2, 3, Dir::WEST, "minecraft:chests/jungle_temple_dispenser");
          }
 
          placeBlock(level, BS(blocks::vine).with("east", true), 8, -1, 3, chunkBB);
          placeBlock(level, BS(blocks::vine).with("east", true), 8, -2, 3, chunkBB);
          if (!placedMainChest) {
-            placedMainChest = createChest(level, chunkBB, random, 8, -3, 3);
+            placedMainChest = createChest(level, chunkBB, random, 8, -3, 3, "minecraft:chests/jungle_temple");
          }
 
          placeBlock(level, BS(blocks::mossy_cobblestone), 9, -3, 2, chunkBB);
@@ -394,7 +394,7 @@ struct JungleTemplePiece : ScatteredPiece {
          placeBlock(level, BS(blocks::sticky_piston).with("facing", Dir::WEST), 10, -1, 8, chunkBB);
          placeBlock(level, BS(blocks::repeater).with("facing", Dir::NORTH), 10, -2, 10, chunkBB);
          if (!placedHiddenChest) {
-            placedHiddenChest = createChest(level, chunkBB, random, 9, -3, 10);
+            placedHiddenChest = createChest(level, chunkBB, random, 9, -3, 10, "minecraft:chests/jungle_temple");
          }
       }
    }
@@ -656,7 +656,7 @@ struct DesertPyramidPiece : ScatteredPiece {
                int xo = stepX(direction) * 2;
                int zo = stepZ(direction) * 2;
                hasPlacedChest[data2d(direction)] = createChest(
-                  level, chunkBB, random, 10 + xo, -11, 10 + zo
+                  level, chunkBB, random, 10 + xo, -11, 10 + zo, "minecraft:chests/desert_pyramid"
                );
             }
          }
@@ -815,7 +815,7 @@ struct BuriedTreasurePiece : Piece {
                }
 
                boundingBox = BoundingBox(pos);
-               createChest(level, chunkBB, random, pos, -1);
+               createChest(level, chunkBB, random, pos, "minecraft:chests/buried_treasure", -1);
                return;
             }
 

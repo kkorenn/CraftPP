@@ -410,7 +410,7 @@ struct CastleSmallCorridorLeftTurnPiece : NBPiece {
    generateBox(level, bb, 3, 3, 4, 3, 4, 4, weFence, weFence, false);
    if (isNeedingChest && bb.isInside(worldPos(3, 2, 3))) {
       isNeedingChest = false;
-      createChest(level, bb, random, 3, 2, 3);
+      createChest(level, bb, random, 3, 2, 3, "minecraft:chests/nether_bridge");
    }
    generateBox(level, bb, 0, 6, 0, 4, 6, 4, BS(blocks::nether_bricks), BS(blocks::nether_bricks), false);
    for (int x = 0; x <= 4; x++) {
@@ -483,7 +483,7 @@ struct CastleSmallCorridorRightTurnPiece : NBPiece {
    generateBox(level, bb, 3, 3, 4, 3, 4, 4, weFence, weFence, false);
    if (isNeedingChest && bb.isInside(worldPos(1, 2, 3))) {
       isNeedingChest = false;
-      createChest(level, bb, random, 1, 2, 3);
+      createChest(level, bb, random, 1, 2, 3, "minecraft:chests/nether_bridge");
    }
    generateBox(level, bb, 0, 6, 0, 4, 6, 4, BS(blocks::nether_bricks), BS(blocks::nether_bricks), false);
    for (int x = 0; x <= 4; x++) {

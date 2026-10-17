@@ -73,8 +73,8 @@ struct TemplatePiece : Piece {
 };
 
 // RandomizableContainer.setBlockEntityLootTable: consumes random.nextLong() when the block entity is a container.
-inline void setLootTable(Level& level, RandomSource& random, BlockPos pos) {
-  if (Blocks::get().flags(level.getBlock(pos.x, pos.y, pos.z)) & BS_RANDOMIZABLE) random.nextLong();
+inline void setLootTable(Level& level, RandomSource& random, BlockPos pos, const char* table) {
+  if (Blocks::get().flags(level.getBlock(pos.x, pos.y, pos.z)) & BS_RANDOMIZABLE) level.setLootTable(pos, table, random.nextLong());
 }
 
 inline std::unique_ptr<RandomSource> positionalRandom(int64_t seed, BlockPos pos) {  // createThreadLocalInstance(seed).forkPositional().at(pos)

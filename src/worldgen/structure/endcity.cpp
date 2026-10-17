@@ -19,7 +19,7 @@ struct EndCityPiece : TemplatePiece {
       : TemplatePiece(0, "minecraft:end_city/" + name, endCitySettings(overwrite, r), pos) {}
   void handleDataMarker(const std::string& marker, BlockPos pos, Level& level, RandomSource& random, const BoundingBox& chunkBB) override {
     if (marker.rfind("Chest", 0) == 0) {
-      if (chunkBB.isInside(pos.below())) setLootTable(level, random, pos.below());
+      if (chunkBB.isInside(pos.below())) setLootTable(level, random, pos.below(), "minecraft:chests/end_city_treasure");
     } else if (chunkBB.isInside(pos) && marker.rfind("Sentry", 0) == 0) {
       level.addMob(entity_types::shulker, pos, false, false, false);  // vanilla: setPos + addFreshEntity only
     }

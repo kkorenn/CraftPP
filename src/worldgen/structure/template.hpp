@@ -34,6 +34,7 @@ bool canAttach(const JigsawInfo& source, const JigsawInfo& target);
 struct TemplateNbt {  // the parts of block entity NBT that generation reads
   std::string finalState = "minecraft:air";  // jigsaw final_state
   std::string metadata, mode;                // structure block data marker
+  std::string lootTable;                     // RandomizableContainer LootTable
 };
 
 struct Template {
