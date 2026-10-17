@@ -263,15 +263,18 @@ The next lever is loading fewer API classes eagerly (registries and
 | Commands, tab completion, permissions, ops | implemented (every player sees every plugin root in the tree; execution still checks permissions) |
 | Scheduler (Bukkit + Paper) | implemented |
 | Join/quit/chat/command/break/place/move events | implemented |
-| Interact, inventory click/close, held item, drop, attack, entity death, chunk load, login/pre-login, server list ping | bridge-side ready; CraftPP doesn't fire them yet (each needs a wrapper in `install_handlers` or a hook) |
+| Interact (right click block/air, left click block), entity interact, player attacks (`EntityDamageByEntityEvent`, cancel only), held item, drop, inventory click/close, entity death | implemented (`src/plugins/api_events.cpp`, `api_inventory.cpp`). Death drops are not exposed (`getDrops()` empty), attack damage edits are ignored, `LEFT_CLICK_AIR` (needs a ray cast) is not fired |
+| Chunk load, login/pre-login, server list ping | bridge-side ready; CraftPP doesn't fire them yet |
 | Player vitals, xp, game mode, teleport, kick, messages, titles | implemented |
-| Player inventory | read and write of item + count; **item meta (name, lore, enchants) is dropped** on writes |
-| Custom inventories / GUIs (`openInventory`) | throws (`player.openInventory` not implemented) |
-| Entities (`spawnEntity`, `getEntities`) | `getEntities` returns players only; spawning throws |
+| Player inventory, item meta | read/write with meta: name, item name, lore, enchantments (stored on books), damage, max damage/stack, unbreakable, glint, dye colour, custom model data floats, tooltip flags. Other components (PDC, attributes, food, ...) stay in the bridge only |
+| Custom inventories / GUIs (`openInventory`) | implemented: plugin-owned menu for every menu type, contents synced both ways, clicks cancellable |
+| Entities | spawn (mobs get `finalizeSpawn`), list, live state (position, velocity, size, flags, health/max health, absorption, air, fire, tags, pose, AI, target, equipment, item stacks), teleport + `EntityTeleportEvent`, damage, remove. Vehicles/passengers, potion effects and attributes beyond max health are not yet bridged |
 | Overworld time, elapsed game ticks, difficulty, spawn location | implemented; client updates and restart persistence covered by plugin tests |
 | World border | live reads/writes, timed resize, validation, client packets and persistence; change events missing, server border shared across dimensions |
 | Block sky/block light | actual engine values; updates settle at end of tick |
-| Scoreboards, boss bars, sounds, particles, biomes, game rules | throw `IllegalStateException("CraftPP does not implement plugin API call ...")` |
+| Scoreboards, teams, boss bars (Bukkit + Adventure), sounds (all overloads, entity-attached, stop), particles (all option types), biomes, game rules | implemented. Plugin scoreboards are client-side only, like Paper's per-player boards |
+| Whitelist, ops, bans, IP bans | implemented over the vanilla JSON lists shared with `/whitelist`, `/op`, `/ban` |
+| Damage types / `DamageSource` | implemented from the vanilla damage_type data |
 | Persistent data containers | in memory for the session only |
 | Registries, `Material` facts | bundled 26.3 registry report. `material-properties-26.3.json` still holds the 26.2 values (regenerate with PrismMC's `tools/jar-truth/MaterialTruth.java` against the 26.3 jar) |
 | NMS (`CraftPlayer.getHandle`, packets, Netty pipeline) | boots (see below). Plugin-sent packets reach the client. Clientbound filtering and serverbound interception through plugin pipelines are not wired yet |
