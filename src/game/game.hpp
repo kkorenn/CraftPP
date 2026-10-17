@@ -51,6 +51,7 @@ inline void start_game() {
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     containers_init();
+    lvl::container_signal = [](int, const lvl::Pos& p) { return be::comparator_signal(p.x, p.y, p.z); };  // comparators read containers
     dimensions_init();  // after the game handlers: wraps client_command
     portal::init();     // wraps use_item_on
     register_net_handlers();  // keep-alive, teleport confirmation, movement checks (netplay.hpp)

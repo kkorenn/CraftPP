@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 import json
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPORT = json.load(open(os.path.join(ROOT, "vanilla/generated/reports/blocks.json")))
+REPORT = json.load(open(os.path.join(ROOT, "data/reports/blocks.json")))
 BY_ID = {s["id"]: (n[10:], s.get("properties", {})) for n, b in REPORT.items() for s in b["states"]}
 
 host, port = sys.argv[1], int(sys.argv[2])
