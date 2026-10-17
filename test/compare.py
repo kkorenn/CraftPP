@@ -84,7 +84,7 @@ def collect(port, center, proc, edited=False):
     ccx, ccz = center[0] >> 4, center[2] >> 4
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
     if args.dimension != "overworld": pass  # already there (execute in ... run tp)
-    elif args.center and proc and not edited and proc.args[0].endswith("java"):  # vanilla rejects long moves: console tp
+    elif args.center and proc and not edited:  # both servers reject long moves (movement validation): console tp
         proc.stdin.write(f"tp {'Cmp2' if edited else 'Cmp'} {center[0]} {center[1]} {center[2]}\n".encode()); proc.stdin.flush()
     else: c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
@@ -124,7 +124,7 @@ def run_vanilla(n, center):
     open(f"{RUN}/ops.json", "w").write(OPS)
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
-                 generate_structures=GEN_STRUCTURES, sync_chunk_writes="false")
+                 generate_structures=GEN_STRUCTURES, sync_chunk_writes="false", allow_flight="true")
     open(f"{RUN}/server.properties", "w").write("".join(f"{k.replace('_', '-')}={v}\n" for k, v in props.items()))
     log = f"{RUN}/server_{n}.log"
     shutil.rmtree(f"{RUN}/debug", ignore_errors=True)
