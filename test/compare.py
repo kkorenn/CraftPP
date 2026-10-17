@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Compare CraftPP world generation against the vanilla reference server, chunk by chunk.
   python3 test/compare.py --seed 12345 --radius 2 [--mode full|solid] [--vanilla-datapack DIR] [--against craftpp|vanilla] [--light]
-Runs vanilla (vanilla/compare_run/, fresh world), records the chunks within --radius of the world spawn
+Runs vanilla (build/compare/vanilla/, fresh world), records the chunks within --radius of the world spawn
 chunk, stops it, then runs the other server (CraftPP by default; `--against vanilla` = self-check)
 with the same seed, walks the bot to the same spawn and diffs block states + biomes (--light: also sky/block
 light per section, after applying light_update packets for --settle seconds).
+                         [--dimension the_nether|the_end [--center X Z]]
+--dimension: the bot (op'd through ops.json on both servers) runs `execute in <dim> run tp @s X 64 Z` and the
+chunks around --center (default 0 0) in that dimension are compared instead.
 Exit status 1 when anything differs."""
-import argparse, collections, json, os, shutil, socket, struct, subprocess, sys, time
+import argparse, collections, hashlib, json, os, shutil, socket, struct, subprocess, sys, time, uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bot import login, play_step, PLAY_SB
+from bot import login, play_step, string, PLAY_CB, PLAY_SB
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = "/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home/bin/java"
@@ -40,7 +43,15 @@ ap.add_argument("--craftpp", default="build/craftpp", help="CraftPP binary for b
 ap.add_argument("--settle", type=float, default=5, help="seconds to keep reading light_update after the last chunk")
 ap.add_argument("--fluids", action="store_true", help="also settle without --light: apply the block updates of fluids "
                 "that flow after post-processing (vanilla sends chunks right after it)")
+ap.add_argument("--dimension", choices=["overworld", "the_nether", "the_end"], default="overworld")
 args = ap.parse_args()
+if args.dimension != "overworld": MIN_Y = 0
+BOT = "Cmp"
+# Offline-mode profile id (UUIDUtil.createOfflinePlayerUUID): name-based v3 of "OfflinePlayer:<name>".
+h = bytearray(hashlib.md5(f"OfflinePlayer:{BOT}".encode()).digest())
+h[6] = h[6] & 0x0F | 0x30; h[8] = h[8] & 0x3F | 0x80
+BOT_UUID = uuid.UUID(bytes=bytes(h))
+OPS = json.dumps([{"uuid": str(BOT_UUID), "name": BOT, "level": 4, "bypassesPlayerLimit": False}])
 RUN = os.path.abspath(args.run_dir)
 view = min(32, int(args.radius * 1.42) + 2)  # vanilla sends a circle; cover the square + spawn fuzz
 
@@ -58,16 +69,30 @@ def settle(c):  # both servers send time / keep-alive packets, so this returns
 
 def collect(port, center, proc, edited=False):
     """Join, walk to center (block pos; None = stay at spawn) and gather the chunk square around it."""
-    c, _ = login("Cmp2" if edited else "Cmp", "127.0.0.1", port, view=view, decode=True, uid=CMP_UUID)
+    c, _ = login("Cmp2" if edited else BOT, "127.0.0.1", port, view=view, decode=True, uid=None if edited else BOT_UUID)
     c.s.settimeout(args.timeout)
     while not (center or c.spawn): play_step(c)
+    if args.dimension != "overworld":
+        x, z = args.center or (0, 0)
+        center = (x, 64, z)
+        c.send(PLAY_SB["chat_command"], string("gamemode spectator"))  # no "floating too long" kick over the void
+        c.send(PLAY_SB["chat_command"], string(f"execute in minecraft:{args.dimension} run tp @s {x + .5} 64 {z + .5}"))
+        while getattr(c, "dimension", None) != f"minecraft:{args.dimension}": play_step(c)
+        while play_step(c) != PLAY_CB["player_position"]: pass
+        c.send(PLAY_SB["player_loaded"])
     center = center or c.spawn
     ccx, ccz = center[0] >> 4, center[2] >> 4
     need = {(ccx + dx, ccz + dz) for dx in range(-args.radius, args.radius + 1) for dz in range(-args.radius, args.radius + 1)}
-    if args.center and proc and not edited and proc.args[0].endswith("java"):  # vanilla rejects long moves: console tp
+    if args.dimension != "overworld": pass  # already there (execute in ... run tp)
+    elif args.center and proc and not edited and proc.args[0].endswith("java"):  # vanilla rejects long moves: console tp
         proc.stdin.write(f"tp {'Cmp2' if edited else 'Cmp'} {center[0]} {center[1]} {center[2]}\n".encode()); proc.stdin.flush()
     else: c.send(PLAY_SB["move_player_pos"], struct.pack(">dddB", center[0] + .5, center[1], center[2] + .5, 1))
     while not need <= c.chunks.keys(): play_step(c)
+    if args.dimension == "the_end":  # the dragon fight places the exit podium a few ticks after arrival:
+        time.sleep(5)                 # give it time, then read everything sent before the reply to /list
+        c.send(PLAY_SB["chat_command"], string("list"))
+        while True:
+            if play_step(c) == PLAY_CB["system_chat"] and b"commands.list" in c.last.d: break
     if args.light or args.fluids: settle(c)  # neighbours may still be lighting: take their light_update packets too
     if args.edits and not edited:
         x, y, z = center
@@ -85,7 +110,6 @@ def collect(port, center, proc, edited=False):
     return {k: c.chunks[k] for k in need}, c.biomes, center
 
 import uuid
-CMP_UUID = uuid.uuid3(uuid.NAMESPACE_DNS, "craftpp-compare")  # fixed, so CraftPP finds the playerdata file below
 JOIN = []  # vanilla run 1's join position: CraftPP's player starts there too (same decoration order)
 LIGHT = []  # per run: {(cx, cz): {"sky"|"block": {section index: 2048 bytes}}}
 
@@ -97,6 +121,7 @@ def run_vanilla(n, center):
     if args.vanilla_datapack:
         shutil.copytree(args.vanilla_datapack, f"{RUN}/world/datapacks/{os.path.basename(os.path.normpath(args.vanilla_datapack))}")
     open(f"{RUN}/eula.txt", "w").write("eula=true\n")
+    open(f"{RUN}/ops.json", "w").write(OPS)
     props = dict(online_mode="false", white_list="false", level_seed=args.seed, server_port=args.port, spawn_protection=0,
                  view_distance=view, simulation_distance=view, network_compression_threshold=-1,
                  generate_structures=GEN_STRUCTURES, sync_chunk_writes="false")
@@ -131,10 +156,11 @@ def run_craftpp(center):
     open(props, "w").write(f"server-port={args.port}\nlevel-seed={args.seed}\nview-distance={args.radius + (2 if args.fluids else 1)}\n"  # --fluids: neighbours must tick too
                            f"level-name={sdir}/compare-world\nlevel-type=normal\nwhite-list=false\ngenerate-structures={GEN_STRUCTURES}\n"
                            f"worldgen-stages={stage}\n" + (f"worker-threads={args.threads}\n" if args.threads else "") + (f"worldgen-datapack={os.path.abspath(args.vanilla_datapack)}\n" if args.vanilla_datapack else ""))
+    open(f"{sdir}/ops.json", "w").write(OPS)
     open(f"{sdir}/eula.txt", "w").write("eula=true\n")  # server dir = beside the properties file
     if JOIN:  # a saved player file (playerdata/<offline uuid>.txt, see load_player) skips the random spawn column
         os.makedirs(f"{sdir}/compare-world/playerdata", exist_ok=True)
-        open(f"{sdir}/compare-world/playerdata/{CMP_UUID.hex}.txt", "w").write(f"{JOIN[0]} {JOIN[1]} {JOIN[2]} 0 0 1 0\n")
+        open(f"{sdir}/compare-world/playerdata/{BOT_UUID.hex}.txt", "w").write(f"{JOIN[0]} {JOIN[1]} {JOIN[2]} 0 0 1 0\n")
     p = subprocess.Popen([os.path.join(ROOT, args.craftpp), props], cwd=ROOT, stdin=subprocess.PIPE, stdout=open(f"{sdir}/compare-server.log", "w"), stderr=subprocess.STDOUT)
     try:
         for _ in range(100):
@@ -156,7 +182,7 @@ CLASS = {i: 0 if n.split("[")[0] in AIR else 1 if n.split("[")[0] in FLUID else 
 CLASS_NAME = ["air", "fluid", "solid"]
 
 import pickle
-key = f"{args.seed}_{args.radius}_{args.center}_{os.path.basename(os.path.normpath(args.vanilla_datapack or 'none'))}_{args.no_structures}"
+key = f"{args.dimension}_{args.seed}_{args.radius}_{args.center}_{os.path.basename(os.path.normpath(args.vanilla_datapack or 'none'))}_{args.no_structures}"
 cache = args.cache and os.path.join(args.cache, key + ".pickle")
 A2 = None
 if cache and os.path.exists(cache):
@@ -208,7 +234,7 @@ for (cx, cz) in sorted(A):
                 bio_examples.append(f"  {pos}: vanilla {na}  {args.against} {nb}")
 
 bad = sum(per_section.values())
-print(f"\n{len(A)} chunks, {total} blocks compared ({args.mode} mode): {bad} block mismatches ({100 * bad / total:.2f}%)")
+print(f"\n{args.dimension}: {len(A)} chunks, {total} blocks compared ({args.mode} mode): {bad} block mismatches ({100 * bad / total:.2f}%)")
 if args.stable: print(f"vanilla run-to-run differences masked: {noise} ({100 * noise / total:.2f}%)")
 if bad:
     print("per section (y range: mismatches):")
@@ -217,7 +243,7 @@ if bad:
     print("top pairs:", *(f"  vanilla {a} -> {args.against} {b}: {n}" for (a, b), n in block_pairs.most_common(args.pairs)), sep="\n")
     print("first mismatches:", *examples, sep="\n")
 nb = sum(bio_pairs.values())
-print(f"{nb} biome mismatches of {len(A) * 24 * 64} cells")
+print(f"{nb} biome mismatches of {len(A) * len(next(iter(A.values()))) * 64} cells")
 if nb:
     print("top pairs:", *(f"  vanilla {a} -> {args.against} {b}: {n}" for (a, b), n in bio_pairs.most_common(5)), sep="\n")
     print("first mismatches:", *bio_examples, sep="\n")

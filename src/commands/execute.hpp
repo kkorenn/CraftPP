@@ -3,10 +3,10 @@
 #include "vanilla.hpp"
 
 inline int biome_at(int x, int y, int z) {
-    if (y < MIN_Y || y >= MIN_Y + HEIGHT) return -1;
+    if (y < world.min_y() || y >= world.max_y()) return -1;
     ChunkPtr c = world.get_ptr(x >> 4, z >> 4);  // world.hpp: paletted sections
     std::lock_guard lock(c->m);
-    return c->get_biome((x & 15) >> 2, (y - MIN_Y) >> 2, (z & 15) >> 2);
+    return c->get_biome((x & 15) >> 2, (y - c->min_y) >> 2, (z & 15) >> 2);
 }
 
 // The subcommand literal of an execute segment (skipping the leading `execute`) and its position.
@@ -137,8 +137,8 @@ inline std::vector<Source> apply_execute(const Segment& seg, const Source& in, c
         if (c.has("pos")) { Vec3 v = c.vec("pos"); s.x = v.x; s.y = v.y; s.z = v.z; s.eyes = false; return {s}; }
         if (c.is("over")) {
             int x = int(std::floor(s.x)), z = int(std::floor(s.z));
-            int y = MIN_Y + HEIGHT - 1;
-            while (y > MIN_Y && world.get_block(x, y, z) == blocks::air) y--;
+            int y = world.max_y() - 1;
+            while (y > world.min_y() && world.get_block(x, y, z) == blocks::air) y--;
             s.y = y + 1;  // ponytail: every heightmap treated as WORLD_SURFACE
             return {s};
         }
@@ -174,8 +174,12 @@ inline std::vector<Source> apply_execute(const Segment& seg, const Source& in, c
     }
     if (sub == "on") return {};  // ponytail: players have no vehicle/owner/leash/attacker relations yet
     if (sub == "in") {
-        s.dimension = c.str("dimension");
-        if (s.dimension != "minecraft:overworld") throw fail(not_supported("execute in " + s.dimension));
+        World* from = level_by_id(s.dimension), *to = level_by_id(c.str("dimension"));
+        if (to != from) {  // CommandSourceStack.withLevel: position scaled by DimensionType.getTeleportationScale
+            double scale = from->coordinate_scale / to->coordinate_scale;
+            s.x *= scale, s.z *= scale;
+            s.dimension = to->id;
+        }
         return {s};
     }
     if (sub == "if" || sub == "unless") {

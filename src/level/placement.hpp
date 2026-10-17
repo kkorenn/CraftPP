@@ -86,7 +86,7 @@ inline int state_for_placement(int b, PlaceCtx& c) {
     int hdir = horizontal_direction(c.player);
     switch (kind(s)) {
         case K_DOOR: {
-            if (p.y >= MIN_Y + HEIGHT - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
+            if (p.y >= world.max_y() - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
             // getHinge
             int left = ccw(hdir), right = clockwise(hdir);
             Pos lp = p.rel(left), rp = p.rel(right);
@@ -108,7 +108,7 @@ inline int state_for_placement(int b, PlaceCtx& c) {
             return can_be_replaced_ctx(get(rel), c) ? withdir(s, "facing", hdir) : -1;
         }
         case K_DOUBLE_PLANT:
-            if (p.y >= MIN_Y + HEIGHT - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
+            if (p.y >= world.max_y() - 1 || !can_be_replaced_ctx(get(p.above()), c)) return -1;
             return with_waterlogged(s, p);
         case K_WALL_TORCH:
         case K_WALL_SIGN:

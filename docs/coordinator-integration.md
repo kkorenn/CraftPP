@@ -74,3 +74,51 @@ and `@a` while explicit names still parse. The commands regression checks the
 restored permission event and tree after respawn and executes both selectors.
 The isolated selector suite and its full integration suite include restart,
 fuzzing, stress and Bukkit plugin checks.
+
+## Dimensions and portal recovery
+
+Recovered the dimensions branch and its interrupted level-tick integration in
+this checkout. Per-level tick queues, block changes, falling blocks and entity
+state follow the acting world; join/leave hooks run in the player's world. Chunk
+heights, placement bounds and packed fluid post-processing positions use the
+owning dimension's layout. Nether lava uses ten-tick updates and drop-off one.
+Portal ignition and collapse use the level's neighbor-update machinery.
+
+Each world owns its structure manager, generation tickets, persistence callbacks
+and structure save directory. Nether/End generation remains lazy. Structure
+height providers, terrain-column reads and placement bounds now use that world's
+layout and sea level. This fixes the Nether-fossil heap-buffer-overflow reproduced
+by AddressSanitizer during the first portal trip. Surface-height cache entries
+include the world, and lighting reads cannot use another world's columns.
+Permission status and the command tree are resent after dimension transfers and
+respawns, preserving the client selector/F3+F4 fix.
+
+Real vanilla comparisons for seed 12345, radius 1:
+
+| Dimension/stage | Center | Blocks compared | Block/biome mismatches |
+| --- | --- | ---: | --- |
+| Nether surface | 0,0 | 589824 | 0 / 0 |
+| Nether structures | 0,0 | 589824 | 0 / 0 |
+| End surface | 1280,1280 | 589824 | 0 / 0 |
+
+Each comparison includes 9216 biome cells. These samples do not establish full
+feature-stage parity across either dimension. Portal round trips, the survival
+portal delay, rejoin persistence, End platform/credits and dimension-specific
+structure lookup are exercised by `test/dimensions_test.py`. Its lava regression
+reached Nether level 7 in 71 ticks and confirmed an Overworld observer at the same
+chunk coordinates receives no Nether block updates.
+
+Nine-chunk pipeline probes on macOS arm64 (seed 12345, features, including
+neighbor dependencies but excluding runtime lighting and structure placement):
+Nether 13.9 ms/chunk, 11 MiB peak RSS; End 2.5 ms/chunk, 9 MiB. These are single
+host measurements, not Raspberry Pi measurements.
+
+Remaining dimension parity work: several Nether feature types are not ported;
+Nether/End network lighting uses full-light placeholders; environment attributes
+such as water evaporation and bed/anchor rules still need complete integration.
+The End fight currently places the podium/platform; the separate boss worktree
+has the dragon implementation awaiting integration.
+
+Final release and ASan/UBSan suites passed after the bounds and cache repairs.
+Release plugin checks passed; the existing biome parity hash and Overworld
+noise/surface fingerprint `e4e3969b1fe85d8b` stayed unchanged.

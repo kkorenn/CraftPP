@@ -458,8 +458,13 @@ inline bool can_survive(int state, Pos pos) {
 // ==================================================================================================
 // BlockBehaviour.updateShape
 // ==================================================================================================
+// Nether portal hooks (game/portal.hpp): BaseFireBlock.onPlace lighting a frame, NetherPortalBlock.updateShape.
+inline bool (*fire_lights_portal)(int x, int y, int z) = nullptr;
+inline int (*portal_update_shape)(int state, int x, int y, int z, int dir, int nstate) = nullptr;
+
 inline int update_shape(int state, Pos pos, int dir, Pos npos, int nstate) {
     (void)npos;
+    if (is_nether_portal(uint16_t(state)) && portal_update_shape) return portal_update_shape(state, pos.x, pos.y, pos.z, dir, nstate);
     int k = kind(state);
     switch (k) {
         case K_LIQUID: return liquid_update_shape(state, pos, dir, nstate);
@@ -634,6 +639,7 @@ inline void on_place(int state, Pos pos, int old, bool piston) {
         case K_CONCRETE_POWDER: schedule_block(pos, block(state), 2); break;
         case K_FIRE:
         case K_SOUL_FIRE:
+            if (block(old) != block(state) && fire_lights_portal && fire_lights_portal(pos.x, pos.y, pos.z)) break;
             if (block(old) != block(state) && !fire_can_survive(state, pos)) remove(pos);  // BaseFireBlock.onPlace
             else if (kind(state) == K_FIRE) schedule_block(pos, block(state), 30 + rng().nextInt(10));
             break;
@@ -692,7 +698,7 @@ inline void block_tick(int state, Pos pos) {
         case K_FALLING:
         case K_ANVIL:
         case K_CONCRETE_POWDER:
-            if (falling_is_free(get(pos.below())) && pos.y >= MIN_Y) start_falling(pos, state);
+            if (falling_is_free(get(pos.below())) && pos.y >= world.min_y()) start_falling(pos, state);
             break;
         case K_LEAVES: set(pos, leaves_update_distance(state, pos)); break;
         case K_FARMLAND:

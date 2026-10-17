@@ -711,6 +711,7 @@ std::mutex& mutex() {
 int get(int x, int y, int z, bool sky) {
     std::lock_guard lock(mutex());
     Engine& e = engine();
+    if (e.world != cur_level) return -1;  // Never read another dimension's columns.
     auto it = e.columns.find(Engine::key(x >> 4, z >> 4));  // not col(): its cache would remember a miss
     Column* c = it == e.columns.end() ? nullptr : it->second.get();
     if (!c || c->status != LIT) return -1;

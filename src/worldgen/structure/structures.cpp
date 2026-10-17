@@ -148,7 +148,7 @@ struct RuinedPortalStructure : Structure {
     Heightmap hm = setup.placement == RuinedPortal::ON_OCEAN_FLOOR ? Heightmap::OCEAN_FLOOR_WG : Heightmap::WORLD_SURFACE_WG;
     int surfaceY = ctx.gen.baseHeight(center.x, center.z, hm) - 1;
     // findSuitableY
-    int minY = MIN_Y + 15, ySpan = bb.ySpan(), newY;
+    int minY = ctx.gen.minBuildHeight() + 15, ySpan = bb.ySpan(), newY;
     switch (setup.placement) {
       case RuinedPortal::IN_NETHER:
         if (airPocket) newY = randomBetweenInclusive(random, 32, 100);
@@ -170,8 +170,8 @@ struct RuinedPortalStructure : Structure {
       int solid = 0;
       bool done = false;
       for (auto& c : cols) {
-        int idx = projectedY - MIN_Y;
-        int st = idx >= 0 && idx < GEN_HEIGHT ? c[idx] : blocks::air;  // NoiseColumn.getBlock: air outside
+        int idx = projectedY - ctx.gen.minBuildHeight();
+        int st = idx >= 0 && idx < int(c.size()) ? c[idx] : blocks::air;  // NoiseColumn.getBlock: air outside
         bool opaque = ocean ? motion.has(Blocks::get().blockOf(st)) : !Blocks::get().isAir(st);
         if (opaque && ++solid == 3) {
           done = true;
@@ -201,16 +201,16 @@ struct NetherFossil : Structure {
   std::optional<Stub> findGenerationPoint(GenContext& ctx) const override {
     RandomSource& random = ctx.random;
     int x = ctx.cx * 16 + random.nextInt(16), z = ctx.cz * 16 + random.nextInt(16);
-    int y = sampleHeight(height, random);
+    int y = sampleHeight(height, random, ctx.gen.minBuildHeight(), ctx.gen.generationHeight());
     std::vector<int> col;
     ctx.gen.baseColumn(x, z, col);
     const Blocks& b = Blocks::get();
-    auto at = [&](int yy) { int i = yy - MIN_Y; return i >= 0 && i < GEN_HEIGHT ? col[i] : blocks::air; };
-    while (y > SEA_LEVEL) {
+    auto at = [&](int yy) { int i = yy - ctx.gen.minBuildHeight(); return i >= 0 && i < int(col.size()) ? col[i] : blocks::air; };
+    while (y > ctx.gen.seaLevel()) {
       int current = at(y), below = at(--y);
       if (b.isAir(current) && (b.is(below, "soul_sand") || (b.flags(below) & BS_STURDY_UP))) break;
     }
-    if (y <= SEA_LEVEL) return std::nullopt;
+    if (y <= ctx.gen.seaLevel()) return std::nullopt;
     BlockPos pos{x, y, z};
     RandomSource* r = &ctx.random;
     return Stub{pos, [=](Builder& bl) { addNetherFossilPieces(bl, *r, pos); }, nullptr};

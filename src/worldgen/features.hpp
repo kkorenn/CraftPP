@@ -85,14 +85,14 @@ class Level {
   int height(Heightmap h, int x, int z) const;  // getHeight (first free y)
   int biome(const P& p) const;                  // getBiome (BiomeManager zoom over stored noise biomes)
   bool empty(const P& p) const { return bs::R().is_air(get(p)); }  // isEmptyBlock
-  bool outside(int y) const { return y < MIN_Y || y >= MIN_Y + HEIGHT; }
+  bool outside(int y) const { return y < min_y() || y > max_y(); }
   bool water_at(const P& p) const { return bs::R().is_water(get(p)); }  // isWaterAt (FluidTags.WATER)
   RandomSource& random();                 // WorldGenRegion.getRandom()
   BlockEntity* block_entity(const P& p);  // the block entity at p, if the block has one
   int64_t seed() const;
   int sea_level() const { return GEN_SEA_LEVEL; }
-  int min_y() const { return MIN_Y; }
-  int max_y() const { return MIN_Y + HEIGHT - 1; }
+  int min_y() const;
+  int max_y() const;
   float temperature(int biome, const P& p) const;  // Biome.getTemperature(pos, seaLevel)
   bool should_freeze(int biome, const P& p, bool checkNeighbors) const;  // Biome.shouldFreeze
   bool should_snow(int biome, const P& p) const;                         // Biome.shouldSnow

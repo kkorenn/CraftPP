@@ -205,6 +205,7 @@ class RandomState {
  public:
   RandomState(int64_t seed, bool useLegacyRandom, std::string dataRoot = "vanilla/src/data");
   int64_t seed() const { return seed_; }
+  bool legacy() const { return useLegacyRandom; }
   const PositionalRandomFactory& random() const { return *random_; }
   // RandomState.getOrCreateNoise (cached).
   std::shared_ptr<const Noise> getOrCreateNoise(const std::string& id);

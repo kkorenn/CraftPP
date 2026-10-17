@@ -112,6 +112,10 @@ inline constexpr int MIN_Y = -64, GEN_HEIGHT = 384, MAX_Y = MIN_Y + GEN_HEIGHT -
 // ChunkGenerator view used while creating starts (noise-only terrain: no beardifier, like vanilla).
 struct Generator {
   virtual ~Generator() = default;
+  virtual int minBuildHeight() const { return MIN_Y; }
+  virtual int maxBuildHeight() const { return MAX_Y + 1; }
+  virtual int generationHeight() const { return GEN_HEIGHT; }
+  virtual int seaLevel() const { return SEA_LEVEL; }
   virtual int baseHeight(int x, int z, Heightmap type) = 0;  // getBaseHeight (= getFirstFreeHeight)
   int firstOccupiedHeight(int x, int z, Heightmap t) { return baseHeight(x, z, t) - 1; }
   virtual void baseColumn(int x, int z, std::vector<int>& out) = 0;  // getBaseColumn: states MIN_Y..MAX_Y
@@ -123,6 +127,8 @@ struct Generator {
 // WorldGenLevel (WorldGenRegion) view while placing pieces into a chunk.
 struct Level {
   virtual ~Level() = default;
+  virtual int minBuildHeight() const { return MIN_Y; }
+  virtual int maxBuildHeight() const { return MAX_Y + 1; }
   virtual int getBlock(int x, int y, int z) = 0;
   virtual void setBlock(int x, int y, int z, int state) = 0;
   virtual int getHeight(Heightmap type, int x, int z) = 0;  // first free y (heightmap value)
@@ -280,7 +286,7 @@ struct GenContext {  // Structure.GenerationContext
   GenContext(Generator& g, int64_t seed, int cx, int cz, const std::vector<uint8_t>& valid);
   bool validAt(BlockPos p) { return validBiome[gen.noiseBiome(p.x >> 2, p.y >> 2, p.z >> 2)]; }
   bool couldStructureExistInColumn(int x, int z, int minY, int maxY);
-  bool couldValidBiomeExistInTerrainColumn(int x, int z) { return couldStructureExistInColumn(x, z, MIN_Y - 1, MAX_Y); }
+  bool couldValidBiomeExistInTerrainColumn(int x, int z) { return couldStructureExistInColumn(x, z, gen.minBuildHeight() - 1, gen.maxBuildHeight() - 1); }
   bool couldValidBiomeExistOnTopOfChunkCenter() { return couldValidBiomeExistInTerrainColumn(cx * 16 + 8, cz * 16 + 8); }
   // Structure.onTopOfChunkCenter[WithoutBiomeCheck]
   std::optional<Stub> onTopOfChunkCenter(Heightmap h, std::function<void(Builder&)> g, bool biomeCheck = true);

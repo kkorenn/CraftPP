@@ -188,20 +188,11 @@ inline void respawn(Player& p) {
         g.xp_level = p.g.xp_level, g.xp_total = p.g.xp_total, g.xp_progress = p.g.xp_progress;
         return g;
     }();
-    place_new_player(p);
-    p.send(Writer().varint(play_cb::respawn).varint(dimension_types::overworld).str("minecraft:overworld").i64(0)
-               .varint(p.gamemode).varint(0).boolean(false).boolean(flat_world).boolean(false).varint(0).varint(63)
-               .u8(0));
-    p.send(Writer().varint(play_cb::game_event).u8(13).f32(0));
-    update_view(p, int(std::floor(p.x)) >> 4, int(std::floor(p.z)) >> 4, true);
-    p.send(Writer().varint(play_cb::player_position).varint(next_teleport_id(p))
-               .f64(p.x).f64(p.y).f64(p.z).f64(0).f64(0).f64(0).f32(p.yaw).f32(p.pitch).i32(0));
-    p.send(Writer().varint(play_cb::set_held_slot).varint(p.selected));
-    send_health(p);
-    send_experience(p);
-    send_commands(p);  // Respawn creates a new LocalPlayer with no permissions; PlayerList resends them.
-    entities_reset_view(p);  // client dropped its entities: resend them
-    player_entity_respawned(p);  // others see the player re-added at its new position
+    World* died_in = p.level;
+    place_new_player(p);  // overworld spawn
+    World* spawn = p.level;
+    p.level = died_in;
+    move_to_level(p, spawn, p.x, p.y, p.z, p.yaw, p.pitch, 0);
 }
 
 // FoodData.tick + peaceful regeneration (Player.aiStep).
@@ -367,7 +358,7 @@ inline void dig_action(Player& p, int action, int x, int y, int z) {
         return;
     }
     int state = world.get_block(x, y, z);
-    if (y > MIN_Y + HEIGHT - 1) return p.send(block_update(x, y, z, state));
+    if (y > world.max_y() - 1) return p.send(block_update(x, y, z, state));
     if (action == 0) {  // START_DESTROY_BLOCK
         if (under_spawn_protection(p, x, z)) return overlay_message(p, tr("build.spawn_protection", {short_pos(x, y, z)}));
         if (p.gamemode == 1) return destroy_and_ack(p, x, y, z);
@@ -511,7 +502,7 @@ inline void vitals_tick(Player& p) {
     auto& g = p.g;
     if (g.invulnerable > 0) g.invulnerable--;
     if (g.dead) return;
-    if (p.y < MIN_Y - 64) hurt(p, 4, "out_of_world");
+    if (p.y < p.level->min_y - 64) hurt(p, 4, "out_of_world");
     if (survival_like(p)) food_tick(p);
     if (g.health != g.sent_health || g.food != g.sent_food || (g.saturation == 0) != g.sent_sat_zero) send_health(p);
     if (g.container) {  // CraftingMenu.stillValid: table still there and within 8 blocks
@@ -537,7 +528,7 @@ inline void swing(Player& p, int hand, bool to_self) {
 // ---------- placement ----------
 inline bool box_hits_player(int x, int y, int z) {  // Level.isUnobstructed for players
     for (auto& q : players) {
-        if (q->gamemode == 3 || q->g.dead) continue;
+        if (q->gamemode == 3 || q->g.dead || q->level != cur_level) continue;
         if (q->x + 0.3 > x && q->x - 0.3 < x + 1 && q->y + 1.8 > y && q->y < y + 1 && q->z + 0.3 > z && q->z - 0.3 < z + 1)
             return true;
     }
@@ -658,9 +649,9 @@ inline void register_game_handlers() {
                      fmt_double(z + double(cz)).c_str(), x, y, z);
             return;
         }
-        const int max_y = MIN_Y + HEIGHT - 1;
+        const int max_y = world.max_y() - 1;
         if (y > max_y) return overlay_message(p, tr("build.tooHigh", {max_y}));
-        if (y < MIN_Y) return overlay_message(p, tr("build.tooLow", {MIN_Y}));
+        if (y < world.min_y()) return overlay_message(p, tr("build.tooLow", {world.min_y()}));
         static const int off[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
         int f = face >= 0 && face <= 5 ? face : 1;
         if (under_spawn_protection(p, x, z)) {
@@ -669,8 +660,8 @@ inline void register_game_handlers() {
             const ItemStack& used = p.inv[hand == 1 ? 40u : size_t(p.selected)];
             bool placing = !used.empty() && ITEM_TO_BLOCK[used.item] >= 0;  // wasBlockPlacementAttempt
             int result = use_item_on(p, hand, x, y, z, face, cx, cy, cz);
-            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= MIN_Y)))
-                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {MIN_Y}));
+            if (result == 0 && placing && ((f == 1 && y >= max_y) || (f == 0 && y <= world.min_y())))
+                overlay_message(p, f == 1 ? tr("build.tooHigh", {max_y}) : tr("build.tooLow", {world.min_y()}));
             else if (result == 1) swing(p, hand, false);
         } else {
             overlay_message(p, tr("build.tooHigh", {max_y}));

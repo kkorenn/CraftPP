@@ -255,7 +255,7 @@ bool Piece::isReplaceableByStructures(int s) {
 void Piece::fillColumnDown(Level& level, int state, int x, int startY, int z, const BoundingBox& bb) {
   BlockPos p = worldPos(x, startY, z);
   if (!bb.isInside(p)) return;
-  while (isReplaceableByStructures(level.getBlock(p.x, p.y, p.z)) && p.y > MIN_Y + 1) {
+  while (isReplaceableByStructures(level.getBlock(p.x, p.y, p.z)) && p.y > level.minBuildHeight() + 1) {
     level.setBlock(p.x, p.y, p.z, state);
     p.y--;
   }
@@ -927,7 +927,7 @@ void StructureManager::placeStep(Level& level, int cx, int cz, int step, Worldge
         for (auto& start : starts(keyX(k), keyZ(k)))
           if (start->structure == st) {
             // getWritableArea: a fresh box per start (ruined portals / nether fossils enlarge it)
-            BoundingBox chunkBB(cx * 16, MIN_Y + 1, cz * 16, cx * 16 + 15, MAX_Y, cz * 16 + 15);
+            BoundingBox chunkBB(cx * 16, level.minBuildHeight() + 1, cz * 16, cx * 16 + 15, level.maxBuildHeight() - 1, cz * 16 + 15);
             start->placeInChunk(level, random, chunkBB, cx, cz);
           }
     }

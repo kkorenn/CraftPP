@@ -29,10 +29,12 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 
 - Feature ordering: FIFO generation tickets and x-major decoration layers, failed-prefetch recovery, synchronized palette writes visible to lighting. Surface-only comparison seed 12345/radius 1 matched all blocks and biomes.
 
+- Dimensions: recovered Nether/End pipelines and portal travel, per-world scheduled/random ticks and structure managers; repaired Nether-fossil column bounds, world-specific lava rules and cross-world caches. Sampled Nether/End surface and Nether structure stages match vanilla; see docs/coordinator-integration.md for scope and remaining gaps.
+
 ## In progress (branches)
 | Branch | Scope |
 |---|---|
-| dimensions | Nether, End, portals |
+| dimensions | Core travel/generation integrated; remaining Nether features, lighting and environment attributes |
 | mobs-roster | remaining mobs, villagers, breeding |
 | mobs-bosses | ender dragon, wither, warden |
 | effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
@@ -49,7 +51,7 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Pi deployment guide (systemd), plugin API coverage
 
 ## Known issues
-- light::Engine::state() reads chunks while worldgen workers write them (TSan, possible use-after-free) — needs chunk locking.
+- Nether/End lighting still uses full-light placeholders; several Nether generation features and dimension environment attributes remain incomplete.
 - Movement speed checks are covered by parity_test.py; pick_item_from_block reach handling still needs audit.
 - Duplicate UUID with two names can be online at once.
 - Flaky: plugin_test second start under heavy load; test-server.log occasionally misses lines after restart.
