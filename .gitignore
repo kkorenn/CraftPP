@@ -35,3 +35,4 @@ java/.gradle/
 data/block_dump.json
 build-*/
 .cache/
+dist/
