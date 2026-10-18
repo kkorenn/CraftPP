@@ -15,9 +15,10 @@ namespace blocks_world {
 class LiveLevel : public worldgen::feat::Level {
 public:
     std::map<worldgen::feat::P, uint16_t> buffer;
-    WorldgenRandom rng;
+    mutable LegacyRandomSource rng;
+    int64_t initial_seed = 0;
 
-    LiveLevel(int64_t seed = 0) : rng(seed) {}
+    LiveLevel(int64_t seed = 0) : rng(seed), initial_seed(seed) {}
 
     uint16_t get(const worldgen::feat::P& p) const override {
         auto it = buffer.find(p);
@@ -31,15 +32,15 @@ public:
     }
 
     bool can_write(const worldgen::feat::P& p) const override {
-        return p.y >= world.min_y() && p.y < world.max_y();
+        return p.y >= MIN_Y && p.y < MIN_Y + HEIGHT;
     }
 
     int height(worldgen::Heightmap, int x, int z) const override {
-        for (int y = world.max_y() - 1; y >= world.min_y(); y--) {
+        for (int y = MIN_Y + HEIGHT - 1; y >= MIN_Y; y--) {
             uint16_t s = get(worldgen::feat::P{x, y, z});
             if (!bs::R().is_air(s)) return y + 1;
         }
-        return world.min_y();
+        return MIN_Y;
     }
 
     int biome(const worldgen::feat::P& p) const override {
@@ -47,10 +48,10 @@ public:
     }
 
     RandomSource& random() override { return rng; }
-    int64_t seed() const override { return rng.nextLong(); }
-    int sea_level() const override { return world.sea_level; }
-    int min_y() const override { return world.min_y(); }
-    int max_y() const override { return world.max_y(); }
+    int64_t seed() const override { return initial_seed; }
+    int sea_level() const override { return worldgen::feat::GEN_SEA_LEVEL; }
+    int min_y() const override { return MIN_Y; }
+    int max_y() const override { return MIN_Y + HEIGHT; }
 
     void commit() {
         for (const auto& [p, state] : buffer) {
