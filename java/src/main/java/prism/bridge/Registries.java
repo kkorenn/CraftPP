@@ -65,8 +65,38 @@ final class Registries {
         if (fromServer != null) {
             for (Map.Entry<String, JsonElement> entry : fromServer.entrySet()) {
                 List<String> keys = new ArrayList<>();
-                for (JsonElement element : entry.getValue().getAsJsonArray()) {
-                    keys.add(element.getAsString());
+                if (entry.getValue().isJsonArray()) {
+                    for (JsonElement element : entry.getValue().getAsJsonArray()) {
+                        keys.add(element.getAsString());
+                    }
+                } else if (entry.getValue().isJsonObject()) {
+                    JsonObject obj = entry.getValue().getAsJsonObject();
+                    if (obj.has("entries") && obj.get("entries").isJsonObject()) {
+                        JsonObject entries = obj.getAsJsonObject("entries");
+                        String[] ordered = new String[entries.size()];
+                        for (Map.Entry<String, JsonElement> element : entries.entrySet()) {
+                            if (element.getValue().isJsonObject() && element.getValue().getAsJsonObject().has("protocol_id")) {
+                                int id = element.getValue().getAsJsonObject().get("protocol_id").getAsInt();
+                                if (id >= 0 && id < ordered.length) {
+                                    ordered[id] = element.getKey();
+                                }
+                            }
+                        }
+                        for (String key : ordered) {
+                            if (key != null) {
+                                keys.add(key);
+                            }
+                        }
+                        if (keys.size() < entries.size()) {
+                            for (String key : entries.keySet()) {
+                                if (!keys.contains(key)) {
+                                    keys.add(key);
+                                }
+                            }
+                        }
+                    } else {
+                        keys.addAll(obj.keySet());
+                    }
                 }
                 KEYS.put(entry.getKey(), keys);
                 RegistryImpl<?> existing = BY_PATH.get(entry.getKey());
