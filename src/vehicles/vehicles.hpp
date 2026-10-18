@@ -34,7 +34,7 @@ struct SmallFireball : Entity {
     SmallFireball() = default;
     void init() override {
         Entity::init();
-        no_gravity = true;
+        set_no_gravity(true);
     }
 
     void tick() override {
@@ -67,8 +67,8 @@ struct SmallFireball : Entity {
         int bx = int(std::floor(next.x)), by = int(std::floor(next.y)), bz = int(std::floor(next.z));
         int s = lvl::get(bx, by, bz);
         if (!lvl::is_air(s)) {
-            Pos p{bx, by, bz};
-            Pos above = p.above();
+            lvl::Pos p{bx, by, bz};
+            lvl::Pos above = p.above();
             if (lvl::is_air(lvl::get(above))) lvl::set(above, blocks::fire, lvl::UPDATE_ALL);
             discard();
             return;
@@ -89,7 +89,7 @@ struct LargeFireball : Entity {
     LargeFireball() = default;
     void init() override {
         Entity::init();
-        no_gravity = true;
+        set_no_gravity(true);
     }
 
     bool hurt_server(const DamageSource& src, float) override {
@@ -142,7 +142,7 @@ struct ShulkerBullet : Entity {
     ShulkerBullet() = default;
     void init() override {
         Entity::init();
-        no_gravity = true;
+        set_no_gravity(true);
     }
 
     void tick() override {
@@ -177,7 +177,7 @@ struct ShulkerBullet : Entity {
         }, true);
 
         if (hit || !lvl::is_air(lvl::get(int(std::floor(next.x)), int(std::floor(next.y)), int(std::floor(next.z))))) {
-            lvl::level_event(2003, Pos{int(pos.x), int(pos.y), int(pos.z)}, 0);
+            lvl::level_event(2003, lvl::Pos{int(pos.x), int(pos.y), int(pos.z)}, 0);
             discard();
             return;
         }
@@ -270,11 +270,11 @@ struct Boat : Entity {
         mark_entity_sync(*this);
     }
 
-    int mob_interact(Player& p, int) override {
+    int interact(Player& p, int) override {
         // Right click mounts the boat
         for (int i = 0; i < 2; i++) {
             if (passengers_ids[i] == 0) {
-                passengers_ids[i] = p.id;
+                passengers_ids[i] = p.eid;
                 broadcast(set_passengers_packet(id, {passengers_ids[0], passengers_ids[1]}));
                 return IR_SUCCESS;
             }
@@ -295,12 +295,12 @@ struct ChestBoat : Boat {
 
     ChestBoat() { is_chest_boat = true; }
 
-    int mob_interact(Player& p, int hand) override {
+    int interact(Player& p, int hand) override {
         if (p.is_sneaking()) {
             open_menu(p, 27, "Chest Boat", items);
             return IR_SUCCESS;
         }
-        return Boat::mob_interact(p, hand);
+        return Boat::interact(p, hand);
     }
 
     bool hurt_server(const DamageSource& ds, float d) override {
@@ -402,9 +402,9 @@ struct Minecart : Entity {
         mark_entity_sync(*this);
     }
 
-    int mob_interact(Player& p, int) override {
+    int interact(Player& p, int) override {
         if (passenger_id == 0) {
-            passenger_id = p.id;
+            passenger_id = p.eid;
             broadcast(set_passengers_packet(id, {passenger_id}));
             return IR_SUCCESS;
         }
@@ -422,7 +422,7 @@ struct ChestMinecart : Minecart {
     ItemStack items[27];
     std::string item_name() const override { return "minecraft:chest_minecart"; }
 
-    int mob_interact(Player& p, int hand) override {
+    int interact(Player& p, int hand) override {
         open_menu(p, 27, "Minecart with Chest", items);
         return IR_SUCCESS;
     }
@@ -464,7 +464,7 @@ struct HopperMinecart : Minecart {
         }, false);
     }
 
-    int mob_interact(Player& p, int hand) override {
+    int interact(Player& p, int hand) override {
         open_menu(p, 5, "Minecart with Hopper", items);
         return IR_SUCCESS;
     }
@@ -511,7 +511,7 @@ struct FurnaceMinecart : Minecart {
         }
     }
 
-    int mob_interact(Player& p, int hand) override {
+    int interact(Player& p, int hand) override {
         ItemStack& held = held_stack(p, hand);
         if (held.item == item_by_name["minecraft:coal"] || held.item == item_by_name["minecraft:charcoal"]) {
             consume(p, held);
@@ -520,7 +520,7 @@ struct FurnaceMinecart : Minecart {
             mark_entity_sync(*this);
             return IR_SUCCESS;
         }
-        return Minecart::mob_interact(p, hand);
+        return Minecart::interact(p, hand);
     }
 };
 

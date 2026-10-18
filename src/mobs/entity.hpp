@@ -330,6 +330,10 @@ struct SynchedData {
     void set_int(int id, int v) { set(id, edser::INT, v); }
     void set_bool(int id, bool v) { set(id, edser::BOOLEAN, v); }
     void set_float(int id, float f) { uint32_t u; memcpy(&u, &f, 4); set(id, edser::FLOAT, u); }
+    void define(int id, bool v) { set_bool(id, v); }
+    void define(int id, int v) { set_int(id, v); }
+    void define(int id, uint8_t v) { set_byte(id, v); }
+    void define(int id, float f) { set_float(id, f); }
     float get_float(int id, float def) const {
         const DataItem* d = find(id);
         if (!d) return def;

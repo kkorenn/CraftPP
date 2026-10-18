@@ -996,7 +996,8 @@ inline void player_will_destroy(Player& p, const Pos& pos, int state) {
         default:
             if (block(state) == ID.decorated_pot) {
                 int hand_item = p.inv[size_t(p.selected)].item;
-                if (hand_item >= 0 && (item_info[size_t(hand_item)].tool >= 0 || item_name_is(hand_item, "arrow"))) {
+                if (hand_item >= 0 && size_t(hand_item) < item_info.size() &&
+                    (item_info[size_t(hand_item)].tool >= 0 || item_info[size_t(hand_item)].name == "minecraft:arrow")) {
                     set(pos, with(state, "cracked", true), UPDATE_KNOWN_SHAPE | UPDATE_CLIENTS);
                 }
             }
