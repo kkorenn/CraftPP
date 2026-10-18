@@ -597,12 +597,17 @@ struct SliceS : Sampler {  // axis 0 X, 1 Y, 2 Z, 3 XZ
       Vol iv{1, v.sizeY, v.sizeZ, a, v.minBlockY, v.minBlockZ, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
-      int i = 0;
       float* __restrict__ op = o.data();
       const float* __restrict__ ibp = ib.data();
-      for (int z = 0; z < v.sizeZ; z++)
-        for (int x = 0; x < v.sizeX; x++)
-          for (int y = 0; y < v.sizeY; y++) op[i++] = ibp[idx(iv, 0, y, z)];
+      const int sy = v.sizeY;
+      int oi = 0;
+      for (int z = 0; z < v.sizeZ; z++) {
+        const float* src = ibp + z * sy;
+        for (int x = 0; x < v.sizeX; x++) {
+          std::memcpy(op + oi, src, sy * sizeof(float));
+          oi += sy;
+        }
+      }
     } else if (axis == 1) {
       if (v.sizeY == 1 && v.minBlockY == a) return in->sampleVolume(c, o, v);
       Vol iv{v.sizeX, 1, v.sizeZ, v.minBlockX, a, v.minBlockZ, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
@@ -621,12 +626,11 @@ struct SliceS : Sampler {  // axis 0 X, 1 Y, 2 Z, 3 XZ
       Vol iv{v.sizeX, v.sizeY, 1, v.minBlockX, v.minBlockY, a, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
-      int i = 0;
       float* __restrict__ op = o.data();
       const float* __restrict__ ibp = ib.data();
+      const int xySize = v.sizeX * v.sizeY;
       for (int z = 0; z < v.sizeZ; z++)
-        for (int x = 0; x < v.sizeX; x++)
-          for (int y = 0; y < v.sizeY; y++) op[i++] = ibp[idx(iv, x, y, 0)];
+        std::memcpy(op + z * xySize, ibp, xySize * sizeof(float));
     } else {
       if (v.sizeX == 1 && v.sizeZ == 1 && v.minBlockX == a && v.minBlockZ == b) return in->sampleVolume(c, o, v);
       Vol iv{1, v.sizeY, 1, a, v.minBlockY, b, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
@@ -634,11 +638,10 @@ struct SliceS : Sampler {  // axis 0 X, 1 Y, 2 Z, 3 XZ
       in->sampleVolume(c, ib, iv);
       float* __restrict__ op = o.data();
       const float* __restrict__ ibp = ib.data();
-      for (int y = 0; y < v.sizeY; y++) {
-        float val = ibp[idx(iv, 0, y, 0)];
-        int i = idx(v, 0, y, 0);
-        for (int n = 0; n < v.sizeX * v.sizeZ; n++, i += v.sizeY) op[i] = val;
-      }
+      const int sy = v.sizeY;
+      const int numCols = v.sizeX * v.sizeZ;
+      for (int n = 0; n < numCols; n++)
+        std::memcpy(op + n * sy, ibp, sy * sizeof(float));
     }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
@@ -664,10 +667,11 @@ struct DistanceS : Sampler {  // DistanceToPointFunction.Sampler + DistanceMetri
     }
   }
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
+    float* __restrict__ op = o.data();
     int i = 0;
     for (int z = 0; z < v.sizeZ; z++)
       for (int x = 0; x < v.sizeX; x++)
-        for (int y = 0; y < v.sizeY; y++) o.set(i++, sampleValue(c, v.blockX(x), v.blockY(y), v.blockZ(z)));
+        for (int y = 0; y < v.sizeY; y++) op[i++] = sampleValue(c, v.blockX(x), v.blockY(y), v.blockZ(z));
   }
 };
 
@@ -709,9 +713,10 @@ struct FindTopSurfaceS : Sampler {
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     if (v.sizeY != 1) throw std::invalid_argument("find_top_surface: sizeY != 1");
     upper->sampleVolume(c, o, v);
+    float* __restrict__ op = o.data();
     int i = 0;
     for (int z = 0; z < v.sizeZ; z++)
-      for (int x = 0; x < v.sizeX; x++, i++) o.set(i, find(c, v.blockX(x), v.blockZ(z), o.get(i)));
+      for (int x = 0; x < v.sizeX; x++, i++) op[i] = find(c, v.blockX(x), v.blockZ(z), op[i]);
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override { return find(c, x, z, upper->sampleValue(c, x, y, z)); }
 };
@@ -754,13 +759,15 @@ struct SplineS : Sampler {
   std::vector<S> coords;
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     std::vector<std::unique_ptr<PBuf>> bufs(coords.size());
+    std::vector<const float*> rawPtrs(coords.size(), nullptr);
     int index = 0;
     auto in = [&](int ci) {
-      if (!bufs[ci]) {
+      if (!rawPtrs[ci]) {
         bufs[ci] = std::make_unique<PBuf>(v.size());
         coords[ci]->sampleVolume(c, *bufs[ci], v);
+        rawPtrs[ci] = bufs[ci]->data();
       }
-      return bufs[ci]->data()[index];
+      return rawPtrs[ci][index];
     };
     float* __restrict__ op = o.data();
     const int n = o.size();
