@@ -685,7 +685,7 @@ inline bool dispenser_trigger(const lvl::Pos& p, int state) {
     auto b = be::get(p.x, p.y, p.z);
     if (!b) return false;
     for (auto& it : b->items) {
-        if (!it.empty() && item_name_is(it.item, "tnt")) {
+        if (!it.empty() && size_t(it.item) < item_info.size() && item_info[size_t(it.item)].name == "minecraft:tnt") {
             it.count--;
             if (it.count == 0) it = {};
             b->set_changed();

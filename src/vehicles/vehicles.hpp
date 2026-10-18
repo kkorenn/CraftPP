@@ -122,7 +122,7 @@ struct LargeFireball : Entity {
 
         int bx = int(std::floor(next.x)), by = int(std::floor(next.y)), bz = int(std::floor(next.z));
         if (hit || !lvl::is_air(lvl::get(bx, by, bz))) {
-            explode_at(pos.x, pos.y, pos.z, explosion_power, true, true, this);
+            explode(this, pos.x, pos.y, pos.z, explosion_power, true, ExplosionInteraction::MOB);
             discard();
             return;
         }
@@ -485,7 +485,7 @@ struct TntMinecart : Minecart {
         int bx = int(std::floor(pos.x)), by = int(std::floor(pos.y)), bz = int(std::floor(pos.z));
         int s = lvl::get(bx, by, bz);
         if (lvl::block(s) == lvl::ID.activator_rail && lvl::rpowered(s)) {
-            explode_at(pos.x, pos.y, pos.z, 4.0f, false, true, this);
+            explode(this, pos.x, pos.y, pos.z, 4.0f, false, ExplosionInteraction::TNT);
             discard();
         }
     }
@@ -578,11 +578,11 @@ inline void init() {
     register_entity_factory(tnt_minecart, make_entity<TntMinecart>);
     register_entity_factory(furnace_minecart, make_entity<FurnaceMinecart>);
 
-    lvl::place_vehicle_hook = [](Player& pl, int item, const Pos& hit, int face) -> bool {
+    lvl::place_vehicle_hook = [](Player& pl, int item, const lvl::Pos& hit, int face) -> bool {
         if (item < 0 || size_t(item) >= item_info.size()) return false;
         const std::string& iname = item_info[item].name;
         if (iname.rfind("_boat") != std::string::npos || iname.rfind("_raft") != std::string::npos) {
-            Pos t = hit.rel(face);
+            lvl::Pos t = hit.rel(face);
             double sx = t.x + 0.5, sy = t.y, sz = t.z + 0.5;
             std::string err;
             int type = entity_type_id(iname);
