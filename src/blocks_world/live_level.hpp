@@ -49,7 +49,7 @@ public:
 
     RandomSource& random() override { return rng; }
     int64_t seed() const override { return initial_seed; }
-    int sea_level() const override { return worldgen::feat::GEN_SEA_LEVEL; }
+    int sea_level() const override { return 63; }
     int min_y() const override { return MIN_Y; }
     int max_y() const override { return MIN_Y + HEIGHT; }
 

@@ -191,7 +191,7 @@ inline bool wire_should_connect(int s, int dir) {  // shouldRedstoneWireConnectT
     if (has_class(s, "RepeaterBlock")) return dir >= 0 && axis(dir) == axis(getdir(s));
     return signal_source(s) && dir >= 0;
 }
-inline bool wire_survives_on(int s) { return sturdy(s, UP) || pkind(s) == P_HOPPER && block_of(s).name == "minecraft:hopper"; }
+inline bool wire_survives_on(int s) { return sturdy(s, UP) || (pkind(s) == P_HOPPER && block_of(s).name == "minecraft:hopper"); }
 inline const char* wire_side(const Pos& p, int d, bool up_ok) {  // getConnectingSide
     Pos rp = p.rel(d);
     int rs = get(rp);

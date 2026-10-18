@@ -233,15 +233,18 @@ struct ShiftedS : Sampler {  // ShiftedXzSampler / ShiftedXyzSampler (sy null fo
     if (sy) sy->sampleVolume(c, by, v);
     sz->sampleVolume(c, bz, v);
     int i = 0;
+    float* __restrict__ op = o.data();
+    const float* __restrict__ byp = sy ? by.data() : nullptr;
+    const float* __restrict__ bzp = bz.data();
     for (int z = 0; z < v.sizeZ; z++) {
       double baseZ = v.blockZ(z) * xz;
       for (int x = 0; x < v.sizeX; x++) {
         double baseX = v.blockX(x) * xz;
         for (int yy = 0; yy < v.sizeY; yy++, i++) {
-          double nx = baseX + o.get(i);
-          double ny = sy ? v.blockY(yy) * y + by.get(i) : v.blockY(yy) * y;
-          double nz = baseZ + bz.get(i);
-          o.set(i, noise->get(nx, ny, nz));
+          double nx = baseX + op[i];
+          double ny = sy ? v.blockY(yy) * y + byp[i] : v.blockY(yy) * y;
+          double nz = baseZ + bzp[i];
+          op[i] = noise->get(nx, ny, nz);
         }
       }
     }
@@ -262,8 +265,9 @@ struct ShiftBS : Sampler {
     PBuf tb(t.size());
     tb.fill(0.0f);
     noise->addToVolume(tb, t, 0.25, 0.25, 4.0f);
+    const float* __restrict__ tbp = tb.data();
     for (int z = 0; z < v.sizeZ; z++)
-      for (int x = 0; x < v.sizeX; x++) setRange(o, idx(v, x, 0, z), v.sizeY, tb.get(idx(t, z, x, 0)));
+      for (int x = 0; x < v.sizeX; x++) setRange(o, idx(v, x, 0, z), v.sizeY, tbp[idx(t, z, x, 0)]);
   }
   float sampleValue(Ctx&, int bx, int, int bz) const override { return noise->get(bz * 0.25, bx * 0.25, 0.0) * 4.0f; }
 };
@@ -480,7 +484,14 @@ struct IntervalSelectS : Sampler {
       bufs.emplace_back(v.size());
       s->sampleVolume(c, bufs.back(), v);
     }
-    for (int i = 0; i < o.size(); i++) o.set(i, bufs[select(o.get(i))].get(i));
+    float* __restrict__ op = o.data();
+    const int n = o.size();
+    std::vector<const float*> raw(samplers.size());
+    for (size_t s = 0; s < samplers.size(); s++) raw[s] = bufs[s].data();
+    for (int i = 0; i < n; i++) {
+      int sel = select(op[i]);
+      op[i] = raw[sel][i];
+    }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
     return samplers[select(input->sampleValue(c, x, y, z))]->sampleValue(c, x, y, z);
