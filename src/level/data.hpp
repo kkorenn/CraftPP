@@ -176,7 +176,7 @@ struct Ids {
         end_gateway, ladder, bedrock, cactus_flower, lily_pad, vine, pumpkin, melon, attached_pumpkin_stem,
         attached_melon_stem, pumpkin_stem, melon_stem, tnt, glass, end_stone, brown_mushroom, red_mushroom,
         mycelium_, cobweb, short_grass, tall_grass, fern, large_fern, dead_bush, moss_carpet, crimson_nylium,
-        warped_nylium, light;
+        warped_nylium, light, lectern, jukebox, decorated_pot;
 };
 inline Ids ID;
 
@@ -222,7 +222,7 @@ inline bool load(const std::string& path = "data/level.json") {
     R(cactus_flower) R(lily_pad) R(vine) R(pumpkin) R(melon) R(attached_pumpkin_stem) R(attached_melon_stem)
     R(pumpkin_stem) R(melon_stem) R(tnt) R(glass) R(end_stone) R(brown_mushroom) R(red_mushroom) R(cobweb)
     R(short_grass) R(tall_grass) R(fern) R(large_fern) R(dead_bush) R(moss_carpet) R(crimson_nylium) R(warped_nylium)
-    R(light)
+    R(light) R(lectern) R(jukebox) R(decorated_pot)
 #undef R
     wl_table.resize(T.flags.size());
     for (size_t s = 0; s < wl_table.size(); s++) wl_table[s] = has(int(s), "waterlogged") ? int8_t(getb(int(s), "waterlogged")) : -1;

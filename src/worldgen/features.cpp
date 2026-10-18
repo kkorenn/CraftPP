@@ -54,23 +54,23 @@ bs::Dir dir_by_name(const std::string& n0) {
 // ---------------------------------------------------------------- Level
 uint16_t Level::get(const P& p) const {
   if (outside(p.y)) return blocks::void_air;
-  ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
+  ProtoChunk* c = r ? r->chunk(p.x >> 4, p.z >> 4) : nullptr;
   if (!c || !c->chunk) return blocks::air;  // outside the region: vanilla crashes; never expected
   return c->chunk->get(p.x & 15, p.y, p.z & 15);
 }
 
 bool Level::set(const P& p, int state) {
-  if (!r.set(p.x, p.y, p.z, uint16_t(state))) return false;
+  if (!r || !r->set(p.x, p.y, p.z, uint16_t(state))) return false;
   int be = R().block(R().block_of(state)).block_entity;
   if (be >= 0) {  // WorldGenRegion.setBlock: DUMMY block entity for proto chunks
-    Chunk& c = *r.chunk(p.x >> 4, p.z >> 4)->chunk;
+    Chunk& c = *r->chunk(p.x >> 4, p.z >> 4)->chunk;
     c.block_entities.push_back({uint8_t(p.x & 15), uint8_t(p.z & 15), int16_t(p.y), be, {0x0a, 0x00}});
   }
   return true;
 }
 
 BlockEntity* Level::block_entity(const P& p) {
-  ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
+  ProtoChunk* c = r ? r->chunk(p.x >> 4, p.z >> 4) : nullptr;
   if (!c || !c->chunk) return nullptr;
   for (auto& e : c->chunk->block_entities)
     if (e.x == (p.x & 15) && e.z == (p.z & 15) && e.y == p.y) return &e;
@@ -78,35 +78,36 @@ BlockEntity* Level::block_entity(const P& p) {
 }
 
 int Level::height(Heightmap h, int x, int z) const {
-  ProtoChunk* c = r.chunk(x >> 4, z >> 4);
+  ProtoChunk* c = r ? r->chunk(x >> 4, z >> 4) : nullptr;
   return c && c->chunk ? c->height(h, x & 15, z & 15) : min_y();
 }
-int Level::min_y() const { return r.pipeline.min_y; }
-int Level::max_y() const { return r.pipeline.min_y + r.pipeline.height - 1; }
+int Level::min_y() const { return r ? r->pipeline.min_y : -64; }
+int Level::max_y() const { return r ? (r->pipeline.min_y + r->pipeline.height - 1) : 319; }
 
 int Level::biome(const P& p) const {
+  if (!f || !f->materials) return 0;
   BiomeCtx ctx(const_cast<Level&>(*this));
   return f->materials->zoomedBiome(ctx, p.x, p.y, p.z, true);
 }
 
 RandomSource& Level::random() {
-  if (!rand) rand = f->regionRandom->at(r.cx * 16, 0, r.cz * 16);
+  if (!rand) rand = (f && f->regionRandom && r) ? f->regionRandom->at(r->cx * 16, 0, r->cz * 16) : std::make_unique<LegacyRandomSource>(12345);
   return *rand;
 }
 
-int64_t Level::seed() const { return f->ow.seed; }
+int64_t Level::seed() const { return f ? f->ow.seed : 0; }
 
-float Level::temperature(int biome, const P& p) const { return f->materials->biomeTemperature(biome, p.x, p.y, p.z); }
+float Level::temperature(int biome, const P& p) const { return f && f->materials ? f->materials->biomeTemperature(biome, p.x, p.y, p.z) : 0.8f; }
 
 void Level::mark_post_processing(const P& p) {
-  if (outside(p.y)) return;
-  ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
+  if (outside(p.y) || !r) return;
+  ProtoChunk* c = r->chunk(p.x >> 4, p.z >> 4);
   if (c && c->chunk) c->post_processing.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
 void Level::schedule_leaf_tick(const P& p) {
-  if (outside(p.y)) return;
-  ProtoChunk* c = r.chunk(p.x >> 4, p.z >> 4);
+  if (outside(p.y) || !r) return;
+  ProtoChunk* c = r->chunk(p.x >> 4, p.z >> 4);
   if (c && c->chunk) c->leaf_ticks.push_back((p.y - min_y()) << 8 | (p.z & 15) << 4 | (p.x & 15));
 }
 
@@ -624,12 +625,12 @@ const Modifier* Loader::modifier(const Json& j) {
   if (t == "noise_based_count") {
     auto* m = make<NoiseBasedCount>();
     m->ratio = j["noise_to_count_ratio"].asInt(), m->factor = j["noise_factor"].asDouble();
-    m->offset = j.getDouble("noise_offset", 0.0), m->f = &f;
+    m->offset = j.getDouble("noise_offset", 0.0), m->f = f;
     return m;
   }
   if (t == "noise_threshold_count") {
     auto* m = make<NoiseThresholdCount>();
-    m->level = j["noise_level"].asDouble(), m->below = j["below_noise"].asInt(), m->above = j["above_noise"].asInt(), m->f = &f;
+    m->level = j["noise_level"].asDouble(), m->below = j["below_noise"].asInt(), m->above = j["above_noise"].asInt(), m->f = f;
     return m;
   }
   if (t == "count_on_every_layer") { auto* m = make<CountOnEveryLayer>(); m->n = IntProvider(j["count"]); return m; }
@@ -638,7 +639,7 @@ const Modifier* Loader::modifier(const Json& j) {
   if (t == "in_square") return make<InSquare>();
   if (t == "height_range") { auto* m = make<HeightRange>(); m->h = HeightProvider(j["height"]); return m; }
   if (t == "heightmap") { auto* m = make<HeightmapMod>(); m->h = heightmap_by_name(j["heightmap"].asString()); return m; }
-  if (t == "biome") { auto* m = make<BiomeFilter>(); m->f = &f; return m; }
+  if (t == "biome") { auto* m = make<BiomeFilter>(); m->f = f; return m; }
   if (t == "block_predicate_filter") { auto* m = make<PredicateFilter>(); m->pred = predicate(j["predicate"]); return m; }
   if (t == "surface_water_depth_filter") { auto* m = make<SurfaceWaterDepth>(); m->max = j["max_water_depth"].asInt(); return m; }
   if (t == "surface_relative_threshold_filter") {
@@ -687,9 +688,14 @@ const Placed* Loader::placed(const Json& j) {
     placedById[id] = nullptr;  // cycle guard
     const Placed* p = placed(load("placed_feature", id));
     auto* q = const_cast<Placed*>(p);
-    q->id = int(f.placedList.size());
-    q->name = id;
-    f.placedList.push_back(q);
+    if (f) {
+      q->id = int(f->placedList.size());
+      q->name = id;
+      f->placedList.push_back(q);
+    } else {
+      q->id = 0;
+      q->name = id;
+    }
     return placedById[id] = p;
   }
   auto* p = make<Placed>();
@@ -709,8 +715,9 @@ const Feature* Loader::feature(const Json& j) {
     }
   }
   std::string t = strip_ns(j["type"].asString());
-  auto it = f.parsers.find(t);
-  if (it == f.parsers.end()) {  // not ported yet: places nothing (reported once per type)
+  const ParserMap& parsers = parsers_override ? *parsers_override : f->parsers;
+  auto it = parsers.find(t);
+  if (it == parsers.end()) {  // not ported yet: places nothing (reported once per type)
     struct Missing : Feature {
       bool place(Level&, RandomSource&, const P&) const override { return false; }
     };
@@ -747,13 +754,24 @@ const BlockPredicate* Loader::predicate(const Json& j) {
   if (t == "matching_biomes") {
     auto* p = make<MatchingBiomes>();
     p->biomes.assign(biomes::COUNT, 0);
+    auto lookup_biome = [&](const std::string& bname) {
+      if (f && f->materials) return f->materials->biomeId(bname);
+      std::string full = bname.find(':') == std::string::npos ? "minecraft:" + bname : bname;
+      for (int i = 0; i < biomes::COUNT; i++)
+        if (full == biomes::NAMES[i]) return i;
+      return -1;
+    };
     auto add = [&](const std::string& id) {
       if (id[0] == '#') {
         Json tag = Json::parseFile(root + "/minecraft/tags/worldgen/biome/" + strip_ns(id.substr(1)) + ".json");
-        for (auto& v : tag["values"].arr)
-          if (int b = f.materials->biomeId(v.isString() ? v.str : v["id"].str); b >= 0) p->biomes[size_t(b)] = 1;
-      } else if (int b = f.materials->biomeId(id); b >= 0) {
-        p->biomes[size_t(b)] = 1;
+        for (auto& v : tag["values"].arr) {
+          std::string bname = v.isString() ? v.str : v["id"].str;
+          int b = lookup_biome(bname);
+          if (b >= 0) p->biomes[size_t(b)] = 1;
+        }
+      } else {
+        int b = lookup_biome(id);
+        if (b >= 0) p->biomes[size_t(b)] = 1;
       }
     };
     const Json& bj = j["biomes"];
@@ -877,6 +895,23 @@ const RuleTest* Loader::rule(const Json& j) {
   }
   if (t == "not") { auto* r = make<NotTest>(); r->t = rule(j["rule"]); return r; }
   throw std::runtime_error("rule test " + t);
+}
+
+const Feature* load_feature_by_name(const std::string& name, const std::string& root) {
+  static ParserMap parsers;
+  static std::unique_ptr<Loader> loader;
+  static std::mutex mtx;
+  std::lock_guard lock(mtx);
+  if (!loader) {
+    register_basic_features(parsers);
+    register_tree_features(parsers);
+    register_cave_features(parsers);
+    register_misc_features(parsers);
+    register_nether_end_features(parsers);
+    for (auto& [k, v] : extra_feature_parsers()) parsers[k] = v;
+    loader = std::make_unique<Loader>(parsers, root);
+  }
+  return loader->feature(loader->load("feature", name));
 }
 
 }  // namespace feat

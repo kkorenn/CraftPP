@@ -183,7 +183,11 @@ inline int analog_output(int s, const Pos& p) {
     if (has_class(s, "AbstractCauldronBlock")) return 0;
     return container_signal ? container_signal(s, p) : 0;  // ponytail: chests/hoppers/... until containers lands
 }
-inline bool has_analog(int s) { return T.flags[size_t(s)] & F_ANALOG; }
+inline bool has_analog(int s) {
+    if (T.flags[size_t(s)] & F_ANALOG) return true;
+    int b = block(s);
+    return b == ID.lectern || b == ID.jukebox || b == ID.decorated_pot;
+}
 
 // Level.updateNeighbourForOutputSignal
 inline void update_neighbour_for_output_signal(const Pos& p, int src_block) {
@@ -511,6 +515,7 @@ inline void moving_final_tick(Moving& m) {  // PistonMovingBlockEntity.finalTick
         neighbor_changed_at(p, block(ns));
     }
 }
+inline void (*piston_push_entities_hook)(int x, int y, int z, int dir, bool extending, float delta_progress) = nullptr;
 inline void moving_tick(Moving& m) {  // PistonMovingBlockEntity.tick
     m.last_ticked = now();
     m.progress_o = m.progress;
@@ -530,7 +535,9 @@ inline void moving_tick(Moving& m) {  // PistonMovingBlockEntity.tick
             }
         }
     } else {
-        m.progress = std::min(1.0f, m.progress + 0.5f);  // ponytail: entities are not pushed (moveCollidedEntities)
+        float prev = m.progress;
+        m.progress = std::min(1.0f, m.progress + 0.5f);
+        if (piston_push_entities_hook) piston_push_entities_hook(m.pos.x, m.pos.y, m.pos.z, m.dir, m.extending, m.progress - prev);
     }
 }
 inline void tick_block_entities() {  // Level.tickBlockEntities (moving pistons)
@@ -1073,6 +1080,7 @@ inline void rs_after_removal(int s, const Pos& p, bool piston) {
         default: return;
     }
 }
+inline bool (*dispenser_trigger_hook)(const Pos& p, int state) = nullptr;
 inline bool rs_tick(int s, const Pos& p) {
     int b = block(s);
     switch (rkind(s)) {
@@ -1128,8 +1136,18 @@ inline bool rs_tick(int s, const Pos& p) {
         case R_TARGET:
             if (rpower(s) != 0) set(p, with(s, "power", 0));
             return true;
-        case R_DISPENSER: return true;  // ponytail: dispenseFrom needs the container block entity (DispenseItemBehavior)
-        default: return false;
+        case R_DISPENSER:
+            if (dispenser_trigger_hook) dispenser_trigger_hook(p, s);
+            return true;
+        default:
+            if (b == ID.lectern) {
+                if (rpowered(s)) {
+                    set(p, with(s, "powered", false), UPDATE_CLIENTS);
+                    update_neighbors(p.below(), b);
+                }
+                return true;
+            }
+            return false;
     }
 }
 

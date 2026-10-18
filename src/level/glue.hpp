@@ -30,6 +30,7 @@ inline void resend_changed_chunks(Player& p) {
 
 inline void start() {
     init();
+    tnt_prime_hook = tnt_prime;
     on_tick(tick_all_levels);
     on_player_tick(plates_player_tick);
     on_tick_end(broadcast_all_changes);

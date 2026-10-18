@@ -352,6 +352,17 @@ inline int explode(Entity* source, double x, double y, double z, float r, bool f
         for (auto& b : blow_pos) {
             int s = block_at(b[0], b[1], b[2]);
             if (sflag(s, SF_AIR)) continue;
+            if (block_of(s).name == "minecraft:tnt") {
+                if (rule("tnt_explodes")) {
+                    std::string err;
+                    if (Entity* e = summon_entity(entity_types::tnt, b[0] + 0.5, b[1], b[2] + 0.5, nullptr, err)) {
+                        e->data.set_int(edata::PrimedTnt::FUSE, rand_between(10, 30));
+                        mark_entity_sync(*e);
+                    }
+                }
+                batch.set(b[0], b[1], b[2], blocks::air);
+                continue;
+            }
             const BlockInfo& bi = block_of(s);
             if (bi.loot >= 0) {
                 drops.clear();

@@ -76,28 +76,29 @@ inline int ceil_i(double v) { return Mth::d2i(std::ceil(v)); }                  
 // WorldGenLevel over the FEATURES region (WorldGenRegion).
 class Level {
  public:
-  Level(Region& r, const Features& f) : r(r), f(&f) {}
-  explicit Level(Region& r) : r(r), f(nullptr) {}  // block access only (no biome/seed/random queries)
-  uint16_t get(const P& p) const;
+  Level(Region& r, const Features& f) : r(&r), f(&f) {}
+  explicit Level(Region& r) : r(&r), f(nullptr) {}  // block access only (no biome/seed/random queries)
+  virtual ~Level() = default;
+  virtual uint16_t get(const P& p) const;
   uint16_t get(int x, int y, int z) const { return get(P{x, y, z}); }
-  bool set(const P& p, int state);  // WorldGenRegion.setBlock (+ block entity bookkeeping)
-  bool can_write(const P& p) const { return r.writable(p.x, p.z); }  // ensureCanWrite
-  int height(Heightmap h, int x, int z) const;  // getHeight (first free y)
-  int biome(const P& p) const;                  // getBiome (BiomeManager zoom over stored noise biomes)
+  virtual bool set(const P& p, int state);  // WorldGenRegion.setBlock (+ block entity bookkeeping)
+  virtual bool can_write(const P& p) const { return r && r->writable(p.x, p.z); }  // ensureCanWrite
+  virtual int height(Heightmap h, int x, int z) const;  // getHeight (first free y)
+  virtual int biome(const P& p) const;                  // getBiome (BiomeManager zoom over stored noise biomes)
   bool empty(const P& p) const { return bs::R().is_air(get(p)); }  // isEmptyBlock
   bool outside(int y) const { return y < min_y() || y > max_y(); }
   bool water_at(const P& p) const { return bs::R().is_water(get(p)); }  // isWaterAt (FluidTags.WATER)
-  RandomSource& random();                 // WorldGenRegion.getRandom()
-  BlockEntity* block_entity(const P& p);  // the block entity at p, if the block has one
-  int64_t seed() const;
-  int sea_level() const { return GEN_SEA_LEVEL; }
-  int min_y() const;
-  int max_y() const;
-  float temperature(int biome, const P& p) const;  // Biome.getTemperature(pos, seaLevel)
-  bool should_freeze(int biome, const P& p, bool checkNeighbors) const;  // Biome.shouldFreeze
-  bool should_snow(int biome, const P& p) const;                         // Biome.shouldSnow
-  void mark_post_processing(const P& p);  // ChunkAccess.markPosForPostProcessing
-  void schedule_leaf_tick(const P& p);     // scheduleTick(pos, LeavesBlock, 1): run by Features::finish
+  virtual RandomSource& random();                 // WorldGenRegion.getRandom()
+  virtual BlockEntity* block_entity(const P& p);  // the block entity at p, if the block has one
+  virtual int64_t seed() const;
+  virtual int sea_level() const { return GEN_SEA_LEVEL; }
+  virtual int min_y() const;
+  virtual int max_y() const;
+  virtual float temperature(int biome, const P& p) const;  // Biome.getTemperature(pos, seaLevel)
+  virtual bool should_freeze(int biome, const P& p, bool checkNeighbors) const;  // Biome.shouldFreeze
+  virtual bool should_snow(int biome, const P& p) const;                         // Biome.shouldSnow
+  virtual void mark_post_processing(const P& p);  // ChunkAccess.markPosForPostProcessing
+  virtual void schedule_leaf_tick(const P& p);     // scheduleTick(pos, LeavesBlock, 1): run by Features::finish
   void mark_above_for_post_processing(const P& p) {  // Feature.markAboveForPostProcessing
     P q = p;
     for (int i = 0; i < 2; i++) {
@@ -106,12 +107,13 @@ class Level {
       mark_post_processing(q);
     }
   }
-  Region& region() { return r; }
+  Region& region() { return *r; }
   const Features& features() const { return *f; }
 
- private:
-  Region& r;
-  const Features* f;
+ protected:
+  Level() = default;
+  Region* r = nullptr;
+  const Features* f = nullptr;
   std::unique_ptr<RandomSource> rand;
 };
 
@@ -199,10 +201,32 @@ void update_shape_at_edge(Level& l, const P& min, int sx, int sy, int sz, const 
 // (the FULL step; Features::finish). Needs no Features (structures-only stage runs it too).
 void post_process(Region& r);
 
+class Loader;
+using FeatureParser = std::function<const Feature*(Loader&, const Json&)>;
+using ParserMap = std::unordered_map<std::string, FeatureParser>;
+void register_basic_features(ParserMap& out);  // feature_basic.cpp
+void register_tree_features(ParserMap& out);   // feature_tree.cpp
+void register_cave_features(ParserMap& out);   // feature_cave.cpp
+void register_misc_features(ParserMap& out);   // feature_misc.cpp
+void register_nether_end_features(ParserMap& out);  // feature_nether_end.cpp
+// EndSpikeFeature.EndSpike / getSpikesForLevel (dragon fight: crystal respawn) and the end gateway block entity
+// NBT with an exit (EndGatewayFeature.knownExit; mobs-bosses places gateways on dragon death).
+struct EndSpike { int x, z, radius, height; bool guarded; };
+std::vector<EndSpike> end_spikes(int64_t seed);
+std::vector<uint8_t> end_gateway_nbt(int x, int y, int z, bool exact);
+// Extra feature types registered by other subsystems before the Overworld is built (static init or setup):
+// e.g. the structures agent adds "template" and "fossil" (StructureTemplate.placeInWorld + processors), which
+// this branch leaves unimplemented (they place nothing and are reported once at load).
+ParserMap& extra_feature_parsers();
+
+// Loads a configured feature by name (e.g. "oak", "huge_brown_mushroom").
+const Feature* load_feature_by_name(const std::string& name, const std::string& root = "data/vanilla");
+
 // Parses worldgen JSON into owned objects; registry ids are memoized.
 class Loader {
  public:
-  Loader(Features& f, const std::string& root) : f(f), root(root) {}
+  Loader(Features& f, const std::string& root) : f(&f), root(root) {}
+  Loader(ParserMap& parsers, const std::string& root) : f(nullptr), parsers_override(&parsers), root(root) {}
   const Placed* placed(const Json& j);
   const Feature* feature(const Json& j);
   const BlockPredicate* predicate(const Json& j);
@@ -220,7 +244,8 @@ class Loader {
     owned.emplace_back(h);
     return &h->v;
   }
-  Features& f;
+  Features* f = nullptr;
+  ParserMap* parsers_override = nullptr;
   std::string root;
 
  private:
@@ -234,23 +259,6 @@ class Loader {
   std::unordered_map<std::string, const Feature*> featureById;
   std::unordered_map<std::string, const StateProvider*> providerById;
 };
-
-using FeatureParser = std::function<const Feature*(Loader&, const Json&)>;
-using ParserMap = std::unordered_map<std::string, FeatureParser>;
-void register_basic_features(ParserMap& out);  // feature_basic.cpp
-void register_tree_features(ParserMap& out);   // feature_tree.cpp
-void register_cave_features(ParserMap& out);   // feature_cave.cpp
-void register_misc_features(ParserMap& out);   // feature_misc.cpp
-void register_nether_end_features(ParserMap& out);  // feature_nether_end.cpp
-// EndSpikeFeature.EndSpike / getSpikesForLevel (dragon fight: crystal respawn) and the end gateway block entity
-// NBT with an exit (EndGatewayFeature.knownExit; mobs-bosses places gateways on dragon death).
-struct EndSpike { int x, z, radius, height; bool guarded; };
-std::vector<EndSpike> end_spikes(int64_t seed);
-std::vector<uint8_t> end_gateway_nbt(int x, int y, int z, bool exact);
-// Extra feature types registered by other subsystems before the Overworld is built (static init or setup):
-// e.g. the structures agent adds "template" and "fossil" (StructureTemplate.placeInWorld + processors), which
-// this branch leaves unimplemented (they place nothing and are reported once at load).
-ParserMap& extra_feature_parsers();
 
 }  // namespace feat
 

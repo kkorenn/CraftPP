@@ -328,6 +328,11 @@ inline bool use_without_item(Player& pl, const Pos& p, int s) {
     }
 }
 
+inline bool (*bonemeal_tree_hook)(const Pos& p, int s, RandomSource& r) = nullptr;
+inline bool (*bonemeal_mushroom_hook)(const Pos& p, int s, RandomSource& r) = nullptr;
+inline bool (*bonemeal_grass_hook)(const Pos& p, RandomSource& r) = nullptr;
+inline bool (*tnt_prime_hook)(const Pos& p) = nullptr;
+
 // ---------- items used on blocks ----------
 inline bool bonemeal(const Pos& p) {  // BoneMealItem.growCrop
     int s = get(p);
@@ -346,8 +351,16 @@ inline bool bonemeal(const Pos& p) {  // BoneMealItem.growCrop
             break;
         }
         case K_SAPLING:
-            if (r.nextFloat() < 0.45f && geti(s, "stage") == 0) set(p, with(s, "stage", 1), UPDATE_NONE);
-            break;  // ponytail: no tree growth (TreeGrower needs tree features)
+            if (r.nextFloat() < 0.45f) {
+                if (geti(s, "stage") == 0) set(p, with(s, "stage", 1), UPDATE_NONE);
+                else if (bonemeal_tree_hook) bonemeal_tree_hook(p, s, r);
+            }
+            break;
+        case K_MUSHROOM:
+            if (r.nextFloat() < 0.40f) {
+                if (bonemeal_mushroom_hook) bonemeal_mushroom_hook(p, s, r);
+            }
+            break;
         case K_BERRY_BUSH:
             if (age_of(s) >= 3) return false;
             set(p, with(s, "age", std::min(3, age_of(s) + 1)), UPDATE_CLIENTS);
@@ -373,7 +386,12 @@ inline bool bonemeal(const Pos& p) {  // BoneMealItem.growCrop
             if (!is_air(get(p.above()))) return false;
             set(p.above(), with(def(ID.bamboo), "leaves", "small"));
             break;
-        default: return false;  // ponytail: grass/flower spreading and bigger plants (BonemealableBlock) not ported
+        default:
+            if (block(s) == ID.grass_block) {
+                if (bonemeal_grass_hook && !bonemeal_grass_hook(p, r)) return false;
+                break;
+            }
+            return false;
     }
     level_event(1505, p, 15);
     return true;
@@ -426,7 +444,15 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
         if (pl.gamemode != 1) slot.damage++;
         return true;
     }
-    if (item_name_is(item, "flint_and_steel")) {  // FlintAndSteelItem.useOn (campfires/candles not ported)
+    if (item_name_is(item, "flint_and_steel")) {  // FlintAndSteelItem.useOn
+        if (block(s) == ID.tnt) {
+            if (tnt_prime_hook && tnt_prime_hook(hit)) {
+                set(hit, blocks::air, UPDATE_ALL_IMMEDIATE);
+                progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
+                if (pl.gamemode != 1) slot.damage++;
+                return true;
+            }
+        }
         Pos t = hit.rel(face);
         if (is_air(get(t))) {
             int fs = fire_state_for(t);
@@ -439,6 +465,16 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
             }
         }
         return false;
+    }
+    if (item_name_is(item, "fire_charge")) {  // FireChargeItem.useOn
+        if (block(s) == ID.tnt) {
+            if (tnt_prime_hook && tnt_prime_hook(hit)) {
+                set(hit, blocks::air, UPDATE_ALL_IMMEDIATE);
+                progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
+                consume(pl, slot);
+                return true;
+            }
+        }
     }
     int b = item_block(item);
     if (b < 0) return false;

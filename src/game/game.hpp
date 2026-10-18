@@ -12,6 +12,7 @@
 #include "../console.hpp"
 #include "../boss/boss.hpp"
 #include "../environment/environment.hpp"
+#include "../blocks_world/blocks_world.hpp"
 
 #include <unistd.h>
 
@@ -58,6 +59,7 @@ inline void start_game() {
     lvl::start();  // block updates, scheduled/random ticks, fluids (src/level/)
     register_game_handlers();
     containers_init();
+    blocks_world::init();
     lvl::container_signal = [](int, const lvl::Pos& p) { return be::comparator_signal(p.x, p.y, p.z); };  // comparators read containers
     dimensions_init();  // after the game handlers: wraps client_command
     portal::init();     // wraps use_item_on

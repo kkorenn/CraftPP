@@ -734,6 +734,7 @@ inline void block_tick(int state, Pos pos) {
 // ==================================================================================================
 // random ticks
 // ==================================================================================================
+inline bool (*sapling_grow_hook)(const Pos& p, RandomSource& r) = nullptr;
 inline void random_tick(int state, Pos pos) {
     auto& r = rng();
     int k = kind(state);
@@ -785,9 +786,10 @@ inline void random_tick(int state, Pos pos) {
             break;
         }
         case K_SAPLING:
-            if (max_local_brightness(pos.above()) >= 9 && r.nextInt(7) == 0 && geti(state, "stage") == 0)
-                set(pos, with(state, "stage", 1), UPDATE_NONE);
-            // ponytail: stage 1 -> tree needs the tree features (TreeGrower); the sapling stays at stage 1.
+            if (max_local_brightness(pos.above()) >= 9 && r.nextInt(7) == 0) {
+                if (geti(state, "stage") == 0) set(pos, with(state, "stage", 1), UPDATE_NONE);
+                else if (sapling_grow_hook) sapling_grow_hook(pos, r);
+            }
             break;
         case K_MUSHROOM: {
             if (r.nextInt(25) != 0) break;
@@ -991,7 +993,14 @@ inline void player_will_destroy(Player& p, const Pos& pos, int state) {
                 }
             }
             break;
-        default: break;
+        default:
+            if (block(state) == ID.decorated_pot) {
+                int hand_item = p.inv[size_t(p.selected)].item;
+                if (hand_item >= 0 && (item_info[size_t(hand_item)].tool >= 0 || item_name_is(hand_item, "arrow"))) {
+                    set(pos, with(state, "cracked", true), UPDATE_KNOWN_SHAPE | UPDATE_CLIENTS);
+                }
+            }
+            break;
     }
 }
 

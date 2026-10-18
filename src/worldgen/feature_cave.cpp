@@ -856,7 +856,7 @@ void register_cave_features(ParserMap& m) {
       double old = 1.0 * 0.5 * 0.3333333333333333 / (0.1 * (1.0 + 1.0 / (0 + 1)));
       NormalNoise::Parameters p;
       p.baseOctave = -4, p.octaveCount = 1, p.baseAmplitude = old / nf;
-      WorldgenRandom wr(std::make_unique<LegacyRandomSource>(L.f.ow.seed));
+      WorldgenRandom wr(std::make_unique<LegacyRandomSource>(L.f ? L.f->ow.seed : 0));
       f->noise = NormalNoise(p).create(wr);
     }
     return f;

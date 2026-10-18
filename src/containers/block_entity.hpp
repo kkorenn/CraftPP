@@ -38,6 +38,7 @@ struct Live {
     virtual void removed_side_effects() {}  // preRemoveSideEffects (default: drop container contents)
     virtual bool full_update_tag() const { return false; }  // getUpdateTag = saveCustomOnly
     virtual int max_stack() const { return 99; }              // Container.getMaxStackSize
+    virtual int get_comparator_signal() const { return -1; }
     virtual bool can_place(int, const ItemStack&) const { return true; }  // Container.canPlaceItem
     virtual bool can_take(int, const ItemStack&) const { return true; }   // Container.canTakeItem
     virtual bool worldly() const { return false; }                        // WorldlyContainer: faces below
@@ -319,7 +320,10 @@ inline int signal_from_items(const ItemStack* items, int n, int container_max_st
 inline int (*container_signal_hook)(Live& b) = nullptr;
 inline int comparator_signal(int x, int y, int z) {
     auto b = get(x, y, z);
-    if (!b || b->items.empty()) return 0;
+    if (!b) return 0;
+    int sig = b->get_comparator_signal();
+    if (sig >= 0) return sig;
+    if (b->items.empty()) return 0;
     unpack(*b);
     if (container_signal_hook) return container_signal_hook(*b);
     return signal_from_items(b->items.data(), int(b->items.size()), b->max_stack());
