@@ -752,7 +752,7 @@ std::string api(const std::string& m, const Json& a) {
                     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
                     Json j = Json::parse(content);
                     if (j.isObject()) {
-                        for (auto& [k, v] : j.asObject()) {
+                        for (auto& [k, v] : j.obj) {
                             if (v.isString()) plugin_data[k] = v.asString();
                         }
                     }
