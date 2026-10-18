@@ -337,8 +337,8 @@ struct BinS : Sampler {
     PBuf rb(v.size());
     r->sampleVolume(c, rb, v);
     // One loop per op (vectorizable); element-wise IEEE ops, so the same bits as the per-element switch.
-    float* a = o.values.data();
-    const float* b = rb.values.data();
+    float* __restrict__ a = o.data();
+    const float* __restrict__ b = rb.data();
     const int n = o.size();
     switch (op) {
       case ADD: for (int i = 0; i < n; i++) a[i] = a[i] + b[i]; break;
@@ -379,7 +379,7 @@ struct ConstBinS : Sampler {
   }
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     in->sampleVolume(c, o, v);
-    float* a = o.values.data();
+    float* __restrict__ a = o.data();
     const int n = o.size();
     switch (op) {  // one loop per op, same element-wise ops as apply()
       case CMIN: for (int i = 0; i < n; i++) a[i] = k < a[i] ? k : a[i]; break;
@@ -421,9 +421,16 @@ struct LerpS : Sampler {  // Sampler / ConstFirstSampler (first null) / ConstSec
     const float* __restrict__ fbp = first ? fb.data() : nullptr;
     const float* __restrict__ sbp = second ? sb.data() : nullptr;
     const int n = o.size();
-    for (int i = 0; i < n; i++) {
-      float a = op[i], f = fbp ? fbp[i] : kFirst, s = sbp ? sbp[i] : kSecond;
-      op[i] = (a == 0.0f ? f : a == 1.0f ? s : Mth::lerp(a, f, s));
+    if (first && second) {
+      for (int i = 0; i < n; i++) {
+        float a = op[i];
+        op[i] = (a == 0.0f ? fbp[i] : a == 1.0f ? sbp[i] : Mth::lerp(a, fbp[i], sbp[i]));
+      }
+    } else {
+      for (int i = 0; i < n; i++) {
+        float a = op[i], f = fbp ? fbp[i] : kFirst, s = sbp ? sbp[i] : kSecond;
+        op[i] = (a == 0.0f ? f : a == 1.0f ? s : Mth::lerp(a, f, s));
+      }
     }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
@@ -486,6 +493,13 @@ struct IntervalSelectS : Sampler {
     }
     float* __restrict__ op = o.data();
     const int n = o.size();
+    if (samplers.size() == 2 && thresholds.size() == 1) {
+      const float th = thresholds[0];
+      const float* __restrict__ r0 = bufs[0].data();
+      const float* __restrict__ r1 = bufs[1].data();
+      for (int i = 0; i < n; i++) op[i] = (op[i] < th ? r0[i] : r1[i]);
+      return;
+    }
     std::vector<const float*> raw(samplers.size());
     for (size_t s = 0; s < samplers.size(); s++) raw[s] = bufs[s].data();
     for (int i = 0; i < n; i++) {

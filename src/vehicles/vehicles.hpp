@@ -50,13 +50,13 @@ struct SmallFireball : Entity {
         for_each_entity_in(ray, [&](Entity& e) {
             if (hit || e.id == id || e.id == shooter_id || e.removed) return;
             if (LivingEntity* liv = e.as_living()) {
-                DamageSource ds{reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this};
+                DamageSource ds = DamageSource::of("fireball", entity_by_id(shooter_id), this);
                 liv->hurt_server(ds, 5.0f);
                 liv->ignite_for_ticks(100);
                 hit = true;
             } else if (Player* pl = e.as_player()) {
-                DamageSource ds{reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this};
-                pl->g.health -= 5.0f;
+                DamageSource ds = DamageSource::of("fireball", entity_by_id(shooter_id), this);
+                hurt(*pl, ds, 5.0f);
                 hit = true;
             }
         }, true);
@@ -165,12 +165,13 @@ struct ShulkerBullet : Entity {
         for_each_entity_in(ray, [&](Entity& e) {
             if (hit || e.id == id || e.id == shooter_id || e.removed) return;
             if (LivingEntity* liv = e.as_living()) {
-                DamageSource ds{reg_id("damage_type", "mob_attack"), entity_by_id(shooter_id), this};
+                DamageSource ds = DamageSource::of("mob_attack", entity_by_id(shooter_id), this);
                 liv->hurt_server(ds, 4.0f);
                 entity_add_effect(liv, eff::levitation, 200, 0); // Levitation
                 hit = true;
             } else if (Player* pl = e.as_player()) {
-                pl->g.health -= 4.0f;
+                DamageSource ds = DamageSource::of("mob_attack", entity_by_id(shooter_id), this);
+                hurt(*pl, ds, 4.0f);
                 player_add_effect(*pl, eff::levitation, 200, 0);
                 hit = true;
             }

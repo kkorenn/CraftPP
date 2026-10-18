@@ -204,7 +204,10 @@ struct Chunk {
     }
     // Biome cell: qx, qz 0..3, qy 0..height/4-1 (quart rows from min_y).
     void set_biome(int qx, int qy, int qz, uint16_t b) { sections[qy >> 2].biomes.set(((qy & 3) * 4 + qz) * 4 + qx, b); }
-    uint16_t get_biome(int qx, int qy, int qz) const { return sections[qy >> 2].biomes.get(((qy & 3) * 4 + qz) * 4 + qx); }
+    uint16_t get_biome(int qx, int qy, int qz) const {
+        int clamped_qy = std::clamp(qy, 0, int(sections.size() * 4) - 1);
+        return sections[clamped_qy >> 2].biomes.get(((clamped_qy & 3) * 4 + qz) * 4 + qx);
+    }
 };
 using ChunkPtr = std::shared_ptr<Chunk>;
 struct ChunkCancelled : std::runtime_error {  // World::request of a chunk nobody viewed any more

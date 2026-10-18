@@ -61,10 +61,17 @@ uint16_t Level::get(const P& p) const {
 
 bool Level::set(const P& p, int state) {
   if (!r || !r->set(p.x, p.y, p.z, uint16_t(state))) return false;
-  int be = R().block(R().block_of(state)).block_entity;
+  int bo = R().block_of(state);
+  int be = R().block(bo).block_entity;
   if (be >= 0) {  // WorldGenRegion.setBlock: DUMMY block entity for proto chunks
     Chunk& c = *r->chunk(p.x >> 4, p.z >> 4)->chunk;
     c.block_entities.push_back({uint8_t(p.x & 15), uint8_t(p.z & 15), int16_t(p.y), be, {0x0a, 0x00}});
+  }
+  // WorldGenRegion.setBlock: blockState.getPostProcessPos(this, pos)
+  if (bo == blocks::brown_mushroom || bo == blocks::red_mushroom) {
+    mark_post_processing(p);
+  } else if (bo == blocks::soul_sand || bo == blocks::magma_block) {
+    mark_post_processing(p.above());
   }
   return true;
 }
