@@ -54,18 +54,13 @@ public:
 
     void commit() {
         for (const auto& [p, state] : buffer) {
-            lvl::set(lvl::Pos{p.x, p.y, p.z}, state, UPDATE_ALL);
+            lvl::set(lvl::Pos{p.x, p.y, p.z}, state, lvl::UPDATE_ALL);
         }
     }
 };
 
-inline std::shared_ptr<const worldgen::feat::Feature> get_or_load_feature(const std::string& name) {
-    static std::unordered_map<std::string, std::shared_ptr<const worldgen::feat::Feature>> cache;
-    auto it = cache.find(name);
-    if (it != cache.end()) return it->second;
-    auto f = worldgen::feat::load_feature_by_name(name);
-    if (f) cache[name] = f;
-    return f;
+inline const worldgen::feat::Feature* get_or_load_feature(const std::string& name) {
+    return worldgen::feat::load_feature_by_name(name);
 }
 
 inline bool has_nearby_flowers(const lvl::Pos& p) {
@@ -226,15 +221,15 @@ inline bool bonemeal_grass(const lvl::Pos& pos, RandomSource& rnd) {
         if (lvl::block(cur) == lvl::ID.short_grass && rnd.nextFloat() < 0.1f) {
             lvl::Pos up = test_pos.above();
             if (lvl::is_air(lvl::get(up)) && lvl::in_height(up.y)) {
-                lvl::set(test_pos, tall_grass_lower, UPDATE_ALL);
-                lvl::set(up, tall_grass_upper, UPDATE_ALL);
+                lvl::set(test_pos, tall_grass_lower, lvl::UPDATE_ALL);
+                lvl::set(up, tall_grass_upper, lvl::UPDATE_ALL);
             }
         } else if (lvl::is_air(cur) && lvl::in_height(test_pos.y) && lvl::block(lvl::get(test_pos.below())) == lvl::ID.grass_block) {
             if (rnd.nextFloat() < 0.125f) {
                 int flower = pick_flower(lvl::biome_at(test_pos), rnd);
-                lvl::set(test_pos, flower, UPDATE_ALL);
+                lvl::set(test_pos, flower, lvl::UPDATE_ALL);
             } else {
-                lvl::set(test_pos, short_grass_state, UPDATE_ALL);
+                lvl::set(test_pos, short_grass_state, lvl::UPDATE_ALL);
             }
         }
     }

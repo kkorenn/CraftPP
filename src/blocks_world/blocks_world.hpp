@@ -291,18 +291,18 @@ struct DecoratedPotBE : be::Live {
         bool cracked = bs::R().value(state, "cracked") == "true";
         if (cracked) {
             // Drop 4 sherds (or bricks for missing)
-            int brick_id = item_id_by_name("minecraft:brick");
+            int brick_id = item_by_name["minecraft:brick"];
             for (int i = 0; i < 4; i++) {
                 int drop_item = brick_id;
                 if (i < int(sherds.size()) && !sherds[size_t(i)].empty()) {
-                    int id = item_id_by_name(sherds[size_t(i)]);
-                    if (id >= 0) drop_item = id;
+                    auto it = item_by_name.find(sherds[size_t(i)]);
+                    if (it != item_by_name.end()) drop_item = it->second;
                 }
                 if (drop_item >= 0) be::drop_stack(x + 0.5, y + 0.5, z + 0.5, ItemStack{drop_item, 1, 0});
             }
         } else {
             // Drop intact pot
-            int pot_id = item_id_by_name("minecraft:decorated_pot");
+            int pot_id = item_by_name["minecraft:decorated_pot"];
             if (pot_id >= 0) {
                 ItemStack pot{pot_id, 1, 0};
                 be::drop_stack(x + 0.5, y + 0.5, z + 0.5, pot);
@@ -345,7 +345,7 @@ struct SignBE : be::Live {
         float player_rot = float(std::atan2(zd, xd) * 180.0 / M_PI) - 90.0f;
         float sign_rot = 0.0f;
         if (bs::R().has(state, "rotation")) {
-            int r = bs::R().value_int(state, "rotation");
+            int r = bs::R().int_value(state, "rotation");
             sign_rot = float(r) * 360.0f / 16.0f;
         } else if (bs::R().has(state, "facing")) {
             std::string f(bs::R().value(state, "facing"));
