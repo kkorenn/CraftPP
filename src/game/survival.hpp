@@ -425,7 +425,7 @@ inline void destroy_and_ack(Player& p, int x, int y, int z) {
 
 // Player.isWithinBlockInteractionRange(pos, 1.0): eye to the block's box, range 4.5 (creative 5) + 1.
 inline bool within_reach(const Player& p, int x, int y, int z) {
-    double ex = p.x, ey = p.y + 1.62, ez = p.z;
+    double ex = p.x, ey = p.y + (p.g.sneaking ? 1.27 : 1.62), ez = p.z;
     double dx = std::max({x - ex, 0.0, ex - (x + 1)}), dy = std::max({y - ey, 0.0, ey - (y + 1)}),
            dz = std::max({z - ez, 0.0, ez - (z + 1)});
     double r = (p.gamemode == 1 ? 5.0 : 4.5) + 1.0;

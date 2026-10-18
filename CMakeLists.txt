@@ -27,16 +27,9 @@ option(CRAFTPP_LTO "Link-time optimization" OFF)
 if(CRAFTPP_LTO)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
-file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp src/effects/*.cpp src/progress/*.cpp)
-add_executable(craftpp src/main.cpp src/boss/end_worldgen.cpp src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
 # Game code is a Java port: signed int overflow wraps like Java instead of being UB.
-target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
 # logs/latest.log is gzipped on rollover when the system zlib is available (else kept as plain .log).
 find_package(ZLIB QUIET)
-if(ZLIB_FOUND)
-  target_compile_definitions(craftpp PRIVATE CRAFTPP_ZLIB=1)
-  target_link_libraries(craftpp PRIVATE ZLIB::ZLIB)
-endif()
 add_executable(worldgen_tests
   test/biome_test.cpp src/worldgen/biome_source.cpp)
 target_include_directories(worldgen_tests PRIVATE src)
@@ -52,7 +45,6 @@ target_compile_options(craftpp_worldgen PRIVATE -Wall -Wextra)
 find_package(ZLIB REQUIRED)  # chunk files (world.hpp)
 find_package(Threads REQUIRED)
 target_link_libraries(craftpp_worldgen PUBLIC ZLIB::ZLIB Threads::Threads)
-target_link_libraries(craftpp PRIVATE craftpp_worldgen)
 # Test targets are skipped until their source exists (keeps in-progress work from breaking the build).
 if(EXISTS ${CMAKE_SOURCE_DIR}/test/worldgen_rng_test.cpp)
   add_executable(worldgen_rng_test test/worldgen_rng_test.cpp)
@@ -76,7 +68,6 @@ endif()
 # Bukkit/Paper plugins (src/plugins, docs/plugins.md). libjvm is dlopen'd at runtime only when plugins/*.jar
 # exist, so nothing links against Java; jni.h is needed at build time (any JDK), else plugins are compiled out.
 file(GLOB CRAFTPP_PLUGIN_SOURCES CONFIGURE_DEPENDS src/plugins/*.cpp)
-target_sources(craftpp PRIVATE ${CRAFTPP_PLUGIN_SOURCES})
 set(CRAFTPP_JNI_HOME "$ENV{JAVA_HOME}")
 if(NOT EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
   file(GLOB CRAFTPP_JDKS /Library/Java/JavaVirtualMachines/*/Contents/Home /usr/lib/jvm/*)
@@ -91,7 +82,6 @@ if(EXISTS "${CRAFTPP_JNI_HOME}/include/jni.h")
   get_filename_component(CRAFTPP_JNI_MD_DIR "${CRAFTPP_JNI_MD}" DIRECTORY)
   set_source_files_properties(src/plugins/plugins.cpp PROPERTIES
     COMPILE_DEFINITIONS CRAFTPP_JNI=1 INCLUDE_DIRECTORIES "${CRAFTPP_JNI_HOME}/include;${CRAFTPP_JNI_MD_DIR}")
-  target_link_libraries(craftpp PRIVATE ${CMAKE_DL_LIBS})
 else()
   message(STATUS "No JDK headers found: building without plugin support")
 endif()
@@ -128,10 +118,29 @@ if(OpenSSL_FOUND)
 else()
   message(STATUS "No OpenSSL: online-mode cannot reach https://sessionserver.mojang.com (install libssl-dev)")
 endif()
-target_link_libraries(craftpp PRIVATE craftpp_net)
 add_executable(crypto_test test/crypto_test.cpp)
 target_link_libraries(crypto_test PRIVATE craftpp_net)
+# Game and entity core: compiled once into an OBJECT library shared by craftpp and roster_test.
+file(GLOB CRAFTPP_MOB_SOURCES CONFIGURE_DEPENDS src/mobs/*.cpp src/mobs/*/*.cpp src/effects/*.cpp src/progress/*.cpp)
+add_library(craftpp_game OBJECT
+  src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp
+  ${CRAFTPP_MOB_SOURCES}
+  ${CRAFTPP_PLUGIN_SOURCES}
+)
+target_include_directories(craftpp_game PUBLIC src)
+target_compile_options(craftpp_game PRIVATE -Wall -Wextra -fwrapv)
+if(ZLIB_FOUND)
+  target_compile_definitions(craftpp_game PRIVATE CRAFTPP_ZLIB=1)
+  target_link_libraries(craftpp_game PUBLIC ZLIB::ZLIB)
+endif()
+target_link_libraries(craftpp_game PUBLIC craftpp_worldgen craftpp_net ${CMAKE_DL_LIBS})
+
+add_executable(craftpp src/main.cpp src/boss/end_worldgen.cpp)
+target_link_libraries(craftpp PRIVATE craftpp_game)
+target_compile_options(craftpp PRIVATE -Wall -Wextra -fwrapv)
+
 # Mob roster checks: trading / breeding / taming logic (runs from the repo root, needs data/*.json).
-add_executable(roster_test test/roster_test.cpp ${CRAFTPP_PLUGIN_SOURCES} src/light/light.cpp src/storage/world_io.cpp src/storage/level.cpp ${CRAFTPP_MOB_SOURCES})
+add_executable(roster_test test/roster_test.cpp)
 target_include_directories(roster_test PRIVATE src)
-target_link_libraries(roster_test PRIVATE craftpp_worldgen craftpp_net ${CMAKE_DL_LIBS})
+target_link_libraries(roster_test PRIVATE craftpp_game)
+target_compile_options(roster_test PRIVATE -Wall -Wextra -fwrapv)

@@ -7,7 +7,7 @@ set -e
 cd "$(dirname "$0")/.."
 NAME=${1:?usage: tools/package_release.sh <name>}
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release >/dev/null
-cmake --build build-release -j --target craftpp
+cmake --build build-release -j 2 --target craftpp
 D=dist/craftpp-$NAME
 rm -rf "$D" && mkdir -p "$D/tools"
 cp build-release/craftpp "$D/" && strip "$D/craftpp"

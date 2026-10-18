@@ -16,7 +16,7 @@ done
 tools/setup_vanilla.sh ${TEST:+--reports}  # Mojang data is downloaded, not shipped (data/vanilla, data/reports)
 export BUILD_DIR=$B
 cmake -S . -B $B -DCMAKE_BUILD_TYPE=Release -DCRAFTPP_SANITIZE=$SAN >/dev/null
-if [ -n "$TEST" ]; then cmake --build $B -j; else cmake --build $B -j --target craftpp; fi
+if [ -n "$TEST" ]; then cmake --build $B -j 2; else cmake --build $B -j 2 --target craftpp; fi
 export ASAN_OPTIONS=${ASAN_OPTIONS:-abort_on_error=1:detect_leaks=0} UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}
 export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
 
