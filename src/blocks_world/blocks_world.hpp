@@ -424,10 +424,10 @@ struct PrimedTnt : Entity {
     void tick() override {
         base_tick();
         vel.y -= default_gravity();
-        move(vel);
+        move(MoverType::SELF, vel);
         vel = vel * 0.98;
         if (on_ground) {
-            vel = vel * Vec3{0.7, -0.5, 0.7};
+            vel = vel.multiply(0.7, -0.5, 0.7);
         }
         int f = data.get(edata::PrimedTnt::FUSE, fuse) - 1;
         fuse = f;
@@ -615,7 +615,7 @@ inline bool handle_block_interact(Player& p, int hand, int x, int y, int z, int 
                 if (slot.count <= 0) slot = {};
                 b->set_changed();
                 be::flush(*b);
-                block_event(x, y, z, 1, 0, state); // wobble positive
+                cont::block_event(x, y, z, 1, 0, state); // wobble positive
                 float pitch = 0.7f + 0.5f * (float(b->item.count) / float(max_st));
                 play_sound("block.decorated_pot.insert", x + 0.5, y + 0.5, z + 0.5, 1.0f, pitch);
                 lvl::update_neighbour_for_output_signal(lvl::Pos{x, y, z}, lvl::block(state));
@@ -623,7 +623,7 @@ inline bool handle_block_interact(Player& p, int hand, int x, int y, int z, int 
             }
         }
         // wobble negative / fail
-        block_event(x, y, z, 1, 1, state);
+        cont::block_event(x, y, z, 1, 1, state);
         play_sound("block.decorated_pot.insert_fail", x + 0.5, y + 0.5, z + 0.5, 1.0f, 1.0f);
         return true;
     }

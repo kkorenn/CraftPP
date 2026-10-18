@@ -50,12 +50,12 @@ struct SmallFireball : Entity {
         for_each_entity_in(ray, [&](Entity& e) {
             if (hit || e.id == id || e.id == shooter_id || e.removed) return;
             if (LivingEntity* liv = e.as_living()) {
-                DamageSource ds(reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this);
+                DamageSource ds{reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this};
                 liv->hurt_server(ds, 5.0f);
                 liv->ignite_for_ticks(100);
                 hit = true;
             } else if (Player* pl = e.as_player()) {
-                DamageSource ds(reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this);
+                DamageSource ds{reg_id("damage_type", "fireball"), entity_by_id(shooter_id), this};
                 pl->g.health -= 5.0f;
                 hit = true;
             }
@@ -165,7 +165,7 @@ struct ShulkerBullet : Entity {
         for_each_entity_in(ray, [&](Entity& e) {
             if (hit || e.id == id || e.id == shooter_id || e.removed) return;
             if (LivingEntity* liv = e.as_living()) {
-                DamageSource ds(reg_id("damage_type", "mob_attack"), entity_by_id(shooter_id), this);
+                DamageSource ds{reg_id("damage_type", "mob_attack"), entity_by_id(shooter_id), this};
                 liv->hurt_server(ds, 4.0f);
                 entity_add_effect(liv, eff::levitation, 200, 0); // Levitation
                 hit = true;
@@ -296,8 +296,11 @@ struct ChestBoat : Boat {
     ChestBoat() { is_chest_boat = true; }
 
     int interact(Player& p, int hand) override {
-        if (p.is_sneaking()) {
-            open_menu(p, 27, "Chest Boat", items);
+        if (p.g.sneaking) {
+            auto m = std::make_shared<cont::SlotsMenu>();
+            m->type = cont::menu_ids["generic_9x3"];
+            for (auto& s : items) m->slots.push_back(&s);
+            open_menu(p, m, comp::text_translate("container.chest"));
             return IR_SUCCESS;
         }
         return Boat::interact(p, hand);
@@ -344,7 +347,7 @@ struct Minecart : Entity {
         if (lvl::has_class(s, "BaseRailBlock")) {
             // On rail! Snap Y
             pos.y = by + 0.1;
-            std::string shape = lvl::has(s, "shape") ? lvl::gets(s, "shape") : "north_south";
+            std::string shape = lvl::has(s, "shape") ? std::string(bs::R().value(s, "shape")) : "north_south";
 
             if (shape == "north_south") {
                 pos.x = bx + 0.5;
@@ -355,7 +358,8 @@ struct Minecart : Entity {
             }
 
             int b = lvl::block(s);
-            if (b == lvl::ID.powered_rail) {
+            const std::string& bname = block_info[size_t(b)].name;
+            if (bname == "minecraft:powered_rail") {
                 bool powered = lvl::rpowered(s);
                 if (powered) {
                     if (vel.length_sqr() > 0.001) vel = vel.normalize() * 0.4; // Max 8 m/s speed
@@ -363,7 +367,7 @@ struct Minecart : Entity {
                 } else {
                     vel = vel * 0.5; // Brake
                 }
-            } else if (b == lvl::ID.activator_rail && lvl::rpowered(s)) {
+            } else if (bname == "minecraft:activator_rail" && lvl::rpowered(s)) {
                 // Eject passenger
                 if (passenger_id != 0) {
                     if (Entity* ent = entity_by_id(passenger_id)) {
@@ -422,8 +426,11 @@ struct ChestMinecart : Minecart {
     ItemStack items[27];
     std::string item_name() const override { return "minecraft:chest_minecart"; }
 
-    int interact(Player& p, int hand) override {
-        open_menu(p, 27, "Minecart with Chest", items);
+    int interact(Player& p, int /*hand*/) override {
+        auto m = std::make_shared<cont::SlotsMenu>();
+        m->type = cont::menu_ids["generic_9x3"];
+        for (auto& s : items) m->slots.push_back(&s);
+        open_menu(p, m, comp::text_translate("container.chest"));
         return IR_SUCCESS;
     }
 
@@ -446,7 +453,7 @@ struct HopperMinecart : Minecart {
         for_each_entity_in(box, [&](Entity& e) {
             if (e.type == entity_types::item && !e.removed) {
                 auto& ie = static_cast<ItemEntity&>(e);
-                ItemStack& s = ie.stack();
+                ItemStack& s = ie.stack;
                 for (int i = 0; i < 5; i++) {
                     if (items[i].empty()) {
                         items[i] = s;
@@ -464,8 +471,11 @@ struct HopperMinecart : Minecart {
         }, false);
     }
 
-    int interact(Player& p, int hand) override {
-        open_menu(p, 5, "Minecart with Hopper", items);
+    int interact(Player& p, int /*hand*/) override {
+        auto m = std::make_shared<cont::SlotsMenu>();
+        m->type = cont::menu_ids["hopper"];
+        for (auto& s : items) m->slots.push_back(&s);
+        open_menu(p, m, comp::text_translate("container.hopper"));
         return IR_SUCCESS;
     }
 
@@ -484,7 +494,7 @@ struct TntMinecart : Minecart {
         Minecart::tick();
         int bx = int(std::floor(pos.x)), by = int(std::floor(pos.y)), bz = int(std::floor(pos.z));
         int s = lvl::get(bx, by, bz);
-        if (lvl::block(s) == lvl::ID.activator_rail && lvl::rpowered(s)) {
+        if (block_info[size_t(lvl::block(s))].name == "minecraft:activator_rail" && lvl::rpowered(s)) {
             explode(this, pos.x, pos.y, pos.z, 4.0f, false, ExplosionInteraction::TNT);
             discard();
         }
@@ -514,7 +524,7 @@ struct FurnaceMinecart : Minecart {
     int interact(Player& p, int hand) override {
         ItemStack& held = held_stack(p, hand);
         if (held.item == item_by_name["minecraft:coal"] || held.item == item_by_name["minecraft:charcoal"]) {
-            consume(p, held);
+            lvl::consume(p, held);
             fuel = 3600;
             data.set_bool(edata::MinecartFurnace::ID_FUEL, true);
             mark_entity_sync(*this);
@@ -536,40 +546,28 @@ inline void init() {
     register_entity_factory(shulker_bullet, make_entity<ShulkerBullet>);
 
     // Boats
-    auto make_boat = [](const std::string& wood) {
-        return [wood]() -> std::unique_ptr<Entity> {
-            auto b = std::make_unique<Boat>();
-            b->wood_type = wood;
-            return b;
-        };
-    };
-    auto make_chest_boat = [](const std::string& wood) {
-        return [wood]() -> std::unique_ptr<Entity> {
-            auto b = std::make_unique<ChestBoat>();
-            b->wood_type = wood;
-            return b;
-        };
-    };
+#define REG_BOAT(wood) \
+    register_entity_factory(wood##_boat, []() -> std::unique_ptr<Entity> { \
+        auto b = std::make_unique<Boat>(); \
+        b->wood_type = #wood; \
+        return b; \
+    }); \
+    register_entity_factory(wood##_chest_boat, []() -> std::unique_ptr<Entity> { \
+        auto b = std::make_unique<ChestBoat>(); \
+        b->wood_type = #wood; \
+        return b; \
+    });
 
-    register_entity_factory(oak_boat, make_boat("oak"));
-    register_entity_factory(birch_boat, make_boat("birch"));
-    register_entity_factory(spruce_boat, make_boat("spruce"));
-    register_entity_factory(jungle_boat, make_boat("jungle"));
-    register_entity_factory(acacia_boat, make_boat("acacia"));
-    register_entity_factory(dark_oak_boat, make_boat("dark_oak"));
-    register_entity_factory(mangrove_boat, make_boat("mangrove"));
-    register_entity_factory(cherry_boat, make_boat("cherry"));
-    register_entity_factory(pale_oak_boat, make_boat("pale_oak"));
-
-    register_entity_factory(oak_chest_boat, make_chest_boat("oak"));
-    register_entity_factory(birch_chest_boat, make_chest_boat("birch"));
-    register_entity_factory(spruce_chest_boat, make_chest_boat("spruce"));
-    register_entity_factory(jungle_chest_boat, make_chest_boat("jungle"));
-    register_entity_factory(acacia_chest_boat, make_chest_boat("acacia"));
-    register_entity_factory(dark_oak_chest_boat, make_chest_boat("dark_oak"));
-    register_entity_factory(mangrove_chest_boat, make_chest_boat("mangrove"));
-    register_entity_factory(cherry_chest_boat, make_chest_boat("cherry"));
-    register_entity_factory(pale_oak_chest_boat, make_chest_boat("pale_oak"));
+    REG_BOAT(oak)
+    REG_BOAT(birch)
+    REG_BOAT(spruce)
+    REG_BOAT(jungle)
+    REG_BOAT(acacia)
+    REG_BOAT(dark_oak)
+    REG_BOAT(mangrove)
+    REG_BOAT(cherry)
+    REG_BOAT(pale_oak)
+#undef REG_BOAT
 
     // Minecarts
     register_entity_factory(minecart, make_entity<Minecart>);

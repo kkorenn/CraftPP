@@ -610,7 +610,8 @@ inline void enchant_location_changed(LivingEntity& e) {
             if (size_t(id) >= enchant_defs.size()) continue;
             const EnchantDef& d = enchant_defs[size_t(id)];
             if (d.location.empty() || !d.matching_slot(slot)) continue;
-            bool was = std::any_of(act.begin(), act.end(), [&](auto& a) { return a.slot == slot && a.ench == id; });
+            int ench_id = id;
+            bool was = std::any_of(act.begin(), act.end(), [&](auto& a) { return a.slot == slot && a.ench == ench_id; });
             ECtx x;
             x.level = lvl, x.self = &e, x.active = was;
             bool any = false;
@@ -618,7 +619,7 @@ inline void enchant_location_changed(LivingEntity& e) {
                 if (cond_test(c.cond, x)) any = true, apply_entity_effect(c.eff, lvl, &e, slot, e, true);
                 else if (was) apply_entity_effect(c.eff, lvl, &e, slot, e, false);
             }
-            if (any) next.push_back({slot, id, lvl});
+            if (any) next.push_back({slot, ench_id, lvl});
         }
     }
     for (auto& a : act)  // gone (item removed or condition no longer met): deactivate
