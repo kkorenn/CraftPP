@@ -25,6 +25,7 @@ jobs:
             build/*.log
             build/logs/
             build/stress/*.log
+            build/boss-test/*.log
 
   compile:
     name: Compile (${{ matrix.os }})

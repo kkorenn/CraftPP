@@ -18,7 +18,7 @@ SPIKES = [(42, 0, 4, 97, 0), (33, 24, 5, 103, 0), (12, 39, 3, 91, 0), (-13, 39, 
           (-42, -1, 4, 100, 0), (-34, -25, 2, 79, 1), (-13, -40, 3, 88, 0), (12, -40, 3, 85, 0), (33, -25, 2, 82, 1)]
 LAST_GATEWAY = 11  # gateways_for_seed(12345).back()
 
-port = socket.socket(); port.bind(("", 0)); PORT = port.getsockname()[1]; port.close()
+PORT = free_port()
 shutil.rmtree(RUN, ignore_errors=True)
 os.makedirs(RUN)
 open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name={BUILD}/boss-test/world\nlevel-type=flat\n"
@@ -34,9 +34,13 @@ def block_at(c, x, y, z):
     return secs[(y - min_y) >> 4][0][((y & 15) * 16 + (z & 15)) * 16 + (x & 15)]
 
 try:
-    for _ in range(100):
-        try: socket.create_connection(("127.0.0.1", PORT)).close(); break
-        except OSError: time.sleep(0.1)
+    log_path = f"{RUN}/server.log"
+    for _ in range(600):
+        if os.path.exists(log_path) and "Done (" in open(log_path).read(): break
+        assert srv.poll() is None, "server exited during startup:\n" + (open(log_path).read()[-2000:] if os.path.exists(log_path) else "")
+        time.sleep(0.05)
+    else:
+        raise AssertionError("server did not start:\n" + (open(log_path).read()[-2000:] if os.path.exists(log_path) else ""))
     c, _ = login("Alice", "127.0.0.1", PORT, decode=True, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Alice"))
     c.send(PLAY_SB["chat_command"], string("gamemode creative"))
     c.s.settimeout(30)
@@ -181,6 +185,11 @@ try:
     except subprocess.TimeoutExpired: os.system(f"sample {srv.pid} 2 -file {RUN}/sample.txt >/dev/null 2>&1"); raise
     stats = [l for l in open(f"{RUN}/server.log") if "Tick stats" in l]
     print("boss fight ok;", stats[-1].strip() if stats else "")
+except Exception:
+    if os.path.exists(f"{RUN}/server.log"):
+        print("=== boss fight server.log ===", file=sys.stderr)
+        print(open(f"{RUN}/server.log").read()[-4000:], file=sys.stderr)
+    raise
 finally:
     if srv.poll() is None: srv.kill()
     if "--keep" not in sys.argv: shutil.rmtree(RUN, ignore_errors=True)
