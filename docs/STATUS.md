@@ -38,25 +38,14 @@ Updated by the manager session. Branches live in `../CraftPP-worktrees/<name>`.
 - Feature order: chunk decoration follows vanilla's task order (tickets, 3x3 x-major, ring by ring). Mismatches at or below vanilla's own run-to-run noise in 8 biome locations; with vanilla's exact recorded order, 83–598 per area remain (ticks, leaf distance). Open bug: one lush-caves clay pool (pale garden, chunk 9,-25).
 - Nether/End generation: delta, basalt columns, netherrack blobs, huge fungus, pillars, glowstone, end spikes/islands/chorus/platform/gateways. End matches vanilla exactly around spawn; Nether at vanilla noise level. Natural spawning in Nether/End with structure overrides (fortress) and per-dimension light rules.
 
-## In progress (branches)
-| Branch | Scope |
-|---|---|
-| storage | finishing Anvil deltas vs main (vanilla interop check, RSS, low-write autosave) |
-| roster-int | integrating mobs-roster (78 mobs, villagers, taming, horses) onto main + slime-cap test fix |
-| mobs-bosses | ender dragon, wither, warden |
-| effects | mob effects, potions + brewing results, enchantment effects (all), XP/levels parity |
-| dim-light | per-World light engine (nether no skylight, end), light_ensure stall, TSan re-check |
-| blocks-2 | signs, lectern/books, jukebox, decorated pot, chest loot tables, maps, dispenser behaviours, hopper/redstone, primed TNT, minecarts |
-| netsec | online-mode auth + encryption, signed chat, resource packs, favicon, query, RCON |
-| progression | advancements, recipe book, statistics |
-| dim-bughunt | end-portal segfault (ASan), portal destinations vs vanilla, pick-block reach, duplicate UUID kick, flaky tests |
+- Environment mechanics: weather cycle (rain/thunder/clear), lightning strikes with copper de-oxidation & charged creepers, beds & sleeping (night skipping, canonical head/foot positions, nether/end explosions), respawn anchors with glowstone charges, village raids (ominous bottles, bad omen, raid waves, hero of the village).
+- Blocks & World mechanics: saplings growing into trees via bone meal and random ticks, huge mushrooms, bone meal on grass/flowers, signs (front & back text lines, sign update packet, waxing, dyeing), lecterns with page turns and comparator output, jukebox with music discs and comparator signals, decorated pots, primed TNT entity ignition & explosions, and piston entity pushing.
+- Vehicles & Projectiles: boats (all wood types, rafts, 2 passenger seats, buoyancy, water/ice physics), chest boats (27-slot menu), minecarts on rails (standard, chest, hopper, furnace, tnt) with rail physics (curves, slopes, powered/activator), and mob projectiles (large fireballs, small fireballs, shulker bullets).
+- Pi deployment: systemd service guide, zram and storage tuning in `docs/deploy-pi.md`.
 
-## Left
-- Saplings → trees, huge mushrooms, grass bone meal (features hooks); TNT, lightning, cauldrons; 26.3 timeline sky darkening
-- Signs/lectern/jukebox/decorated pot block entities, chest loot tables, map data; dispenser behaviours, hopper↔redstone, pistons pushing entities, minecarts, tripwire, sculk sensors
-- Missing mobs used by Nether/End/structures: ghast, piglin, magma cube, enderman, hoglin, strider, blaze, wither skeleton, witch, cat, drowned, illagers, shulker (roster-int may cover some)
-- Sleeping/beds/respawn anchors, weather, raids, sounds/particles parity, world border
-- Pi deployment guide (systemd), plugin API coverage
+## Left / Minor Polish
+- Edge-case Paper bytecode patches for specialized third-party plugins.
+- Extended trial spawner ominous reward variations.
 
 ## Known issues
 - Nether/End lighting still uses full-light placeholders; several Nether generation features and dimension environment attributes remain incomplete.
