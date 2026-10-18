@@ -299,7 +299,7 @@ struct ChestBoat : Boat {
     int interact(Player& p, int hand) override {
         if (p.g.sneaking) {
             auto m = std::make_shared<cont::SlotsMenu>();
-            m->type = cont::menu_ids["generic_9x3"];
+            m->type = menu_ids["generic_9x3"];
             for (auto& s : items) m->slots.push_back(&s);
             open_menu(p, m, comp::text_translate("container.chest"));
             return IR_SUCCESS;
@@ -429,7 +429,7 @@ struct ChestMinecart : Minecart {
 
     int interact(Player& p, int /*hand*/) override {
         auto m = std::make_shared<cont::SlotsMenu>();
-        m->type = cont::menu_ids["generic_9x3"];
+        m->type = menu_ids["generic_9x3"];
         for (auto& s : items) m->slots.push_back(&s);
         open_menu(p, m, comp::text_translate("container.chest"));
         return IR_SUCCESS;
@@ -474,7 +474,7 @@ struct HopperMinecart : Minecart {
 
     int interact(Player& p, int /*hand*/) override {
         auto m = std::make_shared<cont::SlotsMenu>();
-        m->type = cont::menu_ids["hopper"];
+        m->type = menu_ids["hopper"];
         for (auto& s : items) m->slots.push_back(&s);
         open_menu(p, m, comp::text_translate("container.hopper"));
         return IR_SUCCESS;
