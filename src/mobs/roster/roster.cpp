@@ -62,33 +62,91 @@ struct Allay : FlyMob {  // ponytail: no item collecting / note block dancing
     std::string ambient_sound() const override { return "minecraft:entity.allay.ambient_without_item"; }
     void register_goals() override { goal_selector.add(1, std::make_unique<LookAtPlayerGoal>(*this, 6.0f)); }
 };
-struct HostileFlyer : FlyMob {  // ghast, phantom, blaze, vex: chase the nearest player; touch attacks
+struct HostileFlyer : FlyMob {  // ghast, phantom, blaze, vex
     int attack_cooldown = 0;
     int sound_source() const override { return SRC_HOSTILE; }
     bool remove_when_far_away(double) override { return !is_persistence_required(); }
     void register_goals() override {
         goal_selector.add(7, std::make_unique<LookAtPlayerGoal>(*this, 8.0f));
         target_selector.add(1, std::make_unique<HurtByTargetGoal>(*this));
-        target_selector.add(2, std::make_unique<NearestAttackableTargetGoal>(*this, type != ghast));
+        target_selector.add(2, std::make_unique<NearestAttackableTargetGoal>(*this, true));
     }
     void ai_step() override {
         FlyMob::ai_step();
         if (attack_cooldown > 0) attack_cooldown--;
-        // ponytail: ghast / blaze fireballs not ported; they fly at their target and hit on contact like vexes
-        if (LivingEntity* t = target(); t && attack_cooldown == 0 && is_within_melee_attack_range(*t)) {
-            do_hurt_target(*t);
-            attack_cooldown = 20;
+        if (LivingEntity* t = target(); t && attack_cooldown == 0) {
+            double dist_sq = dist_sqr(*t);
+            if (type == entity_types::ghast && dist_sq < 4096.0) {
+                // Shoot large fireball
+                std::string err;
+                Vec3 dir = (t->pos + Vec3{0, t->eye_height * 0.5, 0} - (pos + Vec3{0, 1.5, 0})).normalize();
+                if (Entity* fb = summon_entity(entity_types::fireball, pos.x + dir.x * 2.0, pos.y + 1.5, pos.z + dir.z * 2.0, nullptr, err)) {
+                    fb->vel = dir * 0.5;
+                    fb->sync_velocity = true;
+                    mark_entity_sync(*fb);
+                }
+                attack_cooldown = 50; // 2.5s cooldown
+            } else if (type == entity_types::blaze && dist_sq < 2304.0) {
+                // Shoot small fireball
+                std::string err;
+                Vec3 dir = (t->pos + Vec3{0, t->eye_height * 0.5, 0} - (pos + Vec3{0, 1.0, 0})).normalize();
+                if (Entity* fb = summon_entity(entity_types::small_fireball, pos.x + dir.x * 1.0, pos.y + 1.0, pos.z + dir.z * 1.0, nullptr, err)) {
+                    fb->vel = dir * 0.7;
+                    fb->sync_velocity = true;
+                    mark_entity_sync(*fb);
+                }
+                attack_cooldown = 35; // burst cooldown
+            } else if (is_within_melee_attack_range(*t)) {
+                do_hurt_target(*t);
+                attack_cooldown = 20;
+            }
         }
     }
 };
-struct Shulker : Mob {  // stays put; ponytail: no peeking / bullets / teleporting
+struct Shulker : Mob {
+    int shoot_cooldown = 40;
+    int peek_cycle = 0;
+
     double default_gravity() const override { return 0.0; }
     bool is_pushable() const override { return false; }
     int sound_source() const override { return SRC_HOSTILE; }
     std::string ambient_sound() const override { return "minecraft:entity.shulker.ambient"; }
     std::string hurt_sound(const DamageSource&) const override { return "minecraft:entity.shulker.hurt"; }
     std::string death_sound() const override { return "minecraft:entity.shulker.death"; }
-    void register_goals() override { goal_selector.add(7, std::make_unique<LookAtPlayerGoal>(*this, 8.0f)); }
+    void init() override {
+        Mob::init();
+        data.define(edata::Shulker::ATTACH_FACE, 0); // DOWN
+        data.define(edata::Shulker::PEEK, uint8_t(0));
+        data.define(edata::Shulker::COLOR, uint8_t(16)); // default purple
+    }
+    void register_goals() override {
+        goal_selector.add(7, std::make_unique<LookAtPlayerGoal>(*this, 8.0f));
+        target_selector.add(1, std::make_unique<HurtByTargetGoal>(*this));
+        target_selector.add(2, std::make_unique<NearestAttackableTargetGoal>(*this, true));
+    }
+    bool hurt_server(const DamageSource& src, float d) override {
+        uint8_t peek = data.get(edata::Shulker::PEEK, uint8_t(0));
+        if (peek == 0) d *= 0.2f; // 80% damage reduction when closed
+        return Mob::hurt_server(src, d);
+    }
+    void ai_step() override {
+        Mob::ai_step();
+        peek_cycle++;
+        if (peek_cycle % 80 == 0) {
+            uint8_t next_peek = (data.get(edata::Shulker::PEEK, uint8_t(0)) == 0 ? 100 : 0);
+            data.set_byte(edata::Shulker::PEEK, next_peek);
+            mark_entity_sync(*this);
+        }
+        if (shoot_cooldown > 0) shoot_cooldown--;
+        if (LivingEntity* t = target(); t && shoot_cooldown == 0 && dist_sqr(*t) < 256.0) {
+            std::string err;
+            if (Entity* b = summon_entity(entity_types::shulker_bullet, pos.x, pos.y + 0.5, pos.z, nullptr, err)) {
+                b->vel = Vec3{0, 0.2, 0};
+                mark_entity_sync(*b);
+            }
+            shoot_cooldown = 70;
+        }
+    }
 };
 struct Golem : PathfinderMob {  // iron golem defends villagers; snow / copper golems wander
     std::string ambient_sound() const override { return type == iron_golem ? "" : entity_sound(*this, "ambient"); }

@@ -332,6 +332,7 @@ inline bool (*bonemeal_tree_hook)(const Pos& p, int s, RandomSource& r) = nullpt
 inline bool (*bonemeal_mushroom_hook)(const Pos& p, int s, RandomSource& r) = nullptr;
 inline bool (*bonemeal_grass_hook)(const Pos& p, RandomSource& r) = nullptr;
 inline bool (*tnt_prime_hook)(const Pos& p) = nullptr;
+inline bool (*place_vehicle_hook)(Player& pl, int item, const Pos& hit, int face) = nullptr;
 
 // ---------- items used on blocks ----------
 inline bool bonemeal(const Pos& p) {  // BoneMealItem.growCrop
@@ -475,6 +476,11 @@ inline int use_item_on(Player& pl, int hand, int x, int y, int z, int face, floa
                 return true;
             }
         }
+    }
+    if (place_vehicle_hook && place_vehicle_hook(pl, item, hit, face)) {
+        progress::item_used_on_block(pl, hit.x, hit.y, hit.z, slot);
+        consume(pl, slot);
+        return true;
     }
     int b = item_block(item);
     if (b < 0) return false;
