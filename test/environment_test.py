@@ -135,7 +135,7 @@ cmd(c, "gamerule spawn_mobs false")
 teleport(c, 250.5, -60.0, 250.5)
 
 # 2a. Pig to Zombified Piglin
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 cmd(c, "summon minecraft:pig 250 -60 250")
 pig_eid = None
@@ -164,7 +164,7 @@ assert zombified_found, "Pig did not convert to Zombified Piglin on lightning st
 print("Pig -> Zombified Piglin conversion ok")
 
 # 2b. Creeper to Powered Creeper
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 cmd(c, "summon minecraft:creeper 250 -60 250")
 creeper_eid = None
@@ -214,7 +214,7 @@ print("Copper de-oxidation & waxed immunity ok")
 # 3. Beds & Sleeping: Daytime rejection, Night skipping, Nether explosion
 # =========================================================================
 print("Testing bed sleeping and explosions...")
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 teleport(c, 300.5, -60.0, 302.5)
 
 # 3a. Daytime sleep rejection
@@ -424,7 +424,7 @@ assert bossbar_removed, "Raid stop did not remove boss bar"
 print("Raid stop ok")
 
 # 5c. Complete raid -> Victory & Hero of the Village
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 cmd(c, "raid start 1")
 pump_until(c, lambda pid, b: pid == PLAY_CB["boss_event"] and b.take(16) and b.varint() == 0, 5.0)
@@ -447,7 +447,7 @@ def check_victory(pid, b):
                 return True
 
 for _ in range(10):
-    cmd(c, "kill @e[type=!player]")
+    cmd(c, "kill @e[type=!player,tag=!persist]")
     sync(c)
     time.sleep(0.5)
     t_check = time.time() + 1.0
@@ -461,7 +461,7 @@ for _ in range(10):
 assert victory_seen, "Raid victory and Hero of the Village effect not received"
 print("Raid victory + Hero of the Village ok")
 
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 
 # =========================================================================
@@ -469,7 +469,7 @@ sync(c)
 # =========================================================================
 print("Testing Pillager Captain & Ominous Bottle drop...")
 teleport(c, 600.5, -60.0, 600.5)
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 
 cmd(c, "setblock 600 -60 600 red_bed[facing=north,part=foot]")
@@ -495,7 +495,7 @@ assert bottle_dropped, "Pillager captain did not drop ominous bottle"
 print("Pillager Captain drop ominous bottle ok")
 
 cmd(c, "raid stop")
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 
 # =========================================================================
@@ -524,6 +524,6 @@ pump_until(c, check_omen, 5.0)
 assert bad_omen_seen or raid_omen_seen, "Drinking ominous bottle did not trigger Bad Omen / Raid Omen"
 print("Ominous bottle drinking -> Bad Omen -> Raid Omen ok")
 
-cmd(c, "kill @e[type=!player]")
+cmd(c, "kill @e[type=!player,tag=!persist]")
 sync(c)
 print("All environment & mechanics tests passed successfully!")
