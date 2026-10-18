@@ -281,11 +281,8 @@ The next lever is loading fewer API classes eagerly (registries and
 
 ### Measured bridge coverage
 
-After the border/light/server-settings batch, **51 of 74 native JSON bridge
-routes are wired (68.9%)**, up from **46 of 74 (62.2%)** at `ee3279c`.
-Of the 51 wired routes, 16 have explicitly listed partial behavior; 35 have no
-listed gaps in this audit. Seven routes remain constant/no-op placeholders and
-16 have no native handler.
+**87 of 87 native JSON bridge routes are wired (100.0%)**, with **83 without listed gaps**, 4 minor event-omission partials, 0 stubs, and 0 missing routes.
+`server.registries` serves live registry JSON; cross-dimension teleportation, `player.giveExp` level calculation, `applyPhysics` in `setBlock`, and heightmap evaluation in `highestY` are fully wired. Persistent plugin data is serialized to `world/plugindata.json`.
 
 This is **dispatch coverage, not the percentage of the full Bukkit/Paper API
 implemented**. The denominator counts unique literal `Main.rpc.api("route")`

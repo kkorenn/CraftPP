@@ -616,7 +616,19 @@ std::string api(const std::string& m, const Json& a) {
     }
     if (m == "server.whitelistEnforced") return prop_bool("enforce-whitelist", false) ? "true" : "false";
     if (m == "server.defaultGameMode") return std::to_string(std::max(0, gamemode_id(props["gamemode"])));
-    if (m == "server.registries") return "null";  // the bridge uses its bundled 26.3 registry report
+    if (m == "server.registries") {
+        static std::string cached_registries = [] {
+            std::ifstream f("data/reports/registries.json");
+            if (!f) f.open("data/vanilla/reports/registries.json");
+            if (f) {
+                std::stringstream ss;
+                ss << f.rdbuf();
+                return ss.str();
+            }
+            return std::string("null");
+        }();
+        return cached_registries;
+    }
 
     // player
     if (m == "player.state") { auto p = player_arg(a); return p ? player_json(*p) : "null"; }
@@ -637,8 +649,19 @@ std::string api(const std::string& m, const Json& a) {
     if (m == "player.kick") { kick_player(require_player(a), text_arg(a, "text", "Kicked from the server.")); return "null"; }
     if (m == "player.teleport") {
         Player& p = require_player(a);
-        p.yaw = float(num_arg(a, "yaw", p.yaw));
-        p.pitch = float(num_arg(a, "pitch", p.pitch));
+        float yw = float(num_arg(a, "yaw", p.yaw));
+        float pt = float(num_arg(a, "pitch", p.pitch));
+        std::string dim = text_arg(a, "world", text_arg(a, "dimension", ""));
+        if (!dim.empty()) {
+            if (World* to = level_by_id(dim)) {
+                if (to != p.level) {
+                    change_dimension(p, to, num_arg(a, "x"), num_arg(a, "y"), num_arg(a, "z"), yw, pt);
+                    return "null";
+                }
+            }
+        }
+        p.yaw = yw;
+        p.pitch = pt;
         teleport(p, num_arg(a, "x"), num_arg(a, "y"), num_arg(a, "z"));
         return "null";
     }
@@ -692,7 +715,7 @@ std::string api(const std::string& m, const Json& a) {
         Player& p = require_player(a);
         if (m == "player.setLevel") p.g.xp_level = std::max(0, int(num_arg(a, "value")));
         if (m == "player.setExp") p.g.xp_progress = float(std::clamp(num_arg(a, "value"), 0.0, 1.0));
-        if (m == "player.giveExp") p.g.xp_total += int(num_arg(a, "value"));
+        if (m == "player.giveExp") give_experience_points(p, int(num_arg(a, "value")));
         send_experience(p);
         return "null";
     }
@@ -703,14 +726,44 @@ std::string api(const std::string& m, const Json& a) {
         return "null";
     }
     if (m == "player.setPluginData" || m == "world.setPluginData" || m == "world.setChunkPluginData" || m == "entity.setPluginData") {
-        std::lock_guard lock(state_mtx);  // ponytail: kept for the session only; persist with the world format
-        plugin_data[m.substr(0, m.find('.')) + text_arg(a, "uuid") + std::to_string(num_arg(a, "x")) +
-                    std::to_string(num_arg(a, "z"))] = text_arg(a, "data");
+        std::lock_guard lock(state_mtx);
+        std::string key = m.substr(0, m.find('.')) + text_arg(a, "uuid") + std::to_string(num_arg(a, "x")) +
+                          std::to_string(num_arg(a, "z"));
+        plugin_data[key] = text_arg(a, "data");
+        std::ofstream f(world_dir + "/plugindata.json");
+        if (f) {
+            f << "{\n";
+            bool first = true;
+            for (auto& [k, v] : plugin_data) {
+                if (!first) f << ",\n";
+                f << "  " << q(k) << ": " << q(v);
+                first = false;
+            }
+            f << "\n}\n";
+        }
         return "null";
     }
-    if (m == "world.pluginData" || m == "world.chunkPluginData") {
+    if (m == "player.pluginData" || m == "entity.pluginData" || m == "world.pluginData" || m == "world.chunkPluginData") {
         std::lock_guard lock(state_mtx);
-        auto it = plugin_data.find("world" + text_arg(a, "uuid") + std::to_string(num_arg(a, "x")) + std::to_string(num_arg(a, "z")));
+        static bool loaded_file = [] {
+            std::ifstream f(world_dir + "/plugindata.json");
+            if (f) {
+                try {
+                    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                    Json j = Json::parse(content);
+                    if (j.isObject()) {
+                        for (auto& [k, v] : j.asObject()) {
+                            if (v.isString()) plugin_data[k] = v.asString();
+                        }
+                    }
+                } catch (...) {}
+            }
+            return true;
+        }();
+        (void)loaded_file;
+        std::string key = m.substr(0, m.find('.')) + text_arg(a, "uuid") + std::to_string(num_arg(a, "x")) +
+                          std::to_string(num_arg(a, "z"));
+        auto it = plugin_data.find(key);
         return it == plugin_data.end() ? "null" : q(it->second);
     }
 
@@ -745,7 +798,9 @@ std::string api(const std::string& m, const Json& a) {
     if (m == "world.blockData" || m == "world.highestBlock") return block_data_json(world.get_block(x, y, z));
     if (m == "world.setBlock" || m == "world.setBlockData") {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return "false";
-        change_block(x, y, z, state_from_args(a));
+        bool physics = bool_arg(a, "applyPhysics", true);
+        int flags = physics ? UPDATE_ALL : UPDATE_CLIENTS;
+        lvl::set(lvl::Pos{x, y, z}, state_from_args(a), flags);
         return "true";
     }
     if (m == "world.blockDataOf") {  // "minecraft:oak_stairs[facing=north]"
@@ -767,6 +822,11 @@ std::string api(const std::string& m, const Json& a) {
         throw std::runtime_error("Unknown biome " + want);
     }
     if (m == "world.highestY") {
+        std::string hm = text_arg(a, "heightmap", "WORLD_SURFACE");
+        bool no_leaves = (hm == "MOTION_BLOCKING_NO_LEAVES");
+        if (hm.find("MOTION_BLOCKING") != std::string::npos) {
+            return std::to_string(boss::heightmap(x, z, no_leaves) - 1);
+        }
         for (int yy = MIN_Y + HEIGHT - 1; yy >= MIN_Y; yy--)
             if (world.get_block(x, yy, z) != blocks::air) return std::to_string(yy);
         return std::to_string(MIN_Y);

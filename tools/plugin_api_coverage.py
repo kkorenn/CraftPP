@@ -14,25 +14,12 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-STUBS = {
-    "server.registries": "Null; Java falls back to bundled registry report",
-}
+STUBS = {}
 PARTIAL = {
     "world.setGameRule": "Shared rule state across dimensions; command changes do not emit Bukkit events",
-    "entity.setPluginData": "Session only; entity IDs not included in storage key",
-    "player.setPluginData": "Session only",
-    "player.giveExp": "Changes total XP without recomputing level/progress",
-    "player.teleport": "Dimension argument ignored",
-    "world.setPluginData": "Session only",
-    "world.setChunkPluginData": "Session only",
-    "world.chunkPluginData": "Session only",
-    "world.pluginData": "Session only",
-    "world.highestY": "Non-air scan; heightmap overload selection unsupported",
     "world.setTime": "TimeSkipEvent not emitted",
     "world.setSpawn": "SpawnChangeEvent not emitted",
     "world.setBorder": "Border change events not emitted; single shared server border",
-    "world.setBlock": "applyPhysics overload argument ignored by bridge",
-    "world.setBlockData": "applyPhysics overload argument ignored by bridge",
 }
 
 
