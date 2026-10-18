@@ -214,11 +214,14 @@ void load_recipes() {
             def.display = std::move(d.b);
             Writer e;  // RecipeDisplayEntry
             e.varint(int(recipe_displays.size())).bytes(def.display);
-            e.boolean(r.group >= 0);
-            if (r.group >= 0) e.varint(r.group);
+            e.varint(r.group >= 0 ? r.group + 1 : 0);
             e.varint(r.category);
-            e.boolean(true).varint(int(r.place.size()));  // craftingRequirements = placementInfo.ingredients
-            for (auto& i : r.place) holder_set_bytes(e, i);
+            if (r.special || r.place.empty()) {
+                e.boolean(false);
+            } else {
+                e.boolean(true).varint(int(r.place.size()));  // craftingRequirements = placementInfo.ingredients
+                for (auto& i : r.place) holder_set_bytes(e, i);
+            }
             def.entry = std::move(e.b);
             r.displays.push_back(int(recipe_displays.size()));
             recipe_displays.push_back(std::move(def));
