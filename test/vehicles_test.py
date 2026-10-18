@@ -2,7 +2,7 @@
 """Vehicles & Nether/End mob projectile tests: boats, chest boats,
 minecarts on rails, fireballs, and shulker bullets.
 Usage: python3 test/vehicles_test.py host port"""
-import json, os, struct, sys, time
+import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
@@ -47,12 +47,16 @@ def pump_until(c, pred, timeout=10.0):
 
 def run(host, port):
     print("--- 1. Connecting bot for vehicles tests ---")
-    c = Conn(host, port)
-    c.handshake(777, 2)
-    c.login("VehicleTester")
-    c.read_config()
-    c.send_config_ack()
-    c.wait_play()
+    c = None
+    for attempt in range(50):
+        try:
+            c, _ = login("Sam", host, port, decode=True, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Sam"))
+            break
+        except (AssertionError, ConnectionRefusedError):
+            time.sleep(0.2)
+    assert c is not None, "Failed to connect Sam"
+    c.s.settimeout(15)
+    cmd(c, "gamemode creative")
     teleport(c, 100, 64, 100)
 
     print("--- 2. Boat placement & buoyancy ---")

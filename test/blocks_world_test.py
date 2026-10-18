@@ -2,7 +2,7 @@
 """Blocks & World Mechanics tests: sapling growth, bonemeal, signs,
 lecterns, jukebox, decorated pots, primed TNT, and piston entity pushing.
 Usage: python3 test/blocks_world_test.py host port"""
-import json, os, struct, sys, time
+import json, os, struct, sys, time, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from bot import *
 
@@ -47,12 +47,16 @@ def pump_until(c, pred, timeout=10.0):
 
 def run(host, port):
     print("--- 1. Connecting bot for blocks-world tests ---")
-    c = Conn(host, port)
-    c.handshake(777, 2)
-    c.login("BlocksTester")
-    c.read_config()
-    c.send_config_ack()
-    c.wait_play()
+    c = None
+    for attempt in range(50):
+        try:
+            c, _ = login("Sam", host, port, decode=True, uid=uuid.uuid3(uuid.NAMESPACE_DNS, "Sam"))
+            break
+        except (AssertionError, ConnectionRefusedError):
+            time.sleep(0.2)
+    assert c is not None, "Failed to connect Sam"
+    c.s.settimeout(15)
+    cmd(c, "gamemode creative")
     teleport(c, 0, 64, 0)
 
     print("--- 2. Jukebox music disc insertion & comparator output ---")
@@ -73,11 +77,7 @@ def run(host, port):
     cmd(c, "setblock 15 64 15 oak_sign[rotation=0]")
     sync(c)
     # Send sign update packet
-    w = Writer()
-    w.qword((15 & 0x3FFFFFF) << 38 | (15 & 0x3FFFFFF) << 12 | (64 & 0xFFF))
-    w.boolean(True) # is_front_text
-    w.string("Line 1").string("Line 2").string("Line 3").string("Line 4")
-    c.send(PLAY_SB["sign_update"], w.b)
+    c.send(PLAY_SB["sign_update"], pos(15, 64, 15) + string("Line 1") + string("Line 2") + string("Line 3") + string("Line 4") + varint(1))
     sync(c)
 
     print("--- 5. Primed TNT ignition & explosion ---")
@@ -86,7 +86,6 @@ def run(host, port):
     use_on(c, 20, 64, 20)
     sync(c)
     time.sleep(4.5) # Wait for 80-tick fuse (4 seconds)
-    # TNT should have detonated and removed tnt block
 
     print("--- 6. Sapling bonemeal tree growth ---")
     cmd(c, "setblock 30 63 30 dirt")
