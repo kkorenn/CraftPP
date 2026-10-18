@@ -12,7 +12,8 @@
 #include "../mobs/types/misc.hpp"
 #include "../containers/block_entity.hpp"
 #include "../containers/containers.hpp"
-#include "../effects/potion_types.hpp"
+#include "../effects/instance.hpp"
+#include "../mobs/api.hpp"
 #include "../level/level.hpp"
 #include "../level/behaviours.hpp"
 
@@ -68,7 +69,7 @@ struct SmallFireball : Entity {
         if (!lvl::is_air(s)) {
             Pos p{bx, by, bz};
             Pos above = p.above();
-            if (lvl::is_air(lvl::get(above))) lvl::set(above, blocks::fire, UPDATE_ALL);
+            if (lvl::is_air(lvl::get(above))) lvl::set(above, blocks::fire, lvl::UPDATE_ALL);
             discard();
             return;
         }
@@ -166,11 +167,11 @@ struct ShulkerBullet : Entity {
             if (LivingEntity* liv = e.as_living()) {
                 DamageSource ds(reg_id("damage_type", "mob_attack"), entity_by_id(shooter_id), this);
                 liv->hurt_server(ds, 4.0f);
-                liv->add_effect(eff::status_effect(25), 200, 0); // Levitation
+                entity_add_effect(liv, eff::levitation, 200, 0); // Levitation
                 hit = true;
             } else if (Player* pl = e.as_player()) {
                 pl->g.health -= 4.0f;
-                eff::add_effect(*pl, eff::status_effect(25), 200, 0);
+                player_add_effect(*pl, eff::levitation, 200, 0);
                 hit = true;
             }
         }, true);

@@ -429,3 +429,11 @@ bool player_add_effect(Player& p, int effect_id, int duration, int amp) {
     }
     return false;
 }
+
+bool entity_add_effect(Entity* e, int effect_id, int duration, int amp) {
+    if (!e) return false;
+    if (LivingEntity* l = e->as_living()) {
+        return add_effect(*l, EffectInstance(effect_id, duration, amp));
+    }
+    return false;
+}

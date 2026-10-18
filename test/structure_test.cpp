@@ -166,7 +166,8 @@ int main(int argc, char** argv) {
   for (int i = 4; i < argc; i++) ids.push_back(argv[i]);
   if (ids.empty() && argc <= 2) {
     // Self-checks: template loading and a known start invariant.
-    const auto& t = structure::Template::get("minecraft:igloo/top");
+    static const std::string igloo_top_id = "minecraft:igloo/top";
+    const auto& t = structure::Template::get(igloo_top_id);
     assert(t.size.x == 7 && t.size.y == 5 && t.size.z == 8 && !t.palettes.empty());
     persistCheck(*std::make_unique<worldgen::Overworld>(seed, "structures"));
     if (seed == 12345) {  // piece counts of starts checked block by block against vanilla (test/structure_pieces_vanilla.py)

@@ -799,7 +799,7 @@ std::string api(const std::string& m, const Json& a) {
     if (m == "world.setBlock" || m == "world.setBlockData") {
         if (y < MIN_Y || y >= MIN_Y + HEIGHT) return "false";
         bool physics = bool_arg(a, "applyPhysics", true);
-        int flags = physics ? UPDATE_ALL : UPDATE_CLIENTS;
+        int flags = physics ? lvl::UPDATE_ALL : lvl::UPDATE_CLIENTS;
         lvl::set(lvl::Pos{x, y, z}, state_from_args(a), flags);
         return "true";
     }
