@@ -398,7 +398,9 @@ struct ClampS : Sampler {
   ClampS(S in, float mn, float mx) : in(std::move(in)), mn(mn), mx(mx) {}
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     in->sampleVolume(c, o, v);
-    for (int i = 0; i < o.size(); i++) o.set(i, clampf(o.get(i), mn, mx));
+    float* __restrict__ p = o.data();
+    const int n = o.size();
+    for (int i = 0; i < n; i++) p[i] = clampf(p[i], mn, mx);
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override { return clampf(in->sampleValue(c, x, y, z), mn, mx); }
 };
@@ -411,9 +413,13 @@ struct LerpS : Sampler {  // Sampler / ConstFirstSampler (first null) / ConstSec
     PBuf fb(first ? v.size() : 0), sb(second ? v.size() : 0);
     if (first) first->sampleVolume(c, fb, v);
     if (second) second->sampleVolume(c, sb, v);
-    for (int i = 0; i < o.size(); i++) {
-      float a = o.get(i), f = first ? fb.get(i) : kFirst, s = second ? sb.get(i) : kSecond;
-      o.set(i, a == 0.0f ? f : a == 1.0f ? s : Mth::lerp(a, f, s));
+    float* __restrict__ op = o.data();
+    const float* __restrict__ fbp = first ? fb.data() : nullptr;
+    const float* __restrict__ sbp = second ? sb.data() : nullptr;
+    const int n = o.size();
+    for (int i = 0; i < n; i++) {
+      float a = op[i], f = fbp ? fbp[i] : kFirst, s = sbp ? sbp[i] : kSecond;
+      op[i] = (a == 0.0f ? f : a == 1.0f ? s : Mth::lerp(a, f, s));
     }
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
@@ -434,15 +440,21 @@ struct RangeChoiceS : Sampler {  // Sampler / ConstSampler (inRange null)
   void sampleVolume(Ctx& c, Buf& o, const Vol& v) const override {
     if (!inRange) {
       input->sampleVolume(c, o, v);
-      for (int i = 0; i < o.size(); i++) o.set(i, in(o.get(i)) ? kIn : kOut);
+      float* __restrict__ op = o.data();
+      const int n = o.size();
+      for (int i = 0; i < n; i++) op[i] = in(op[i]) ? kIn : kOut;
       return;
     }
     inRange->sampleVolume(c, o, v);
     PBuf ib(v.size()), ob(v.size());
     input->sampleVolume(c, ib, v);
     outRange->sampleVolume(c, ob, v);
-    for (int i = 0; i < o.size(); i++)
-      if (!in(ib.get(i))) o.set(i, ob.get(i));
+    float* __restrict__ op = o.data();
+    const float* __restrict__ ibp = ib.data();
+    const float* __restrict__ obp = ob.data();
+    const int n = o.size();
+    for (int i = 0; i < n; i++)
+      if (!in(ibp[i])) op[i] = obp[i];
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
     float v = input->sampleValue(c, x, y, z);
@@ -544,8 +556,9 @@ struct InterpolatedS : Sampler {
         float step = (b - a) * invY;
         float value = a + step * (float)y0;
         int oi = idx(ov, ox + x, oy + y0, oz + z);
+        float* __restrict__ dst = o.data() + oi;
         for (int y = y0; y <= y1; y++) {
-          o.set(oi++, value);
+          *dst++ = value;
           value += step;
         }
       }
@@ -574,34 +587,46 @@ struct SliceS : Sampler {  // axis 0 X, 1 Y, 2 Z, 3 XZ
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
       int i = 0;
+      float* __restrict__ op = o.data();
+      const float* __restrict__ ibp = ib.data();
       for (int z = 0; z < v.sizeZ; z++)
         for (int x = 0; x < v.sizeX; x++)
-          for (int y = 0; y < v.sizeY; y++) o.set(i++, ib.get(idx(iv, 0, y, z)));
+          for (int y = 0; y < v.sizeY; y++) op[i++] = ibp[idx(iv, 0, y, z)];
     } else if (axis == 1) {
       if (v.sizeY == 1 && v.minBlockY == a) return in->sampleVolume(c, o, v);
       Vol iv{v.sizeX, 1, v.sizeZ, v.minBlockX, a, v.minBlockZ, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
+      float* __restrict__ op = o.data();
+      const float* __restrict__ ibp = ib.data();
       for (int z = 0; z < v.sizeZ; z++)
-        for (int x = 0; x < v.sizeX; x++) setRange(o, idx(v, x, 0, z), v.sizeY, ib.get(idx(iv, x, 0, z)));
+        for (int x = 0; x < v.sizeX; x++) {
+          float* __restrict__ dst = op + idx(v, x, 0, z);
+          float val = ibp[idx(iv, x, 0, z)];
+          for (int y = 0; y < v.sizeY; y++) dst[y] = val;
+        }
     } else if (axis == 2) {
       if (v.sizeZ == 1 && v.minBlockZ == a) return in->sampleVolume(c, o, v);
       Vol iv{v.sizeX, v.sizeY, 1, v.minBlockX, v.minBlockY, a, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
       int i = 0;
+      float* __restrict__ op = o.data();
+      const float* __restrict__ ibp = ib.data();
       for (int z = 0; z < v.sizeZ; z++)
         for (int x = 0; x < v.sizeX; x++)
-          for (int y = 0; y < v.sizeY; y++) o.set(i++, ib.get(idx(iv, x, y, 0)));
+          for (int y = 0; y < v.sizeY; y++) op[i++] = ibp[idx(iv, x, y, 0)];
     } else {
       if (v.sizeX == 1 && v.sizeZ == 1 && v.minBlockX == a && v.minBlockZ == b) return in->sampleVolume(c, o, v);
       Vol iv{1, v.sizeY, 1, a, v.minBlockY, b, v.stepBlockX, v.stepBlockY, v.stepBlockZ};
       PBuf ib(iv.size());
       in->sampleVolume(c, ib, iv);
+      float* __restrict__ op = o.data();
+      const float* __restrict__ ibp = ib.data();
       for (int y = 0; y < v.sizeY; y++) {
-        float val = ib.get(idx(iv, 0, y, 0));
+        float val = ibp[idx(iv, 0, y, 0)];
         int i = idx(v, 0, y, 0);
-        for (int n = 0; n < v.sizeX * v.sizeZ; n++, i += v.sizeY) o.set(i, val);
+        for (int n = 0; n < v.sizeX * v.sizeZ; n++, i += v.sizeY) op[i] = val;
       }
     }
   }
@@ -724,9 +749,11 @@ struct SplineS : Sampler {
         bufs[ci] = std::make_unique<PBuf>(v.size());
         coords[ci]->sampleVolume(c, *bufs[ci], v);
       }
-      return bufs[ci]->get(index);
+      return bufs[ci]->data()[index];
     };
-    for (; index < o.size(); index++) o.set(index, sampleSpline(spline, in));
+    float* __restrict__ op = o.data();
+    const int n = o.size();
+    for (; index < n; index++) op[index] = sampleSpline(spline, in);
   }
   float sampleValue(Ctx& c, int x, int y, int z) const override {
     std::vector<float> cached(coords.size(), NAN);

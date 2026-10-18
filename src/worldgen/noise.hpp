@@ -35,6 +35,8 @@ struct DensityBuffer {
   void addTo(int i, float v) { values[i] = values[i] + v; }
   void set(int i, float v) { values[i] = v; }
   float get(int i) const { return values[i]; }
+  float* data() { return values.data(); }
+  const float* data() const { return values.data(); }
   void fill(float v) { std::fill(values.begin(), values.end(), v); }
   int size() const { return (int)values.size(); }
 };

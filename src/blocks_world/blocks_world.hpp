@@ -67,12 +67,12 @@ struct JukeboxBE : be::Live {
     }
 
     void load(const Nbt& in) override {
-        if (const Nbt* it = in.get("RecordItem")) record = comp::item_from_nbt(*it);
+        if (const Nbt* it = in.get("RecordItem")) record = item_from(*it);
         else record = {};
     }
 
     void save(Nbt& out) const override {
-        if (!record.empty()) out.set("RecordItem", comp::item_to_nbt(record));
+        if (!record.empty()) out.set("RecordItem", item_nbt(record));
     }
 
     void removed_side_effects() override {
@@ -175,16 +175,16 @@ struct LecternBE : be::Live {
     }
 
     void load(const Nbt& in) override {
-        if (const Nbt* b = in.get("Book")) book = comp::item_from_nbt(*b);
+        if (const Nbt* b = in.get("Book")) book = item_from(*b);
         else book = {};
-        if (const Nbt* p = in.get("Page")) page = int(p->num());
+        if (const Nbt* p = in.get("Page")) page = int(p->i);
         else page = 0;
         update_page_count();
     }
 
     void save(Nbt& out) const override {
         if (!book.empty()) {
-            out.set("Book", comp::item_to_nbt(book));
+            out.set("Book", item_nbt(book));
             out.set("Page", Nbt::num(Nbt::Int, page));
         }
     }
@@ -255,7 +255,7 @@ struct DecoratedPotBE : be::Live {
 
     int get_comparator_signal() const override {
         if (item.empty()) return 0;
-        int max_st = max_stack(item);
+        int max_st = ::max_stack(item);
         if (max_st <= 0) max_st = 64;
         return 1 + int(std::floor(14.0 * double(item.count) / double(max_st)));
     }
@@ -270,7 +270,7 @@ struct DecoratedPotBE : be::Live {
             }
         }
         if (const Nbt* it = in.get("item")) {
-            item = comp::item_from_nbt(*it);
+            item = item_from(*it);
         } else {
             item = {};
         }
@@ -278,12 +278,12 @@ struct DecoratedPotBE : be::Live {
 
     void save(Nbt& out) const override {
         if (!sherds.empty()) {
-            Nbt list = Nbt::list(Nbt::String);
-            for (const auto& sh : sherds) list.push(Nbt::str(sh));
+            Nbt list = Nbt::make_list();
+            for (const auto& sh : sherds) list.list.push_back(Nbt::str(sh));
             out.set("sherds", std::move(list));
         }
         if (!item.empty()) {
-            out.set("item", comp::item_to_nbt(item));
+            out.set("item", item_nbt(item));
         }
     }
 
@@ -363,7 +363,7 @@ struct SignBE : be::Live {
         auto load_side = [](const Nbt* tag, std::vector<std::string>& msgs, std::string& color, bool& glowing) {
             if (!tag || tag->t != Nbt::Compound) return;
             if (const Nbt* col = tag->get("color")) if (col->t == Nbt::String) color = col->s;
-            if (const Nbt* glow = tag->get("has_glowing_text")) glowing = glow->num() != 0;
+            if (const Nbt* glow = tag->get("has_glowing_text")) glowing = glow->i != 0;
             if (const Nbt* mlist = tag->get("messages")) {
                 if (mlist->t == Nbt::List) {
                     msgs.clear();
@@ -382,15 +382,15 @@ struct SignBE : be::Live {
         };
         load_side(in.get("front_text"), front_messages, front_color, front_glowing);
         load_side(in.get("back_text"), back_messages, back_color, back_glowing);
-        if (const Nbt* wax = in.get("is_waxed")) is_waxed = wax->num() != 0;
+        if (const Nbt* wax = in.get("is_waxed")) is_waxed = wax->i != 0;
     }
 
     void save(Nbt& out) const override {
         auto save_side = [](const std::vector<std::string>& msgs, const std::string& color, bool glowing) -> Nbt {
             Nbt tag = Nbt::compound();
-            Nbt list = Nbt::list(Nbt::String);
+            Nbt list = Nbt::make_list();
             for (const auto& m : msgs) {
-                list.push(Nbt::str("{\"text\":\"" + m + "\"}"));
+                list.list.push_back(Nbt::str("{\"text\":\"" + m + "\"}"));
             }
             tag.set("messages", std::move(list));
             tag.set("color", Nbt::str(color));
