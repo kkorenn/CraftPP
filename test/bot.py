@@ -85,6 +85,11 @@ class Conn:
             self.pos = struct.unpack(">ddd", d[n:n + 24])
             self.send(PLAY_SB["accept_teleportation"], d[:n + 24] + d[n + 48:n + 56])
         return pid, b
+    def close(self):
+        try: self.f.close()
+        except Exception: pass
+        try: self.s.close()
+        except Exception: pass
 
 def skip_nbt(b, t=None):
     """Skip a network NBT tag (nameless root when t is None)."""
