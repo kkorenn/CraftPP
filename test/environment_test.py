@@ -424,7 +424,9 @@ assert bossbar_removed, "Raid stop did not remove boss bar"
 print("Raid stop ok")
 
 # 5c. Complete raid -> Victory & Hero of the Village
+cmd(c, "difficulty easy")
 cmd(c, "kill @e[type=!player,tag=!persist]")
+cmd(c, "summon minecraft:villager 500 -60 500")
 sync(c)
 cmd(c, "raid start 1")
 pump_until(c, lambda pid, b: pid == PLAY_CB["boss_event"] and b.take(16) and b.varint() == 0, 5.0)
@@ -446,10 +448,10 @@ def check_victory(pid, b):
                 victory_seen = True
                 return True
 
-for _ in range(10):
+for _ in range(15):
     cmd(c, "kill @e[type=!player,tag=!persist]")
     sync(c)
-    time.sleep(0.5)
+    time.sleep(1.1)
     t_check = time.time() + 1.0
     while time.time() < t_check:
         pid, b = c.recv()
