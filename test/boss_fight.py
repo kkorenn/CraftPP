@@ -26,7 +26,7 @@ open(f"{RUN}/server.properties", "w").write(f"server-port={PORT}\nlevel-name={BU
 open(f"{RUN}/eula.txt", "w").write("eula=true\n")
 open(f"{RUN}/ops.json", "w").write('[{"uuid": "", "name": "Alice", "level": 4, "bypassesPlayerLimit": false}]\n')
 log = open(f"{RUN}/server.log", "w")
-srv = subprocess.Popen([f"{ROOT}/{BUILD}/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+srv = subprocess.Popen([f"{ROOT}/{BUILD}/craftpp", f"{RUN}/server.properties"], cwd=ROOT, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT)
 
 def block_at(c, x, y, z):
     secs = c.chunks[x >> 4, z >> 4]
