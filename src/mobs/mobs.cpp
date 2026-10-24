@@ -161,9 +161,10 @@ static void player_attack(Player& p, Entity& t) {
     }
     if (crit) {
         server_sound(p, "minecraft:entity.player.attack.crit");
-        Writer w = std::move(Writer().varint(play_cb::animate).varint(t.id).u8(4));
-        broadcast_near(t.pos.x, t.pos.z, w);
+        broadcast_near(t.pos.x, t.pos.z, std::move(Writer().varint(play_cb::animate).varint(t.id).u8(1)));  // CRITICAL_HIT
     }
+    if (magic > 0)  // magicCrit fires on its own (Player.attackVisualEffects)
+        broadcast_near(t.pos.x, t.pos.z, std::move(Writer().varint(play_cb::animate).varint(t.id).u8(2)));  // MAGIC_CRITICAL_HIT
     if (!crit && !sweep) server_sound(p, full ? "minecraft:entity.player.attack.strong" : "minecraft:entity.player.attack.weak");
     pe->set_last_hurt_mob(t);
     // itemAttackInteraction: post-attack enchantments (fire aspect, thorns...), then weapon wear (postHurtEnemy)
@@ -196,7 +197,7 @@ static void register_handlers() {
         Entity* t = entity_by_id(id);
         if (!t || t->removed || p.g.dead || p.gamemode == 3 || !within_entity_range(p, *t, 3.0)) return;
         if (t->interact(p, hand) == IR_SUCCESS)
-            broadcast_near(p.x, p.z, std::move(Writer().varint(play_cb::animate).varint(p.eid).u8(uint8_t(hand ? 3 : 0))), &p);
+            broadcast_near(p.x, p.z, std::move(Writer().varint(play_cb::swing_animation).varint(p.eid).varint(hand).varint(1).varint(6)), &p);
     });
     on(play_sb::pick_item_from_entity, [](Player& p, Reader& in, int) {  // handlePickItemFromEntity
         int id = in.varint();
@@ -209,9 +210,8 @@ static void register_handlers() {
         else if (t->type == entity_types::arrow) item = item_id("arrow");
         if (item >= 0) pick_block(p, item);  // tryPickItem
     });
-    on(play_sb::punch, [](Player& p, Reader&, int) {  // handlePunch: swing + resetAttackStrengthTicker
+    on(play_sb::punch, [](Player& p, Reader&, int) {  // handlePunch: the swing itself goes out via swing_animation (netplay.hpp); this resets the attack strength ticker
         combat[&p].attack_ticker = 0;
-        broadcast_near(p.x, p.z, std::move(Writer().varint(play_cb::animate).varint(p.eid).u8(0)), &p);
     });
 }
 

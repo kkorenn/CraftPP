@@ -374,8 +374,8 @@ struct LivingEntity : Entity {
             vel = vel.multiply(0.6, 1.0, 0.6);
         }
     }
-    void swing(int hand = 0) {  // LivingEntity.swing -> ClientboundAnimatePacket
-        broadcast(std::move(Writer().varint(play_cb::animate).varint(id).u8(uint8_t(hand ? 3 : 0))));
+    void swing(int hand = 0) {  // LivingEntity.swing -> ClientboundSwingAnimationPacket (26.x: animate carries only wake_up/crit)
+        broadcast(std::move(Writer().varint(play_cb::swing_animation).varint(id).varint(hand).varint(1).varint(6)));
     }
 
     // ---- sounds ----
